@@ -1,0 +1,1806 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover"
+    />
+    <title>Extension Options</title>
+    <style>
+      :root {
+        --bg: #f5f7fb; --fg: #0f172a; --muted: #6b7280; --border: #e5e7eb;
+        --accent: #3b82f6; --accent-fg: #ffffff;
+        --section-bg: #ffffff;
+        --toggle-bg: #e5e7eb;
+        --toggle-active: #3b82f6;
+        --input-bg: #ffffff;
+        --card-bg: #ffffff;
+        --hover-bg: #f8fafc;
+        --success: #16a34a;
+        --success-bg: #dcfce7;
+        --error: #dc2626;
+        --error-bg: #fee2e2;
+        --error-border: #fecaca;
+        --warning: #f59e0b;
+        --warning-bg: #fef3c7;
+        --accent-light: rgba(59, 130, 246, 0.1);
+        --accent-very-light: rgba(59, 130, 246, 0.05);
+        --accent-ring: rgba(59, 130, 246, 0.15);
+        --toggle-knob: #ffffff;
+        --shadow-color: rgba(0,0,0,0.05);
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      }
+      .wrap { max-width: 900px; margin: 24px auto; padding: 100px 16px 0; }
+      h1 { font-size: 24px; margin: 0 0 8px; font-weight: 700; }
+      .subtitle { font-size: 14px; color: var(--muted); margin-bottom: 24px; }
+
+      /* Category sections */
+      .category {
+        margin-bottom: 24px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--section-bg);
+        box-shadow: 0 1px 3px var(--shadow-color);
+        overflow: hidden;
+      }
+      .category-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 16px 20px;
+        background: linear-gradient(to right, var(--accent-very-light), transparent);
+        border-bottom: 1px solid var(--border);
+        cursor: pointer;
+        user-select: none;
+      }
+      .category-header:hover {
+        background: linear-gradient(to right, var(--accent-light), transparent);
+      }
+      .category-icon {
+        width: 32px;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--accent);
+        color: white;
+        border-radius: 8px;
+        font-size: 16px;
+      }
+      .category-title {
+        flex: 1;
+      }
+      .category-title h2 {
+        font-size: 16px;
+        margin: 0;
+        font-weight: 600;
+      }
+      .category-title p {
+        font-size: 12px;
+        color: var(--muted);
+        margin: 2px 0 0;
+      }
+      .category-toggle {
+        color: var(--muted);
+        transition: transform 0.2s;
+      }
+      .category.collapsed .category-toggle {
+        transform: rotate(-90deg);
+      }
+      .category.collapsed .category-content {
+        display: none;
+      }
+      .category-content {
+        padding: 16px 20px;
+      }
+
+      /* Toggle groups */
+      .toggle-group {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 12px;
+      }
+      .toggle-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 14px;
+        background: var(--bg);
+        border-radius: 8px;
+        border: 1px solid transparent;
+        transition: border-color 0.15s, background 0.15s;
+      }
+      .toggle-item:hover {
+        border-color: var(--border);
+        background: var(--hover-bg);
+      }
+      .toggle-info {
+        flex: 1;
+        min-width: 0;
+      }
+      .toggle-label {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--fg);
+        margin: 0;
+      }
+      .toggle-hint {
+        font-size: 11px;
+        color: var(--muted);
+        margin: 2px 0 0;
+      }
+
+      /* Custom toggle switch */
+      .toggle-switch {
+        position: relative;
+        width: 44px;
+        height: 24px;
+        flex-shrink: 0;
+        margin-left: 12px;
+      }
+      .toggle-switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .toggle-slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: var(--toggle-bg);
+        transition: 0.2s;
+        border-radius: 24px;
+      }
+      .toggle-slider:before {
+        position: absolute;
+        content: "";
+        height: 18px;
+        width: 18px;
+        left: 3px;
+        bottom: 3px;
+        background-color: var(--toggle-knob);
+        transition: 0.2s;
+        border-radius: 50%;
+        box-shadow: 0 1px 3px var(--shadow-color);
+      }
+      .toggle-switch input:checked + .toggle-slider {
+        background-color: var(--toggle-active);
+      }
+      .toggle-switch input:checked + .toggle-slider:before {
+        transform: translateX(20px);
+      }
+
+      /* Input fields */
+      .input-group {
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid var(--border);
+      }
+      .input-group:first-child {
+        margin-top: 0;
+        padding-top: 0;
+        border-top: none;
+      }
+      .group {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 8px;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        margin-bottom: 12px;
+        background: var(--card-bg);
+        box-shadow: 0 1px 2px var(--shadow-color);
+      }
+      label { font-size: 12px; color: var(--muted); font-weight: 600; }
+      input[type="text"], textarea, select {
+        width: 100%; padding: 10px 12px; border: 1px solid var(--border);
+        border-radius: 8px; font-size: 14px; font-family: inherit;
+        background: var(--input-bg); color: var(--fg);
+      }
+      input[type="text"]:focus, textarea:focus, select:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-ring);
+      }
+      textarea { resize: vertical; min-height: 60px; }
+      .row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+      .btn {
+        padding: 8px 12px; border: 1px solid var(--accent); background: var(--accent);
+        color: var(--accent-fg); border-radius: 8px; font-size: 14px; cursor: pointer;
+        display: inline-flex; align-items: center; gap: 6px;
+        text-decoration: none;
+        transition: opacity 0.15s;
+      }
+      .btn:hover { opacity: 0.9; }
+      .btn-secondary {
+        background: transparent;
+        color: var(--accent);
+      }
+      .hint { font-size: 12px; color: var(--muted); }
+      .small { font-size: 12px; }
+      .success { color: var(--success); font-weight: 600; }
+
+      /* City pills */
+      .city-container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding-top: 8px;
+      }
+      .city-pill {
+        background: var(--bg);
+        color: var(--muted);
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 500;
+        border: 1px solid var(--border);
+      }
+      .city-pill.dynamic {
+        background: var(--warning-bg);
+        color: var(--warning);
+        border-color: var(--warning);
+        font-weight: 600;
+      }
+
+      /* Divider */
+      .divider {
+        height: 1px;
+        background: var(--border);
+        margin: 16px 0;
+      }
+
+      /* Quick links */
+      .quick-links {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 12px;
+      }
+
+      /* Sticky navigation header */
+      .sticky-nav {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        background: var(--section-bg);
+        border-bottom: 1px solid var(--border);
+        margin: -24px -16px 24px;
+        padding: 0 16px;
+        box-shadow: 0 2px 8px var(--shadow-color);
+      }
+      .sticky-nav-inner {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 12px 0;
+      }
+      .sticky-nav h1 {
+        font-size: 18px;
+        margin: 0 0 10px;
+        font-weight: 700;
+      }
+      .nav-links {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .nav-link {
+        padding: 6px 12px;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--muted);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        cursor: pointer;
+        text-decoration: none;
+        transition: all 0.15s;
+      }
+      .nav-link:hover {
+        color: var(--accent);
+        border-color: var(--accent);
+        background: var(--accent-very-light);
+      }
+      .nav-link.active {
+        color: var(--accent);
+        border-color: var(--accent);
+        background: var(--accent-light);
+      }
+      .auto-save-indicator {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--muted);
+        margin-left: auto;
+      }
+      .auto-save-indicator.saving {
+        color: var(--accent);
+      }
+      .auto-save-indicator.saved {
+        color: var(--success);
+      }
+      .save-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--muted);
+      }
+      .auto-save-indicator.saving .save-dot {
+        background: var(--accent);
+        animation: pulse 1s infinite;
+      }
+      .auto-save-indicator.saved .save-dot {
+        background: var(--success);
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
+
+      /* Footer bar */
+      .footer-bar {
+        padding: 24px 20px;
+        background: var(--section-bg);
+        border-top: 1px solid var(--border);
+        margin-top: 24px;
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .btn-danger {
+        background: var(--error-bg);
+        color: var(--error);
+        border-color: var(--error-border);
+      }
+      .btn-danger:hover {
+        background: var(--error-border);
+      }
+
+      /* Section label */
+      .section-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--accent);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 12px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border);
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Sticky Navigation Header -->
+    <div class="sticky-nav">
+      <div class="sticky-nav-inner">
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <h1>Extension Settings</h1>
+          <div id="autoSaveIndicator" class="auto-save-indicator">
+            <span class="save-dot"></span>
+            <span id="autoSaveText">Auto-save enabled</span>
+          </div>
+        </div>
+        <div class="nav-links">
+          <a href="#appearance" class="nav-link" data-target="appearance">Appearance</a>
+          <a href="#interface" class="nav-link" data-target="interface">Interface</a>
+          <a href="#scanner" class="nav-link" data-target="scanner">Scanner</a>
+          <a href="#home-searches" class="nav-link" data-target="home-searches">Home Searches</a>
+          <a href="#phone-searches" class="nav-link" data-target="phone-searches">Phone</a>
+          <a href="#callrail" class="nav-link" data-target="callrail">CallRail</a>
+          <a href="#job-sorting" class="nav-link" data-target="job-sorting">Job Sorting</a>
+          <a href="#reports" class="nav-link" data-target="reports">Reports</a>
+          <a href="#people" class="nav-link" data-target="people">People</a>
+          <a href="#clipboard" class="nav-link" data-target="clipboard">Clipboard</a>
+          <a href="#find" class="nav-link" data-target="find">Find</a>
+          <a href="#data" class="nav-link" data-target="data">Data</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="wrap">
+      <!-- APPEARANCE -->
+      <div class="category" id="appearance" data-category="appearance">
+        <div class="category-header">
+          <div class="category-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="5"/>
+              <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+            </svg>
+          </div>
+          <div class="category-title">
+            <h2>Appearance</h2>
+            <p>Theme, colors, and visual preferences</p>
+          </div>
+          <div class="category-toggle">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+        <div class="category-content">
+          <div class="group">
+            <label for="theme">App Theme</label>
+            <select id="theme">
+              <option value="light">Light - Clean and bright default theme</option>
+              <option value="dark">Dark - Easy on the eyes</option>
+              <option value="ocean">Ocean - Deep blue waters and coral reefs</option>
+              <option value="forest">Forest - Lush greenery and woodland calm</option>
+              <option value="desert">Desert - Warm sands and sunset hues</option>
+              <option value="arctic">Arctic - Crisp ice and northern lights</option>
+              <option value="savanna">Savanna - Golden grasslands and earthen tones</option>
+              <option value="jungle">Jungle - Vibrant tropical paradise</option>
+            </select>
+            <div class="hint">Choose your preferred color scheme. Changes preview immediately.</div>
+          </div>
+
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Compact Mode</p>
+                <p class="toggle-hint">Reduce spacing for more content</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="compact_mode">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Color Indicators</p>
+                <p class="toggle-hint">Show colored status indicators</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_color_indicators">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Show Icons</p>
+                <p class="toggle-hint">Display icons in buttons and menus</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_icons">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Animate Transitions</p>
+                <p class="toggle-hint">Enable smooth animations</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="animate_transitions">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- INTERFACE -->
+      <div class="category" id="interface" data-category="interface">
+        <div class="category-header">
+          <div class="category-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <line x1="3" y1="9" x2="21" y2="9"/>
+              <line x1="9" y1="21" x2="9" y2="9"/>
+            </svg>
+          </div>
+          <div class="category-title">
+            <h2>Interface</h2>
+            <p>Tab visibility, navigation, and panel behavior</p>
+          </div>
+          <div class="category-toggle">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+        <div class="category-content">
+          <div class="section-label">Tab Visibility</div>
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Job Sorting Tab</p>
+                <p class="toggle-hint">Filter and sort jobs by criteria</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_job_sorting">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">People Tab</p>
+                <p class="toggle-hint">View team members and contacts</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_people">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Clipboard Tab</p>
+                <p class="toggle-hint">Quick copy/paste functionality</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_clipboard">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Reports Tab</p>
+                <p class="toggle-hint">Generate and export reports</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_reports">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+          <div class="section-label">Navigation & Controls</div>
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Week Navigation</p>
+                <p class="toggle-hint">Show prev/next week buttons</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_week_navigation">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Date Picker</p>
+                <p class="toggle-hint">Show calendar date picker</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_date_picker">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Team Selector</p>
+                <p class="toggle-hint">Show team member dropdown</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_team_selector">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Refresh Button</p>
+                <p class="toggle-hint">Show manual refresh button</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_refresh_button">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Tab Badges</p>
+                <p class="toggle-hint">Show count badges on tabs</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_tab_badges">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Dock Note</p>
+                <p class="toggle-hint">Show dock note section</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_dock_note">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+          <div class="section-label">Panel Behavior</div>
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Global Panel Mode</p>
+                <p class="toggle-hint">Panel available on all sites (vs Roofr only)</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="global_panel_mode">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Auto Expand Days</p>
+                <p class="toggle-hint">Start with day cards expanded</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="auto_expand_days">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SCANNER -->
+      <div class="category" id="scanner" data-category="scanner">
+        <div class="category-header">
+          <div class="category-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+              <line x1="16" y1="2" x2="16" y2="6"/>
+              <line x1="8" y1="2" x2="8" y2="6"/>
+              <line x1="3" y1="10" x2="21" y2="10"/>
+            </svg>
+          </div>
+          <div class="category-title">
+            <h2>Scanner</h2>
+            <p>Calendar scanning, capacity, and availability display</p>
+          </div>
+          <div class="category-toggle">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+        <div class="category-content">
+          <div class="section-label">Core Features</div>
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Scanner Enabled</p>
+                <p class="toggle-hint">Master toggle for calendar scanning</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="scanner_enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Auto Scan on Load</p>
+                <p class="toggle-hint">Automatically scan when page loads</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="auto_scan_on_load">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+          <div class="section-label">Display Options</div>
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Capacity Display</p>
+                <p class="toggle-hint">Show capacity info on day cards</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_capacity_display">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Daily Totals</p>
+                <p class="toggle-hint">Show booked/available counts</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_daily_totals">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">City Chips</p>
+                <p class="toggle-hint">Show city breakdown on days</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_city_chips">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Region Filter</p>
+                <p class="toggle-hint">Show PHX/NORTH/SOUTH filter</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_region_filter">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Availability Section</p>
+                <p class="toggle-hint">Show rep availability section</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_availability_section">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Booked Count</p>
+                <p class="toggle-hint">Show number of booked slots</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_booked_count">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Available Count</p>
+                <p class="toggle-hint">Show number of available slots</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_available_count">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+          <div class="section-label">Alerts & Warnings</div>
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Uncategorized Alerts</p>
+                <p class="toggle-hint">Warn about uncategorized jobs</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_uncategorized_alerts">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Highlight Recommended</p>
+                <p class="toggle-hint">Highlight best available slots</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="highlight_recommended_slots">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Out of Sync Warning</p>
+                <p class="toggle-hint">Warn when week changes</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_out_of_sync_warning">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Overbooked Warning</p>
+                <p class="toggle-hint">Alert when slots are overbooked</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_overbooked_warning">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- HOME SEARCHES -->
+      <div class="category" id="home-searches" data-category="home-searches">
+        <div class="category-header">
+          <div class="category-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+              <polyline points="9 22 9 12 15 12 15 22"/>
+            </svg>
+          </div>
+          <div class="category-title">
+            <h2>Home Searches</h2>
+            <p>Address search, verification, and geocoding</p>
+          </div>
+          <div class="category-toggle">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+        <div class="category-content">
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Home Search Enabled</p>
+                <p class="toggle-hint">Enable address search feature</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="home_search_enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Address Verification</p>
+                <p class="toggle-hint">Verify addresses via Census API</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="address_verification_enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Recent Addresses</p>
+                <p class="toggle-hint">Show address search history</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_recent_addresses">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Address Suggestions</p>
+                <p class="toggle-hint">Show autocomplete suggestions</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_address_suggestions">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Auto Copy Address</p>
+                <p class="toggle-hint">Copy verified address automatically</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="auto_copy_verified_address">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Show Geocode Results</p>
+                <p class="toggle-hint">Display lat/long coordinates</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_geocode_results">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Normalize Addresses</p>
+                <p class="toggle-hint">Standardize address format</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="normalize_addresses">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+          <div class="section-label">Address Search Actions (Go Button)</div>
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Open Google Earth</p>
+                <p class="toggle-hint">View property location in Google Earth</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="search_google_earth">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Open Gemini</p>
+                <p class="toggle-hint">Send address to Gemini AI assistant</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="search_gemini">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Open Roofr Job Search</p>
+                <p class="toggle-hint">Search Roofr for existing jobs or create new</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="search_roofr">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- PHONE SEARCHES -->
+      <div class="category" id="phone-searches" data-category="phone-searches">
+        <div class="category-header">
+          <div class="category-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
+            </svg>
+          </div>
+          <div class="category-title">
+            <h2>Phone Searches</h2>
+            <p>Phone number search and contact lookup</p>
+          </div>
+          <div class="category-toggle">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+        <div class="category-content">
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Phone Search Enabled</p>
+                <p class="toggle-hint">Enable phone number search</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="phone_search_enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Auto Format Phone</p>
+                <p class="toggle-hint">Format numbers as (XXX) XXX-XXXX</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="auto_format_phone">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Phone History</p>
+                <p class="toggle-hint">Show recent phone searches</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_phone_history">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Auto Open Contacts</p>
+                <p class="toggle-hint">Auto-open Roofr contacts page</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="phone_search_auto_open">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CALLS (CALLRAIL) -->
+      <div class="category" id="callrail" data-category="calls">
+        <div class="category-header">
+          <div class="category-icon" style="background: #10b981;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M15.05 5A5 5 0 0 1 19 8.95M15.05 1A9 9 0 0 1 23 8.94m-1 7.98v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
+            </svg>
+          </div>
+          <div class="category-title">
+            <h2>Calls (CallRail)</h2>
+            <p>CallRail integration and incoming call handling</p>
+          </div>
+          <div class="category-toggle">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+        <div class="category-content">
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">CallRail Enabled</p>
+                <p class="toggle-hint">Master toggle for CallRail integration</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="callrail_enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Auto Search on Call</p>
+                <p class="toggle-hint">Auto-search contacts on incoming calls</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="callrail_auto_search">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Show Notifications</p>
+                <p class="toggle-hint">Display call notifications</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="callrail_show_notifications">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Show Active Calls</p>
+                <p class="toggle-hint">Display active calls dropdown</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="callrail_show_active_calls">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Auto Open Lead Center</p>
+                <p class="toggle-hint">Keep CallRail Lead Center open</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="callrail_auto_open_lead_center">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Group Tabs</p>
+                <p class="toggle-hint">Group call-related tabs together</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="callrail_group_tabs">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+          <div class="section-label">Call Handler Selection</div>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px;">
+            Select who handles incoming calls. This selection persists even when the feature is toggled off.
+          </p>
+
+          <div class="group">
+            <label for="callrail_csr_setting">CSR</label>
+            <select id="callrail_csr_setting">
+              <option value="">-- Select CSR --</option>
+            </select>
+          </div>
+
+          <div class="group">
+            <label for="callrail_production_setting">Production</label>
+            <select id="callrail_production_setting">
+              <option value="">-- Select Production --</option>
+            </select>
+          </div>
+
+          <div class="group">
+            <label for="callrail_insurance_setting">Insurance</label>
+            <select id="callrail_insurance_setting">
+              <option value="">-- Select Insurance --</option>
+            </select>
+          </div>
+
+          <div class="group">
+            <label for="callrail_mgmt_setting">Management</label>
+            <select id="callrail_mgmt_setting">
+              <option value="">-- Select Management --</option>
+            </select>
+          </div>
+
+          <div id="current_call_handler" style="margin-top: 12px; padding: 10px; background: var(--surface-hover); border-radius: 6px; font-size: 0.9rem;">
+            <strong>Current Handler:</strong> <span id="current_handler_name" style="color: var(--primary);">None selected</span>
+          </div>
+
+          <div class="section-label">Quick Links</div>
+          <div class="quick-links">
+            <a href="https://app.callrail.com/lead-center/a/629065099/agent-tool/dialer/call?company_id=459564228"
+               target="_blank" class="btn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
+              </svg>
+              Open CallRail
+            </a>
+            <a href="https://app.roofr.com/dashboard/team/239329/contacts"
+               target="_blank" class="btn" style="background: #10b981; border-color: #10b981;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+              </svg>
+              Open Roofr Contacts
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <!-- JOB SORTING -->
+      <div class="category" id="job-sorting" data-category="job-sorting">
+        <div class="category-header">
+          <div class="category-icon" style="background: #f59e0b;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="4" y1="21" x2="4" y2="14"/>
+              <line x1="4" y1="10" x2="4" y2="3"/>
+              <line x1="12" y1="21" x2="12" y2="12"/>
+              <line x1="12" y1="8" x2="12" y2="3"/>
+              <line x1="20" y1="21" x2="20" y2="16"/>
+              <line x1="20" y1="12" x2="20" y2="3"/>
+              <line x1="1" y1="14" x2="7" y2="14"/>
+              <line x1="9" y1="8" x2="15" y2="8"/>
+              <line x1="17" y1="16" x2="23" y2="16"/>
+            </svg>
+          </div>
+          <div class="category-title">
+            <h2>Job Sorting</h2>
+            <p>Job filtering, sorting, and display options</p>
+          </div>
+          <div class="category-toggle">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+        <div class="category-content">
+          <div class="section-label">Behavior</div>
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Auto Load on Scan</p>
+                <p class="toggle-hint">Populate jobs when scanning</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="job_sorting_auto_load">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Remember Filters</p>
+                <p class="toggle-hint">Save filter selections</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="job_sorting_remember_filters">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Multi-Select Filters</p>
+                <p class="toggle-hint">Allow multiple filter values</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="job_sorting_multi_select">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+          <div class="section-label">Show Job Types</div>
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Residential Jobs</p>
+                <p class="toggle-hint">Include residential jobs</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="job_sorting_show_residential">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Commercial Jobs</p>
+                <p class="toggle-hint">Include commercial jobs</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="job_sorting_show_commercial">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Insurance Jobs</p>
+                <p class="toggle-hint">Include insurance/claim jobs</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="job_sorting_show_insurance">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Unknown Roof Types</p>
+                <p class="toggle-hint">Include jobs with unknown roof</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="job_sorting_show_unknown_roof">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Unknown Stories</p>
+                <p class="toggle-hint">Include jobs with unknown stories</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="job_sorting_show_unknown_stories">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- REPORTS -->
+      <div class="category" id="reports" data-category="reports">
+        <div class="category-header">
+          <div class="category-icon" style="background: #8b5cf6;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="16" y1="13" x2="8" y2="13"/>
+              <line x1="16" y1="17" x2="8" y2="17"/>
+              <polyline points="10 9 9 9 8 9"/>
+            </svg>
+          </div>
+          <div class="category-title">
+            <h2>Reports</h2>
+            <p>Report generation and export options</p>
+          </div>
+          <div class="category-toggle">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+        <div class="category-content">
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Reports Enabled</p>
+                <p class="toggle-hint">Master toggle for reports</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="reports_enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Calendar Reports</p>
+                <p class="toggle-hint">Enable calendar report generation</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="reports_calendar_enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Job Card Reports</p>
+                <p class="toggle-hint">Enable job card report generation</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="reports_job_card_enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Batch Scheduling</p>
+                <p class="toggle-hint">Enable batch operations</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="reports_batch_enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Auto Export</p>
+                <p class="toggle-hint">Automatically export reports</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="reports_auto_export">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- PEOPLE -->
+      <div class="category" id="people" data-category="people">
+        <div class="category-header">
+          <div class="category-icon" style="background: #ec4899;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+              <circle cx="9" cy="7" r="4"/>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+              <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+          </div>
+          <div class="category-title">
+            <h2>People</h2>
+            <p>Team member display and management</p>
+          </div>
+          <div class="category-toggle">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+        <div class="category-content">
+          <div class="section-label">Display Options</div>
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Show Sales Reps</p>
+                <p class="toggle-hint">Display sales representatives</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="people_show_reps">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Show Management</p>
+                <p class="toggle-hint">Display management team</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="people_show_mgmt">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Show CSRs</p>
+                <p class="toggle-hint">Display customer service reps</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="people_show_csrs">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Show Production</p>
+                <p class="toggle-hint">Display production team</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="people_show_production">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Clickable Names</p>
+                <p class="toggle-hint">Enable name click actions</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="people_clickable_names">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Show Counts</p>
+                <p class="toggle-hint">Display people counts per group</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="people_show_counts">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+          <div class="section-label">People Lists</div>
+          <div class="hint" style="margin-bottom: 12px;">
+            Enter names separated by commas or new lines.
+            <button id="resetPeopleBtn" class="btn btn-secondary" style="margin-left: 12px; padding: 4px 8px; font-size: 12px;">Reset to Defaults</button>
+          </div>
+
+          <div class="group">
+            <label for="PEOPLE_REPS">Sales Reps</label>
+            <textarea id="PEOPLE_REPS"></textarea>
+          </div>
+
+          <div class="group">
+            <label for="PEOPLE_MGMT">Management</label>
+            <textarea id="PEOPLE_MGMT"></textarea>
+          </div>
+
+          <div class="group">
+            <label for="PEOPLE_CSRS">CSRs</label>
+            <textarea id="PEOPLE_CSRS"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- CLIPBOARD -->
+      <div class="category" id="clipboard" data-category="clipboard">
+        <div class="category-header">
+          <div class="category-icon" style="background: #14b8a6;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+              <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
+            </svg>
+          </div>
+          <div class="category-title">
+            <h2>Clipboard</h2>
+            <p>Copy, paste, and formatting options</p>
+          </div>
+          <div class="category-toggle">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+        <div class="category-content">
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Smart Formatting</p>
+                <p class="toggle-hint">Apply smart text formatting</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="clipboard_smart_formatting">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Auto Format Paste</p>
+                <p class="toggle-hint">Format pasted content automatically</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="clipboard_auto_format_paste">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Day Copy Button</p>
+                <p class="toggle-hint">Show copy button for day summary</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="clipboard_show_day_copy">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Week Copy Button</p>
+                <p class="toggle-hint">Show copy button for week summary</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="clipboard_show_week_copy">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Preserve Formatting</p>
+                <p class="toggle-hint">Keep original text formatting</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="clipboard_preserve_formatting">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- FIND/SEARCH -->
+      <div class="category" id="find" data-category="find">
+        <div class="category-header">
+          <div class="category-icon" style="background: #6366f1;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+          </div>
+          <div class="category-title">
+            <h2>Find on Page</h2>
+            <p>Search and highlight text on Roofr pages</p>
+          </div>
+          <div class="category-toggle">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+        <div class="category-content">
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Find Enabled</p>
+                <p class="toggle-hint">Enable find on page feature</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="find_enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Highlight Matches</p>
+                <p class="toggle-hint">Highlight found text</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="find_highlight_enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Case Sensitive</p>
+                <p class="toggle-hint">Match exact letter case</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="find_case_sensitive">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Whole Word</p>
+                <p class="toggle-hint">Match whole words only</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="find_whole_word">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Regex Support</p>
+                <p class="toggle-hint">Enable regular expressions</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="find_regex_enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Show Counter</p>
+                <p class="toggle-hint">Display match count</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="find_show_counter">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Show Navigation</p>
+                <p class="toggle-hint">Show prev/next buttons</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="find_show_navigation">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- DATA & CITIES -->
+      <div class="category" id="data" data-category="data">
+        <div class="category-header">
+          <div class="category-icon" style="background: #78716c;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <ellipse cx="12" cy="5" rx="9" ry="3"/>
+              <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+              <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+            </svg>
+          </div>
+          <div class="category-title">
+            <h2>Data & Cities</h2>
+            <p>City learning, categorization, and Google Sheets</p>
+          </div>
+          <div class="category-toggle">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+        <div class="category-content">
+          <div class="section-label">City Learning</div>
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Dynamic City Learning</p>
+                <p class="toggle-hint">Auto-learn new cities</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="dynamic_city_learning">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Strict Whitelist</p>
+                <p class="toggle-hint">Only allow whitelisted cities</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="city_whitelist_strict">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Show Learned Cities</p>
+                <p class="toggle-hint">Highlight dynamically learned cities</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="show_learned_cities">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Auto Categorize Jobs</p>
+                <p class="toggle-hint">Automatically classify job types</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="auto_categorize_jobs">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+          <div class="section-label">Google Sheets Configuration</div>
+          <div class="group">
+            <label for="NEXT_SHEET_ID">Google Sheet ID</label>
+            <input id="NEXT_SHEET_ID" type="text" placeholder="e.g., 1cFFEZ... (The ID from your Google Sheet URL)" />
+            <div class="hint">This is the main spreadsheet where availability is tracked.</div>
+          </div>
+
+          <div class="group">
+            <label for="AVAIL_RANGE_PHX">Rep Availability Range - Greater Phoenix</label>
+            <input id="AVAIL_RANGE_PHX" type="text" placeholder="B4:H200" />
+          </div>
+
+          <div class="group">
+            <label for="AVAIL_RANGE_NORTH">Rep Availability Range - Up North</label>
+            <input id="AVAIL_RANGE_NORTH" type="text" placeholder="B4:H200" />
+          </div>
+
+          <div class="group">
+            <label for="AVAIL_RANGE_SOUTH">Rep Availability Range - Down South</label>
+            <input id="AVAIL_RANGE_SOUTH" type="text" placeholder="B4:H200" />
+          </div>
+
+          <div class="divider"></div>
+          <div class="section-label">Region & City Management</div>
+          <div class="hint" style="margin-bottom: 12px;">
+            Cities include built-in and learned entries.
+            <span class="city-pill dynamic" style="display:inline-flex; align-items: center; vertical-align: middle; margin-left: 8px;">Learned cities</span> are highlighted.
+          </div>
+
+          <div class="group">
+            <label>Greater Phoenix (PHX)</label>
+            <div id="cities-phx" class="city-container"></div>
+          </div>
+
+          <div class="group">
+            <label>Up North (NORTH)</label>
+            <div id="cities-north" class="city-container"></div>
+          </div>
+
+          <div class="group">
+            <label>Down South (SOUTH)</label>
+            <div id="cities-south" class="city-container"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Update Available Banner (hidden by default) -->
+      <div id="update-category" class="category" style="display: none; border-color: var(--warning);">
+        <div class="category-header" style="background: linear-gradient(to right, var(--warning-bg), transparent); cursor: default;">
+          <div class="category-icon" style="background: var(--warning);">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+          </div>
+          <div class="category-title">
+            <h2 id="update-title">Update Available</h2>
+            <p id="update-subtitle">A new version is ready to install</p>
+          </div>
+        </div>
+        <div class="category-content">
+          <div class="group">
+            <p id="update-version-info" style="margin-bottom: 12px; font-size: 14px;"></p>
+            <div id="update-changelog-container" style="margin-bottom: 16px;"></div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <button id="download-update-btn" class="btn">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 4px;">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                Download Update
+              </button>
+              <button id="view-release-btn" class="btn" style="background: var(--hover-bg); color: var(--fg);">
+                View Release Notes
+              </button>
+              <button id="dismiss-update-btn" class="btn" style="background: var(--hover-bg); color: var(--muted);">
+                Remind Me Later
+              </button>
+            </div>
+          </div>
+
+          <div class="divider" style="margin: 16px 0; border-top: 1px solid var(--border);"></div>
+          <label class="section-label" style="font-weight: 600; margin-bottom: 8px; display: block;">Installation Instructions</label>
+          <ol style="font-size: 13px; color: var(--fg); line-height: 1.8; padding-left: 20px; margin: 0;">
+            <li>Click "Download Update" to download the new version (.zip file)</li>
+            <li>Extract the downloaded .zip file to a folder</li>
+            <li>Open Chrome and go to <code style="background: var(--hover-bg); padding: 2px 6px; border-radius: 4px;">chrome://extensions</code></li>
+            <li>Enable "Developer mode" (toggle in top right corner)</li>
+            <li>Click "Load unpacked" and select the extracted folder</li>
+            <li>The old version will be replaced automatically</li>
+          </ol>
+        </div>
+      </div>
+
+      <!-- Footer Bar -->
+      <div class="footer-bar">
+        <div style="display: flex; align-items: center; gap: 16px;">
+          <span class="hint">Settings are saved automatically when changed</span>
+          <span id="version-display" class="hint" style="color: var(--muted);"></span>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button id="check-updates-btn" class="btn" style="background: var(--hover-bg); color: var(--fg);">Check for Updates</button>
+          <button id="resetAllBtn" class="btn btn-danger">Reset All Settings to Defaults</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

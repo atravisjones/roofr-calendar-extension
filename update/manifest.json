@@ -1,0 +1,10 @@
+{
+  "version": "2.0.4",
+  "minimum_chrome_version": "116",
+  "release_date": "2026-01-07T00:00:00Z",
+  "changelog": [
+    "Initial release with auto-update support"
+  ],
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.4/roofr-calendar-scraper-v2.0.4.zip",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.4"
+}

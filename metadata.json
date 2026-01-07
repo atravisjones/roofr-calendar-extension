@@ -1,0 +1,5 @@
+{
+  "name": "Copy of Roofr Calendar Assistant",
+  "description": "A comprehensive scheduling and dispatching tool for Roofr's team calendar. It scrapes appointments, integrates real-time availability from Google Sheets, and provides smart recommendations to streamline scheduling.",
+  "requestFramePermissions": []
+}

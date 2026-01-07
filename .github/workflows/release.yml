@@ -1,0 +1,63 @@
+name: Release Extension
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create release zip
+        run: |
+          mkdir -p release
+          zip -r release/roofr-calendar-scraper-v${{ steps.get_version.outputs.VERSION }}.zip \
+            manifest.json \
+            service_worker.js \
+            content.js \
+            popup.html \
+            popup.js \
+            options.html \
+            options.js \
+            config.js \
+            themes.js \
+            metadata.json \
+            -x "*.map"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/roofr-calendar-scraper-v${{ steps.get_version.outputs.VERSION }}.zip
+          generate_release_notes: true
+          body: |
+            ## Installation Instructions
+
+            1. Download the `.zip` file below
+            2. Extract it to a folder on your computer
+            3. Open Chrome and go to `chrome://extensions`
+            4. Enable "Developer mode" (toggle in top right)
+            5. Click "Load unpacked" and select the extracted folder
+            6. The extension will be updated automatically
+
+            ---
+            *This release was automatically generated.*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,26 @@
+{
+  "name": "roofr-calendar-extension",
+  "private": true,
+  "version": "2.0.4",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "bump:patch": "node scripts/bump-version.js patch",
+    "bump:minor": "node scripts/bump-version.js minor",
+    "bump:major": "node scripts/bump-version.js major",
+    "release": "node scripts/build-release.js"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "archiver": "^7.0.1",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}

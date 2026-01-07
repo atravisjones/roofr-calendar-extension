@@ -1,0 +1,148 @@
+/* Theme CSS Variables */
+:root {
+  /* Default light theme colors - will be overridden by JS */
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8fafc;
+  --bg-tertiary: #f1f5f9;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --border: #e2e8f0;
+  --border-light: #f1f5f9;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-light: #dbeafe;
+  --success: #16a34a;
+  --success-bg: #dcfce7;
+  --success-border: #86efac;
+  --error: #dc2626;
+  --error-bg: #fee2e2;
+  --error-border: #fca5a5;
+  --warning: #ea580c;
+  --warning-bg: #fed7aa;
+  --warning-border: #fdba74;
+  --hover-bg: #dbeafe;
+  --card-bg: #ffffff;
+  --card-border: #e2e8f0;
+}
+
+body {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  margin: 0;
+  padding: 0;
+}
+
+/* Custom themed utility classes */
+.theme-bg-primary {
+  background-color: var(--bg-primary) !important;
+}
+
+.theme-bg-secondary {
+  background-color: var(--bg-secondary) !important;
+}
+
+.theme-bg-tertiary {
+  background-color: var(--bg-tertiary) !important;
+}
+
+.theme-text-primary {
+  color: var(--text-primary) !important;
+}
+
+.theme-text-secondary {
+  color: var(--text-secondary) !important;
+}
+
+.theme-text-muted {
+  color: var(--text-muted) !important;
+}
+
+.theme-border {
+  border-color: var(--border) !important;
+}
+
+.theme-border-light {
+  border-color: var(--border-light) !important;
+}
+
+.theme-accent {
+  background-color: var(--accent) !important;
+  color: var(--bg-primary) !important;
+}
+
+.theme-accent-text {
+  color: var(--accent) !important;
+}
+
+.theme-hover-bg:hover {
+  background-color: var(--hover-bg) !important;
+}
+
+.theme-card {
+  background-color: var(--card-bg) !important;
+  border-color: var(--card-border) !important;
+}
+
+.theme-success {
+  color: var(--success) !important;
+}
+
+.theme-success-bg {
+  background-color: var(--success-bg) !important;
+  border-color: var(--success-border) !important;
+}
+
+.theme-error {
+  color: var(--error) !important;
+}
+
+.theme-error-bg {
+  background-color: var(--error-bg) !important;
+  border-color: var(--error-border) !important;
+}
+
+.theme-warning {
+  color: var(--warning) !important;
+}
+
+.theme-warning-bg {
+  background-color: var(--warning-bg) !important;
+  border-color: var(--warning-border) !important;
+}
+
+/* Tailwind overrides for theme compatibility */
+#root {
+  min-height: 100vh;
+}
+
+/* Address Verification Button Styles */
+.verify-btn {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: white;
+  border: none;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.verify-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(37, 99, 235, 0.3);
+}
+
+.verify-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.verify-result {
+  font-size: 10px;
+  margin-top: 2px;
+  padding: 2px 4px;
+}

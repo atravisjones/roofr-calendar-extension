@@ -4,6 +4,7 @@
   "version": "2.0.4",
   "description": "Extract appointments from Roofr and show availability from Google Sheets.",
   "minimum_chrome_version": "116",
+  "update_url": "https://raw.githubusercontent.com/atravisjones/roofr-calendar-extension/main/updates.xml",
   "permissions": [
     "activeTab",
     "scripting",

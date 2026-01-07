@@ -80,6 +80,15 @@ if (fs.existsSync(updateManifestPath)) {
     console.log(`Updated update/manifest.json: ${newVersion}`);
 }
 
+// Read and update updates.xml (for enterprise Chrome updates)
+const updatesXmlPath = path.join(rootDir, 'updates.xml');
+if (fs.existsSync(updatesXmlPath)) {
+    let xmlContent = fs.readFileSync(updatesXmlPath, 'utf8');
+    xmlContent = xmlContent.replace(/version='[\d.]+'/g, `version='${newVersion}'`);
+    fs.writeFileSync(updatesXmlPath, xmlContent);
+    console.log(`Updated updates.xml: ${newVersion}`);
+}
+
 console.log('');
 console.log(`Version bumped: ${oldVersion} -> ${newVersion}`);
 console.log('');

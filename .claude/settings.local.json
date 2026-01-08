@@ -25,7 +25,18 @@
       "Bash(git push:*)",
       "Bash(git tag:*)",
       "Bash(node scripts/bump-version.js:*)",
-      "Bash(node scripts/bump-version.cjs:*)"
+      "Bash(node scripts/bump-version.cjs:*)",
+      "Bash(gh run list:*)",
+      "Bash(node scripts/build-release.cjs:*)",
+      "Bash(dir \"c:\\\\Users\\\\atrav\\\\Downloads\\\\copy-of-roofr-calendar-assistant \\(36\\)\\\\releases\")",
+      "Bash(winget install:*)",
+      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" auth login --web --git-protocol https)",
+      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" auth status)",
+      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" release create v2.0.5 \"releases/roofr-calendar-scraper-v2.0.5.zip\" --title \"v2.0.5\" --notes \"## Changes\n- Bug fixes and improvements\n- Enhanced popup functionality\n\n## Installation\n1. Download the zip file below\n2. Extract to a folder\n3. Go to chrome://extensions\n4. Enable Developer mode\n5. Click ''Load unpacked'' and select the folder\")",
+      "Bash(npm install:*)",
+      "Bash(node scripts/build-crx.cjs:*)",
+      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" release upload v2.0.5 \"releases/roofr-calendar-scraper.crx\" --clobber)",
+      "Bash(node scripts/get-crx-id.cjs:*)"
     ],
     "deny": [],
     "ask": []

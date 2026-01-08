@@ -1,11 +1,11 @@
 {
-  "version": "2.0.5",
+  "version": "2.0.4",
   "minimum_chrome_version": "116",
   "release_date": "2026-01-08T00:00:00Z",
   "changelog": [
-    "Test update - this is a simulated update",
-    "Added auto-update notification system"
+    "Added auto-update notification system",
+    "Enterprise silent update support"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.5/roofr-calendar-scraper-v2.0.5.zip",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.5"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.4/roofr-calendar-scraper-v2.0.4.zip",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.4"
 }

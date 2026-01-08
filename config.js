@@ -66,6 +66,154 @@ export const CONFIG = {
       SOUTH: new Set(["TUCSON","SOUTH TUCSON","MARANA","ORO VALLEY","SAHUARITA","GREEN VALLEY","VAIL","NOGALES","RIO RICO", "SADDLEBROOKE","ELOY","ARIZONA CITY","COOLIDGE","VALLEY FARMS","RED ROCK","ORACLE"]),
   },
 
+  // County ArcGIS services for APN lookup
+  COUNTY_APN_SERVICES: {
+    MARICOPA: {
+      name: "Maricopa County",
+      queryUrl: "https://gis.mcassessor.maricopa.gov/arcgis/rest/services/Parcels/MapServer/0/query",
+      addressField: "PHYSICAL_ADDRESS",
+      apnField: "APN_DASH",
+      ownerField: "OWNER_NAME",
+      detailUrl: "https://mcassessor.maricopa.gov/mcs/?q=",
+      cities: new Set(["PHOENIX","SCOTTSDALE","TEMPE","MESA","CHANDLER","GILBERT","GLENDALE","PEORIA","SURPRISE","AVONDALE","GOODYEAR","BUCKEYE","QUEEN CREEK","APACHE JUNCTION","FOUNTAIN HILLS","PARADISE VALLEY","CAVE CREEK","CAREFREE","ANTHEM","EL MIRAGE","YOUNGTOWN","LITCHFIELD PARK","TOLLESON","WADDELL","SUN CITY","SUN CITY WEST","NEW RIVER","AHWATUKEE","SUN LAKES","GOLD CANYON","QUEEN VALLEY","WITTMANN","WICKENBURG","MORRISTOWN","LAVEEN","CONGRESS","GLOBE"])
+    },
+    PINAL: {
+      name: "Pinal County",
+      queryUrl: "https://rogue.casagrandeaz.gov/arcgis/rest/services/Pinal_County/Pinal_County_Assessor_Info/FeatureServer/0/query",
+      addressField: "SITEADDRESS",
+      apnField: "PARCELID",
+      ownerField: "OWNERNME1",
+      detailUrl: "https://app1.pinal.gov/Search/Parcel-Details.aspx?parcel_ID=",
+      formatApnForUrl: (apn) => apn.replace(/-/g, ''),
+      cities: new Set(["MARICOPA","CASA GRANDE","FLORENCE","SAN TAN VALLEY","ARIZONA CITY","ELOY","COOLIDGE","STANFIELD"])
+    },
+    PIMA: {
+      name: "Pima County",
+      queryUrl: "https://gisdata.pima.gov/arcgis1/rest/services/GISOpenData/LandRecords/MapServer/12/query",
+      addressField: "ADDRESS_OL",
+      apnField: "PARCEL",
+      ownerField: null, // Owner info not available in this layer
+      detailUrl: "https://gis.pima.gov/maps/detail.cfm?parcel=",
+      cities: new Set(["TUCSON","SOUTH TUCSON","MARANA","ORO VALLEY","SAHUARITA","GREEN VALLEY","VAIL","SADDLEBROOKE","RED ROCK","ORACLE"])
+    },
+    GILA: {
+      name: "Gila County",
+      queryUrl: "https://gis.gilacountyaz.gov/arcgis/rest/services/ParcelService/ParcelService/MapServer/0/query",
+      addressField: "ADDRESS",
+      apnField: "APN",
+      ownerField: "Owner1",
+      detailUrl: "https://assessor.gilacountyaz.gov/assessor/taxweb/search.jsp",
+      cities: new Set(["PAYSON","GLOBE","PINE","STRAWBERRY","STAR VALLEY"])
+    },
+    YAVAPAI: {
+      name: "Yavapai County",
+      queryUrl: "https://gis.yavapaiaz.gov/ArcGIS/rest/services/Property/MapServer/0/query",
+      addressField: "SITUS",
+      apnField: "APN",
+      ownerField: "OWNER",
+      detailUrl: "https://gis.yavapaiaz.gov/v4/search.aspx#",
+      cities: new Set(["PRESCOTT","PRESCOTT VALLEY","SEDONA","COTTONWOOD","CAMP VERDE","CHINO VALLEY","DEWEY","CLARKDALE","VILLAGE OF OAK CREEK","MAYER"])
+    },
+    COCONINO: {
+      name: "Coconino County",
+      queryUrl: "https://webmaps.coconino.az.gov/arcgis/rest/services/ParcelOwnerInfo/MapServer/0/query",
+      addressField: "SITUS",
+      apnField: "APN",
+      ownerField: "OWNER",
+      detailUrl: "https://eagleassessor.coconino.az.gov:444/assessor/taxweb/search.jsp",
+      cities: new Set(["FLAGSTAFF","WILLIAMS","MUNDS PARK"])
+    }
+  },
+
+  // Get county service config based on city
+  getCountyForCity(city) {
+    const upperCity = (city || '').toUpperCase();
+    for (const [countyKey, config] of Object.entries(this.COUNTY_APN_SERVICES)) {
+      if (config.cities.has(upperCity)) {
+        return { key: countyKey, ...config };
+      }
+    }
+    return null;
+  },
+
+  // Lookup APN from county ArcGIS service
+  async lookupAPN(address, city) {
+    const county = this.getCountyForCity(city);
+    if (!county) {
+      console.log(`[APN Lookup] No county service found for city: ${city}`);
+      return { success: false, error: `No APN service available for ${city}` };
+    }
+
+    console.log(`[APN Lookup] Searching ${county.name} for: ${address}`);
+
+    try {
+      // Extract street address for search (first part before city/state)
+      const streetPart = address.split(',')[0].trim().toUpperCase();
+
+      // Build query - search for addresses containing the street
+      const whereClause = `${county.addressField} LIKE '%${streetPart.replace(/'/g, "''")}%'`;
+
+      // Include owner field if available
+      let outFields = `${county.apnField},${county.addressField}`;
+      if (county.ownerField) {
+        outFields += `,${county.ownerField}`;
+      }
+
+      const params = new URLSearchParams({
+        where: whereClause,
+        outFields: outFields,
+        returnGeometry: 'false',
+        f: 'json'
+      });
+
+      const url = `${county.queryUrl}?${params.toString()}`;
+      console.log(`[APN Lookup] Query URL: ${url}`);
+
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (data.error) {
+        throw new Error(data.error.message || 'Query error');
+      }
+
+      if (data.features && data.features.length > 0) {
+        const feature = data.features[0];
+        const apn = feature.attributes[county.apnField];
+        const matchedAddress = feature.attributes[county.addressField];
+        const ownerName = county.ownerField ? feature.attributes[county.ownerField] : null;
+
+        // Format URL for county assessor detail page
+        let detailUrl = county.detailUrl;
+        if (county.formatApnForUrl) {
+          detailUrl += county.formatApnForUrl(apn);
+        } else {
+          detailUrl += apn;
+        }
+
+        console.log(`[APN Lookup] Found APN: ${apn}, Owner: ${ownerName || 'N/A'}`);
+        return {
+          success: true,
+          apn: apn,
+          owner: ownerName,
+          county: county.name,
+          matchedAddress: matchedAddress,
+          detailUrl: detailUrl
+        };
+      }
+
+      console.log(`[APN Lookup] No results found`);
+      return { success: false, error: 'No parcel found for this address' };
+
+    } catch (error) {
+      console.error(`[APN Lookup] Error:`, error);
+      return { success: false, error: error.message };
+    }
+  },
+
   // --- Logic Functions ---
   
   blockWindowForDate(date) {
@@ -198,15 +346,35 @@ export const CONFIG = {
     const zipMatch = text.match(/\b(\d{5})\b/);
     const zip = zipMatch ? zipMatch[1] : null;
     const fromZipCity = zip ? this.ZIP_TO_CITY[zip] || this.ZIP_TO_CITY[zip.slice(0, 3)] : null;
-    
+
     const fromTextCity = this.findCityInString(text)?.city;
-    const primary = (fromTextCity || fromZipCity || '').toUpperCase();
+    let primary = (fromTextCity || fromZipCity || '').toUpperCase();
+
+    // If city not found in whitelist, try to extract from address pattern
+    // Pattern: "Street, City, State Zip" or "Street, City, AZ, 12345" (handles comma before zip)
+    if (!primary) {
+      const addressPattern = /,\s*([A-Za-z\s]+),\s*(?:AZ|Arizona)[,\s]*\d{5}/i;
+      const match = text.match(addressPattern);
+      if (match && match[1]) {
+        primary = match[1].trim().toUpperCase();
+      }
+    }
+
+    // Still no city? Try simpler pattern: word(s) before state abbreviation
+    if (!primary) {
+      const simplePattern = /,\s*([A-Za-z\s]+),\s*(?:AZ|Arizona)/i;
+      const match = text.match(simplePattern);
+      if (match && match[1]) {
+        primary = match[1].trim().toUpperCase();
+      }
+    }
+
     if (!primary) return [];
-    
+
     const candidates = new Set([primary]);
     const adjacents = this.CITY_ADJACENCY[primary.replace(/\s/g,'_')] || [];
     adjacents.forEach(c => candidates.add(c.toUpperCase()));
-    
+
     return Array.from(candidates);
   },
 

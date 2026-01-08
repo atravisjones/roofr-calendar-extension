@@ -691,7 +691,7 @@ async function handleCallRailIncomingCall(phoneNumber, formattedPhone, skipEnabl
                     // Tab is already in a group - update the group title
                     await chrome.tabGroups.update(tabInfo.groupId, {
                         title: groupTitle,
-                        color: 'blue'
+                        color: 'grey'
                     });
                     console.log('[Service Worker] Updated existing tab group title to:', groupTitle);
                 } else {
@@ -699,7 +699,7 @@ async function handleCallRailIncomingCall(phoneNumber, formattedPhone, skipEnabl
                     const groupId = await chrome.tabs.group({ tabIds: [targetTab.id] });
                     await chrome.tabGroups.update(groupId, {
                         title: groupTitle,
-                        color: 'blue',
+                        color: 'grey',
                         collapsed: false
                     });
                     console.log('[Service Worker] Created tab group:', groupTitle);

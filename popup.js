@@ -296,6 +296,42 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Toast
     const toast = document.getElementById("toast");
 
+    // Unknown City Region Selection Modal
+    const unknownCityModal = document.getElementById("unknown-city-modal");
+    const unknownCityName = document.getElementById("unknown-city-name");
+    const unknownCityPhx = document.getElementById("unknown-city-phx");
+    const unknownCityNorth = document.getElementById("unknown-city-north");
+    const unknownCitySouth = document.getElementById("unknown-city-south");
+    const unknownCitySkip = document.getElementById("unknown-city-skip");
+    const closeUnknownCityModal = document.getElementById("close-unknown-city-modal");
+
+    // Promise resolver for unknown city modal
+    let unknownCityResolve = null;
+
+    // Show unknown city modal and return promise with selected region (or null if skipped)
+    function promptForCityRegion(cityName) {
+        return new Promise((resolve) => {
+            unknownCityResolve = resolve;
+            if (unknownCityName) unknownCityName.textContent = cityName;
+            if (unknownCityModal) unknownCityModal.classList.remove('hidden');
+        });
+    }
+
+    function closeUnknownCityModalFn(selectedRegion) {
+        if (unknownCityModal) unknownCityModal.classList.add('hidden');
+        if (unknownCityResolve) {
+            unknownCityResolve(selectedRegion);
+            unknownCityResolve = null;
+        }
+    }
+
+    // Unknown city modal button handlers
+    if (unknownCityPhx) unknownCityPhx.addEventListener('click', () => closeUnknownCityModalFn('PHX'));
+    if (unknownCityNorth) unknownCityNorth.addEventListener('click', () => closeUnknownCityModalFn('NORTH'));
+    if (unknownCitySouth) unknownCitySouth.addEventListener('click', () => closeUnknownCityModalFn('SOUTH'));
+    if (unknownCitySkip) unknownCitySkip.addEventListener('click', () => closeUnknownCityModalFn(null));
+    if (closeUnknownCityModal) closeUnknownCityModal.addEventListener('click', () => closeUnknownCityModalFn(null));
+
     const AFFIRMATIONS = [
         "You got this!", "Time to raise the roof!", "Stay cool up there.", "Nailed it!", "Don't worry, it's over your head.", "Every shingle counts.", "Safety first, speed second.", "Roofing: It's a high calling.", "Keep hammering away!", "You're on top of the world!"
     ];
@@ -327,7 +363,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         earliestAvailableByCity: {}, // Track earliest available date per city across weeks: { "MESA": "2025-12-27", ... }
         recentAddresses: [], // Track last 3 entered addresses/cities for quick access
         lastNavDirection: null, // Track last week navigation direction to prevent loops
-        weekNavCount: 0 // Count of week navigations to prevent infinite loops
+        weekNavCount: 0, // Count of week navigations to prevent infinite loops
+        weekDataCache: {} // Cache scan data per week: { "2026-01-04": { events, availability, weekDays, timestamp } }
     };
     let clipboards = [];
     let findStats = { count: 0, index: 0 };
@@ -764,6 +801,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             state.regionOverrides = state.regionOverrides || {}; // Ensure initialized
             state.ignoredEvents = state.ignoredEvents || {}; // Ensure initialized
             state.recentAddresses = state.recentAddresses || []; // Ensure initialized
+            state.weekDataCache = state.weekDataCache || {}; // Ensure initialized
             addLog('Shared state loaded.');
         } else {
             addLog('No shared state found.');
@@ -2515,6 +2553,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                 state.parsedJobs = state.allEvents.map(ev => CONFIG.parseJobDetails(ev));
                 initJobSortingTab();
 
+                // Cache this week's data for quick access later
+                const weekKey = state.weekDays[0]; // Use first day as key
+                state.weekDataCache[weekKey] = {
+                    events: [...state.allEvents],
+                    availability: JSON.parse(JSON.stringify(state.availability)),
+                    weekDays: [...state.weekDays],
+                    dayCutoffs: [...(state.dayCutoffs || [])],
+                    timestamp: Date.now()
+                };
+                // Keep only last 4 weeks to avoid memory bloat
+                const cacheKeys = Object.keys(state.weekDataCache).sort();
+                while (cacheKeys.length > 4) {
+                    delete state.weekDataCache[cacheKeys.shift()];
+                }
+                addLog(`Cached week data for ${weekKey} (${Object.keys(state.weekDataCache).length} weeks cached)`);
+
                 addLog(`Scan complete. Extracted ${state.allEvents.length} events.`);
                 await debouncedSaveState();
                 renderUIFromState();
@@ -3347,6 +3401,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             pill.classList.add('active');
             mainPriority = pill.dataset.priority;
 
+            // Reset navigation state for fresh search
+            state.lastNavDirection = null;
+            state.weekNavCount = 0;
+            state.pendingWeekNav = null;
+            state.originalTargetDate = null;
+
             // Ensure calendar is open when clicking priority
             const targetTab = await ensureCalendarTabOpen();
             if (targetTab) {
@@ -3431,10 +3491,98 @@ document.addEventListener('DOMContentLoaded', async () => {
         return toISO(date);
     }
 
+    // Helper to find cached week data containing a specific date
+    function getCachedWeekContainingDate(targetDate) {
+        const targetISO = typeof targetDate === 'string' ? targetDate : toISO(targetDate);
+        for (const [weekKey, data] of Object.entries(state.weekDataCache || {})) {
+            const weekDays = data.weekDays || [];
+            if (weekDays.length > 0) {
+                const firstDay = weekDays[0];
+                const lastDay = weekDays[weekDays.length - 1];
+                if (targetISO >= firstDay && targetISO <= lastDay) {
+                    return { weekKey, data };
+                }
+            }
+        }
+        return null;
+    }
+
+    // Helper to calculate first available date from cached data
+    function getFirstAvailableFromCache(cachedData, city, region) {
+        if (!cachedData || !cachedData.events || !cachedData.weekDays) return null;
+
+        const today = startOfDay(new Date());
+        const tomorrowISO = toISO(new Date(today.getTime() + 86400000));
+
+        // Use cached data to find candidates
+        const candidates = findBestSlotStackingWithData(
+            city, cachedData.weekDays, cachedData.events, cachedData.availability, region
+        );
+
+        // Find first available from tomorrow onwards
+        const validCandidates = candidates.filter(c => c.dateStr >= tomorrowISO);
+        if (validCandidates.length === 0) return null;
+
+        return validCandidates.reduce((min, c) => c.dateStr < min ? c.dateStr : min, validCandidates[0].dateStr);
+    }
+
+    // Helper to get availability for a specific date from provided data
+    function getAvailabilityForDate(dateStr, allEvents, availability, region) {
+        const dailyEvents = allEvents.filter(e => localDayKey(e.start) === dateStr);
+        const totals = CONFIG.computeDailyTotals(dateStr, dailyEvents, availability, region);
+        const hasAnyBlockAvailable = Object.values(totals.perBlockRemaining || {}).some(v => v !== null && v > 0);
+        return {
+            netAvailable: totals.netAvailable,
+            hasAnyBlockAvailable,
+            perBlockRemaining: totals.perBlockRemaining
+        };
+    }
+
+    // Variant of findBestSlotStacking that uses provided data instead of state
+    function findBestSlotStackingWithData(city, weekDays, allEvents, availability, region) {
+        const today = startOfDay(new Date());
+        const tomorrow = new Date(today);
+        tomorrow.setDate(today.getDate() + 1);
+        const tomorrowISO = toISO(tomorrow);
+
+        const cityUpper = city.toUpperCase();
+        const candidates = [];
+
+        for (const dateStr of weekDays) {
+            if (dateStr < tomorrowISO) continue;
+
+            const dayAvail = getAvailabilityForDate(dateStr, allEvents, availability, region);
+            if (!dayAvail || dayAvail.netAvailable <= 0 || !dayAvail.hasAnyBlockAvailable) continue;
+
+            // Find existing jobs in this city on this date
+            const cityJobsOnDate = allEvents.filter(ev => {
+                const evCity = CONFIG.getCityFromEvent(ev);
+                return evCity && evCity.toUpperCase() === cityUpper && ev.dateStr === dateStr;
+            });
+
+            const stackSize = cityJobsOnDate.length;
+            for (const [block, remaining] of Object.entries(dayAvail.perBlockRemaining || {})) {
+                if (remaining > 0) {
+                    candidates.push({
+                        dateStr,
+                        block,
+                        remaining,
+                        stackSize,
+                        dayAvail
+                    });
+                }
+            }
+        }
+
+        return candidates;
+    }
+
     // Helper to filter candidates by priority
     // Logic: HIGH = first available day (not today)
     //        MED = HIGH + 2 days (with ±1 day fallback)
     //        LOW = HIGH + 4 days (with ±1 day fallback)
+    // IMPORTANT: Priorities are ALWAYS calculated from the first available date after today,
+    // regardless of which week the calendar is currently showing.
     function filterCandidatesByPriority(allCandidates, priority, city) {
         const today = startOfDay(new Date());
         const todayISO = toISO(today);
@@ -3450,57 +3598,145 @@ document.addEventListener('DOMContentLoaded', async () => {
         const firstCalDate = calendarDates[0];
         const lastCalDate = calendarDates[calendarDates.length - 1];
 
+        // Check if we're viewing a future week
+        const isViewingFutureWeek = firstCalDate > tomorrowISO;
+
+        // OPTIMIZATION: If on a future week, try to use cached data for current week
+        // This avoids navigating back just to calculate the first available date
+        if (isViewingFutureWeek && !justNavigated) {
+            const cachedCurrentWeek = getCachedWeekContainingDate(tomorrowISO);
+            if (cachedCurrentWeek) {
+                addLog(`Using cached data for current week (${cachedCurrentWeek.weekKey}) to calculate priorities`);
+                const cachedHighDate = getFirstAvailableFromCache(cachedCurrentWeek.data, city, state.currentRegion);
+
+                if (cachedHighDate) {
+                    // Calculate priority dates from cached HIGH
+                    const medDateISO = addDaysToDateStr(cachedHighDate, 2);
+                    const lowDateISO = addDaysToDateStr(cachedHighDate, 4);
+
+                    let targetDateISO;
+                    if (priority === 'high') targetDateISO = cachedHighDate;
+                    else if (priority === 'med') targetDateISO = medDateISO;
+                    else targetDateISO = lowDateISO;
+
+                    addLog(`Calculated from cache - HIGH: ${cachedHighDate}, MED: ${medDateISO}, LOW: ${lowDateISO}`);
+                    addLog(`Target for ${priority}: ${targetDateISO}`);
+
+                    // Store for use after navigation
+                    state.originalTargetDate = targetDateISO;
+
+                    // Check if target is on current (future) calendar - no navigation needed!
+                    if (targetDateISO >= firstCalDate && targetDateISO <= lastCalDate) {
+                        addLog(`Target date ${targetDateISO} is on current calendar, no navigation needed`);
+                        const allowFallback = (priority !== 'high');
+                        const result = findCandidatesForDate(allCandidates, targetDateISO, allowFallback);
+                        if (result.candidates.length > 0) {
+                            result.candidates.sort((a, b) => {
+                                if (a.stackSize > 0 && b.stackSize === 0) return -1;
+                                if (b.stackSize > 0 && a.stackSize === 0) return 1;
+                                return (b.remaining || 0) - (a.remaining || 0);
+                            });
+                            return { candidates: result.candidates, targetDate: result.actualDate, needsWeekChange: null, baselineDate: todayISO };
+                        }
+                        // Target on calendar but no candidates - return empty without navigating
+                        addLog(`Target on calendar but no candidates found for ${priority}`);
+                        return { candidates: [], targetDate: targetDateISO, needsWeekChange: null, baselineDate: todayISO };
+                    }
+
+                    // Target is not on this calendar, need to navigate
+                    if (targetDateISO < firstCalDate) {
+                        return { candidates: [], targetDate: targetDateISO, needsWeekChange: 'prev', baselineDate: todayISO };
+                    }
+                    if (targetDateISO > lastCalDate) {
+                        return { candidates: [], targetDate: targetDateISO, needsWeekChange: 'next', baselineDate: todayISO };
+                    }
+                } else {
+                    // Cache exists but no available dates found in cache
+                    addLog(`Cache found but no available dates for ${city} - navigating back to recalculate`);
+                }
+            }
+
+            // No cache available or no dates in cache, need to navigate back
+            addLog(`Calendar showing future week (${firstCalDate}), navigating back to calculate priorities`);
+            state.originalTargetDate = null;
+            return { candidates: [], targetDate: tomorrowISO, needsWeekChange: 'prev', baselineDate: todayISO };
+        }
+
+        // After navigating backward, if STILL on a future week (was multiple weeks ahead), keep going back
+        // IMPORTANT: Keep originalTargetDate preserved during multi-week navigation
+        if (isViewingFutureWeek && state.lastNavDirection === 'prev') {
+            addLog(`Still on future week (${firstCalDate}) after prev navigation, continuing back`);
+            // Don't clear originalTargetDate - we still need it after we reach the right week
+            return { candidates: [], targetDate: state.originalTargetDate || tomorrowISO, needsWeekChange: 'prev', baselineDate: todayISO };
+        }
+
         // If no candidates at all, recommend scanning next week
         if (allCandidates.length === 0) {
             if (justNavigated) {
                 addLog(`No candidates after ${state.lastNavDirection} navigation - stopping to prevent loop`);
-                return { candidates: [], targetDate: tomorrowISO, needsWeekChange: null, baselineDate: todayISO };
+                return { candidates: [], targetDate: state.originalTargetDate || tomorrowISO, needsWeekChange: null, baselineDate: todayISO };
             }
-            return { candidates: [], targetDate: tomorrowISO, needsWeekChange: 'next', baselineDate: todayISO };
+            return { candidates: [], targetDate: state.originalTargetDate || tomorrowISO, needsWeekChange: 'next', baselineDate: todayISO };
         }
 
-        // Step 1: Find HIGH (first available date from tomorrow onwards)
-        const highDateISO = findFirstAvailableDate(allCandidates);
-
-        if (!highDateISO) {
-            // No availability from tomorrow onwards on this calendar
-            if (justNavigated) {
-                addLog(`No HIGH priority candidates after ${state.lastNavDirection} navigation - stopping to prevent loop`);
-                return { candidates: [], targetDate: tomorrowISO, needsWeekChange: null, baselineDate: todayISO };
-            }
-            return { candidates: [], targetDate: tomorrowISO, needsWeekChange: 'next', baselineDate: todayISO };
-        }
-
-        addLog(`First available date (HIGH): ${highDateISO}`);
-
-        // Step 2: Calculate MED and LOW based on HIGH
-        const medDateISO = addDaysToDateStr(highDateISO, 2);  // HIGH + 2 days
-        const lowDateISO = addDaysToDateStr(highDateISO, 4);  // HIGH + 4 days
-
-        addLog(`Priority dates - HIGH: ${highDateISO}, MED: ${medDateISO}, LOW: ${lowDateISO}`);
-
-        // Step 3: Get target date based on selected priority
+        // If we have a stored target date from before navigation, use it directly
+        // This prevents recalculating priorities after navigating to a new week
         let targetDateISO;
-        if (priority === 'high') {
-            targetDateISO = highDateISO;
-        } else if (priority === 'med') {
-            targetDateISO = medDateISO;
+        if (justNavigated && state.originalTargetDate) {
+            targetDateISO = state.originalTargetDate;
+            addLog(`Using stored target date after navigation: ${targetDateISO}`);
         } else {
-            targetDateISO = lowDateISO;
+            // Fresh search OR just navigated back to current week - calculate priorities normally
+            // Step 1: Find HIGH (first available date from tomorrow onwards)
+            const highDateISO = findFirstAvailableDate(allCandidates);
+
+            if (!highDateISO) {
+                // No availability from tomorrow onwards on this calendar
+                if (justNavigated) {
+                    addLog(`No HIGH priority candidates after ${state.lastNavDirection} navigation - stopping to prevent loop`);
+                    return { candidates: [], targetDate: state.originalTargetDate || tomorrowISO, needsWeekChange: null, baselineDate: todayISO };
+                }
+                return { candidates: [], targetDate: tomorrowISO, needsWeekChange: 'next', baselineDate: todayISO };
+            }
+
+            addLog(`First available date (HIGH): ${highDateISO}`);
+
+            // Step 2: Calculate MED and LOW based on HIGH
+            const medDateISO = addDaysToDateStr(highDateISO, 2);  // HIGH + 2 days
+            const lowDateISO = addDaysToDateStr(highDateISO, 4);  // HIGH + 4 days
+
+            addLog(`Priority dates - HIGH: ${highDateISO}, MED: ${medDateISO}, LOW: ${lowDateISO}`);
+
+            // Step 3: Get target date based on selected priority
+            if (priority === 'high') {
+                targetDateISO = highDateISO;
+            } else if (priority === 'med') {
+                targetDateISO = medDateISO;
+            } else {
+                targetDateISO = lowDateISO;
+            }
+
+            // Store the target date for use after navigation
+            state.originalTargetDate = targetDateISO;
+            addLog(`Stored target date for ${priority} priority: ${targetDateISO}`);
         }
 
         // Step 4: Check if target date is on current calendar
+        // Only stop if we already tried navigating in the SAME direction (prevents loops)
+        // But allow: back (to calculate priorities) → forward (to reach target)
         if (targetDateISO < firstCalDate) {
-            if (justNavigated) {
-                addLog(`Target date ${targetDateISO} before calendar after navigation - stopping`);
+            // Need to go back - only stop if we already went back
+            if (state.lastNavDirection === 'prev') {
+                addLog(`Target date ${targetDateISO} before calendar after prev navigation - stopping`);
                 return { candidates: [], targetDate: targetDateISO, needsWeekChange: null, baselineDate: todayISO };
             }
             return { candidates: [], targetDate: targetDateISO, needsWeekChange: 'prev', baselineDate: todayISO };
         }
 
         if (targetDateISO > lastCalDate) {
-            if (justNavigated) {
-                addLog(`Target date ${targetDateISO} after calendar after navigation - stopping`);
+            // Need to go forward - only stop if we already went forward
+            if (state.lastNavDirection === 'next') {
+                addLog(`Target date ${targetDateISO} after calendar after next navigation - stopping`);
                 return { candidates: [], targetDate: targetDateISO, needsWeekChange: null, baselineDate: todayISO };
             }
             return { candidates: [], targetDate: targetDateISO, needsWeekChange: 'next', baselineDate: todayISO };
@@ -3536,6 +3772,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
+        // Guard: If we're navigating and this isn't the follow-up scan callback, skip
+        // This prevents multiple calls from triggering duplicate navigations
+        if (state.pendingWeekNav && state.lastWeekDaysHash) {
+            const currentHash = (state.weekDays || []).join(',');
+            if (currentHash === state.lastWeekDaysHash) {
+                addLog(`Skipping recommendation - navigation in progress, waiting for scan`);
+                return;
+            }
+        }
+
         const cityList = CONFIG.resolveCityCandidatesFromInput(text);
         if (!cityList.length) {
             showToast("City not found");
@@ -3543,7 +3789,44 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         const primaryCity = cityList[0];
-        const region = CONFIG.getRegionForCity(primaryCity);
+        let region = CONFIG.getRegionForCity(primaryCity);
+
+        // If city not in any region, prompt user to select one
+        if (!region) {
+            const selectedRegion = await promptForCityRegion(primaryCity);
+            if (selectedRegion) {
+                region = selectedRegion;
+
+                // Save the city to the selected region
+                try {
+                    // Save to Google Sheet
+                    await appendCityToSheet(primaryCity, selectedRegion);
+
+                    // Save to local storage as backup
+                    const data = await chrome.storage.sync.get(DYNAMIC_CITIES_KEY);
+                    const currentDynamicCities = data[DYNAMIC_CITIES_KEY] || { PHX: [], NORTH: [], SOUTH: [] };
+
+                    if (!currentDynamicCities[selectedRegion]) currentDynamicCities[selectedRegion] = [];
+                    if (!currentDynamicCities[selectedRegion].includes(primaryCity)) {
+                        currentDynamicCities[selectedRegion].push(primaryCity);
+                        await chrome.storage.sync.set({ [DYNAMIC_CITIES_KEY]: currentDynamicCities });
+                        userAddedCities = currentDynamicCities;
+                    }
+
+                    // Also add to CONFIG whitelist so it works immediately
+                    if (CONFIG.REGION_CITY_WHITELISTS[selectedRegion]) {
+                        CONFIG.REGION_CITY_WHITELISTS[selectedRegion].add(primaryCity.toUpperCase());
+                    }
+
+                    showToast(`${primaryCity} added to ${selectedRegion} region`);
+                } catch (e) {
+                    console.error('Error saving city:', e);
+                    showToast(`${primaryCity} will be used for ${selectedRegion} (not saved)`);
+                }
+            }
+            // If user skipped, still continue but without region filtering
+        }
+
         if (region) state.currentRegion = region;
         state.highlightedCity = primaryCity;
         state.addressInput = text; // Save address to state so it persists
@@ -3556,15 +3839,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!isFollowUpAfterNavigation) {
             state.lastNavDirection = null;
             state.weekNavCount = 0; // Reset navigation count for fresh searches
+            state.originalTargetDate = null; // Clear stored target date for fresh search
+            state.lastWeekDaysHash = null; // Clear navigation guard
         }
 
         // Clear pendingWeekNav now that we've checked it
         if (state.pendingWeekNav) {
             state.pendingWeekNav = null;
+            state.lastWeekDaysHash = null; // Navigation complete, clear guard
         }
 
-        // Hard limit: prevent more than 2 week navigations per search
-        const MAX_WEEK_NAVS = 2;
+        // Hard limit: prevent more than 5 week navigations per search
+        // Increased from 2 to handle being multiple weeks ahead (need to nav back to current week)
+        const MAX_WEEK_NAVS = 5;
         if (state.weekNavCount >= MAX_WEEK_NAVS) {
             addLog(`Max week navigations (${MAX_WEEK_NAVS}) reached - stopping to prevent loop`);
             state.weekNavCount = 0;
@@ -3607,11 +3894,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Handle week navigation needed
         if (result.needsWeekChange) {
+            const newNavCount = (state.weekNavCount || 0) + 1;
+
+            // Prevent infinite loops - max 4 week navigations
+            if (newNavCount > 4) {
+                addLog(`Max navigation count (4) reached - stopping to prevent loop`);
+                state.lastNavDirection = null;
+                state.weekNavCount = 0;
+                state.pendingWeekNav = null;
+                showToast("Could not find slots - please try a different date");
+                return;
+            }
+
             state.recoCandidates = [];
             state.recoIndex = 0;
             state.pendingWeekNav = result.needsWeekChange; // Store for UI indicator
             state.lastNavDirection = result.needsWeekChange; // Track navigation to prevent loops
-            state.weekNavCount = (state.weekNavCount || 0) + 1; // Increment navigation count
+            state.weekNavCount = newNavCount; // Increment navigation count
+            state.lastWeekDaysHash = (state.weekDays || []).join(','); // Store hash to detect when scan completes
             addLog(`Week navigation #${state.weekNavCount}: ${result.needsWeekChange}`);
             debouncedSaveState();
             renderUIFromState();
@@ -3705,6 +4005,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             const inputValue = addrInput?.value?.trim();
             if (!inputValue) return;
 
+            // Show loading state on Go button
+            const originalBtnContent = addrGoBtn.innerHTML;
+            addrGoBtn.innerHTML = '<span class="btn-spinner"></span>';
+            addrGoBtn.disabled = true;
+
+            try {
             // Check if input is a phone number
             const phoneDigits = detectPhoneNumber(inputValue);
             if (phoneDigits) {
@@ -3748,6 +4054,59 @@ document.addEventListener('DOMContentLoaded', async () => {
                         let earthTab = null;
                         let geminiTab = null;
                         let jobsTab = null;
+
+                        // Lookup APN for the address
+                        let apnResult = null;
+                        const cityMatch = CONFIG.findCityInString(verifiedAddress);
+                        if (cityMatch && cityMatch.city) {
+                            addLog(`Looking up APN for ${verifiedAddress} in ${cityMatch.city}...`);
+                            apnResult = await CONFIG.lookupAPN(verifiedAddress, cityMatch.city);
+                            if (apnResult.success) {
+                                const ownerInfo = apnResult.owner ? `, Owner: ${apnResult.owner}` : '';
+                                addLog(`Found APN: ${apnResult.apn}${ownerInfo} (${apnResult.county})`);
+                            } else {
+                                addLog(`APN lookup: ${apnResult.error || 'not found'}`);
+                            }
+                        } else {
+                            addLog('Could not determine city for APN lookup');
+                        }
+
+                        // Build the message to send to Gemini (address + APN + owner if found)
+                        let geminiMessage = verifiedAddress;
+                        if (apnResult && apnResult.success) {
+                            geminiMessage = `${verifiedAddress}\nAPN: ${apnResult.apn}`;
+                            if (apnResult.owner) {
+                                geminiMessage += `\nOwner: ${apnResult.owner}`;
+                            }
+                        }
+
+                        // Add APN info to Notes section (prepend to existing notes)
+                        if (apnResult && apnResult.success) {
+                            const dockNoteInput = document.getElementById("dock-note-input");
+                            if (dockNoteInput) {
+                                // Build the property info block
+                                let propertyInfo = `<div><strong>${verifiedAddress}</strong></div>`;
+                                propertyInfo += `<div>APN: ${apnResult.apn}</div>`;
+                                if (apnResult.owner) {
+                                    propertyInfo += `<div>Owner: ${apnResult.owner}</div>`;
+                                }
+                                propertyInfo += `<div>---</div>`;
+
+                                // Get existing notes content
+                                const existingContent = dockNoteInput.innerHTML.trim();
+
+                                // Prepend new info to existing notes
+                                if (existingContent && existingContent !== '<br>') {
+                                    dockNoteInput.innerHTML = propertyInfo + existingContent;
+                                } else {
+                                    dockNoteInput.innerHTML = propertyInfo;
+                                }
+
+                                // Trigger input event to save to storage
+                                dockNoteInput.dispatchEvent(new Event('input', { bubbles: true }));
+                                addLog('Added property info to Notes');
+                            }
+                        }
 
                         // Find or create Google Earth tab in target window (reuse existing if found)
                         if (settings.search_google_earth !== false) {
@@ -3936,7 +4295,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                         }, 1000);
                                     }
                                 },
-                                args: [verifiedAddress]
+                                args: [geminiMessage]
                             }).then(result => {
                                 addLog(`Gemini paste script executed successfully`);
                             }).catch(err => {
@@ -4641,6 +5000,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 await runMainRecommendation();
                 updateGoButtonState();
             }
+            } finally {
+                // Restore Go button state
+                addrGoBtn.innerHTML = originalBtnContent;
+                addrGoBtn.disabled = false;
+            }
         });
     }
 
@@ -4662,6 +5026,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Update button state when input changes
         addrInput.addEventListener("input", (e) => {
             const value = e.target.value.trim();
+
+            // Always save input value to state so it persists through rescans
+            state.addressInput = e.target.value; // Save raw value (not trimmed) to preserve spaces while typing
+            debouncedSaveState();
+
             updateAddressClearButton();
             updateGoButtonState();
 
@@ -6639,8 +7008,102 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // Brief wait before next step
                     await new Promise(r => setTimeout(r, 1000));
 
-                    // Step 4: Edit the calendar event (runs in background)
-                    addBatchLog('Step 4: Adding rep to calendar event...');
+                    // Step 4: Set job owner on the job tab (runs in background)
+                    addBatchLog('Step 4: Setting job owner...');
+
+                    // Wait for job page to fully load before attempting to set owner
+                    await new Promise(r => setTimeout(r, 3000));
+
+                    const maxJobOwnerAttempts = 3;
+                    let jobOwnerSet = false;
+
+                    for (let attempt = 1; attempt <= maxJobOwnerAttempts && !jobOwnerSet; attempt++) {
+                        try {
+                            // First check if rep is already the job owner
+                            const jobInfoBefore = await sendMessageToTab(jobTabId, { type: 'GET_JOB_INFO' });
+                            const currentOwner = jobInfoBefore?.info?.jobOwner || '';
+
+                            // Check if the current owner matches the rep (case-insensitive, handle partial matches)
+                            const repNameLower = apt.rep.toLowerCase();
+                            const currentOwnerLower = currentOwner.toLowerCase();
+
+                            if (currentOwnerLower === repNameLower || currentOwnerLower.includes(repNameLower) || repNameLower.includes(currentOwnerLower)) {
+                                addBatchLog(`Job owner already set to ${currentOwner}`, 'success');
+                                jobOwnerSet = true;
+                                break;
+                            }
+
+                            addBatchLog(`Attempt ${attempt}: Current owner "${currentOwner}", setting to "${apt.rep}"...`);
+
+                            // Set the job owner
+                            const jobOwnerResult = await sendMessageToTab(jobTabId, {
+                                type: 'SELECT_JOB_OWNER',
+                                repName: apt.rep
+                            });
+
+                            if (!jobOwnerResult || !jobOwnerResult.ok) {
+                                addBatchLog(`Attempt ${attempt}: Could not set job owner - ${jobOwnerResult?.error || 'unknown'}`, 'error');
+                                if (attempt < maxJobOwnerAttempts) {
+                                    await new Promise(r => setTimeout(r, 2000));
+                                }
+                                continue;
+                            }
+
+                            // Wait for the change to be saved
+                            await new Promise(r => setTimeout(r, 1500));
+
+                            // Verify the job owner was set correctly
+                            const jobInfoAfter = await sendMessageToTab(jobTabId, { type: 'GET_JOB_INFO' });
+                            const newOwner = jobInfoAfter?.info?.jobOwner || '';
+                            const newOwnerLower = newOwner.toLowerCase();
+
+                            if (newOwnerLower === repNameLower || newOwnerLower.includes(repNameLower) || repNameLower.includes(newOwnerLower)) {
+                                addBatchLog(`Job owner confirmed: ${newOwner}`, 'success');
+                                jobOwnerSet = true;
+                            } else {
+                                addBatchLog(`Attempt ${attempt}: Verification failed - owner is "${newOwner}", expected "${apt.rep}"`, 'error');
+                                if (attempt < maxJobOwnerAttempts) {
+                                    await new Promise(r => setTimeout(r, 2000));
+                                }
+                            }
+                        } catch (jobOwnerErr) {
+                            addBatchLog(`Attempt ${attempt}: Job owner step failed - ${jobOwnerErr.message}`, 'error');
+                            if (attempt < maxJobOwnerAttempts) {
+                                await new Promise(r => setTimeout(r, 2000));
+                            }
+                        }
+                    }
+
+                    if (!jobOwnerSet) {
+                        addBatchLog(`Warning: Could not confirm job owner after ${maxJobOwnerAttempts} attempts`, 'error');
+                    }
+
+                    // Check report status and close job tab if conditions are met
+                    try {
+                        const finalJobInfo = await sendMessageToTab(jobTabId, { type: 'GET_JOB_INFO' });
+                        const reportStatus = finalJobInfo?.info?.reportStatus || '';
+
+                        addBatchLog(`Report status: ${reportStatus || 'unknown'}`);
+
+                        // Close the job tab if rep was assigned AND report is pending or complete
+                        if (jobOwnerSet && (reportStatus === 'pending' || reportStatus === 'complete')) {
+                            addBatchLog('Closing job tab (report is ready)...');
+                            await chrome.tabs.remove(jobTabId);
+                            addBatchLog('Job tab closed', 'success');
+                        } else if (!jobOwnerSet) {
+                            addBatchLog('Keeping job tab open (rep not confirmed)');
+                        } else {
+                            addBatchLog(`Keeping job tab open (report status: ${reportStatus || 'not ready'})`);
+                        }
+                    } catch (closeErr) {
+                        addBatchLog(`Note: Could not check/close job tab - ${closeErr.message}`);
+                    }
+
+                    // Brief wait after job owner step
+                    await new Promise(r => setTimeout(r, 1000));
+
+                    // Step 5: Edit the calendar event (runs in background)
+                    addBatchLog('Step 5: Adding rep to calendar event...');
                     await new Promise(r => setTimeout(r, 500));
 
                     // Find the event again and click Edit

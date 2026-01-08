@@ -2101,6 +2101,17 @@
       }
     }
 
+    /* Go Button Spinner */
+    .btn-spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
     @keyframes pulse {
       0%, 100% {
         transform: scale(1);
@@ -3009,6 +3020,36 @@ Available:
 
     <!-- Toast Notification -->
     <div id="toast" class="toast">Saved</div>
+
+    <!-- Unknown City Region Selection Modal -->
+    <div id="unknown-city-modal" class="modal hidden">
+      <div class="modal-content" style="max-width: 320px;">
+        <div class="modal-header">
+          <span class="modal-title">📍 New City Detected</span>
+          <button id="close-unknown-city-modal" class="modal-close">&times;</button>
+        </div>
+        <div style="margin-bottom: 16px; font-size: 0.9rem; color: var(--text-muted);">
+          <strong id="unknown-city-name" style="color: var(--text-main);"></strong> isn't in our database yet.
+          <br><br>Which region does this city belong to?
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <button class="btn" id="unknown-city-phx" style="width: 100%; justify-content: center;">
+            🌵 Greater Phoenix (PHX)
+          </button>
+          <button class="btn secondary" id="unknown-city-north" style="width: 100%; justify-content: center;">
+            🏔️ Up North (Flagstaff, Sedona, etc.)
+          </button>
+          <button class="btn secondary" id="unknown-city-south" style="width: 100%; justify-content: center;">
+            🌴 Down South (Tucson, Sierra Vista, etc.)
+          </button>
+        </div>
+        <div style="margin-top: 12px; text-align: center;">
+          <button id="unknown-city-skip" class="btn ghost" style="font-size: 0.8rem; color: var(--text-muted);">
+            Skip (don't save city)
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- Batch Logs Modal -->
     <div id="batch-logs-modal" class="modal hidden">

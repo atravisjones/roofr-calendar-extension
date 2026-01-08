@@ -4901,7 +4901,8 @@ if (window.__isRoofrJobPage && !window.__roofrJobAutomationLoaded) {
       address: null,
       jobOwner: null,
       jobId: null,
-      contactName: null
+      contactName: null,
+      reportStatus: null
     };
 
     // Get address from page title/header
@@ -4933,6 +4934,27 @@ if (window.__isRoofrJobPage && !window.__roofrJobAutomationLoaded) {
     const contactNameEl = document.querySelector('[class*="contact-name"], [data-testid*="contact"]');
     if (contactNameEl) {
       info.contactName = contactNameEl.textContent?.trim();
+    }
+
+    // Get Roofr report status from the tags (e.g., "Complete", "Pending", "No proposals")
+    // Look for data-testid="reports-tag" or data-testid="proposals-tag"
+    const reportTag = document.querySelector('[data-testid="reports-tag"]');
+    const proposalsTag = document.querySelector('[data-testid="proposals-tag"]');
+
+    if (reportTag) {
+      info.reportStatus = reportTag.textContent?.trim().toLowerCase();
+    } else if (proposalsTag) {
+      info.reportStatus = proposalsTag.textContent?.trim().toLowerCase();
+    } else {
+      // Fallback: look for status text in spans with roofr-tag class
+      const statusTags = document.querySelectorAll('span[class*="roofr-tag"]');
+      for (const tag of statusTags) {
+        const text = tag.textContent?.trim().toLowerCase();
+        if (text === 'complete' || text === 'pending' || text === 'no proposals' || text === 'in progress') {
+          info.reportStatus = text;
+          break;
+        }
+      }
     }
 
     return info;

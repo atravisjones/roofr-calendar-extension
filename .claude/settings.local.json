@@ -23,7 +23,9 @@
       "Bash(git branch:*)",
       "Bash(git remote add:*)",
       "Bash(git push:*)",
-      "Bash(git tag:*)"
+      "Bash(git tag:*)",
+      "Bash(node scripts/bump-version.js:*)",
+      "Bash(node scripts/bump-version.cjs:*)"
     ],
     "deny": [],
     "ask": []

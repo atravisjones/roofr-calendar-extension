@@ -311,13 +311,6 @@
       position: relative;
     }
 
-    /* Hard-lock the toggle in center */
-    .actions-bar .callrail-toggle {
-      position: absolute;
-      left: 50%;
-      transform: translateX(-50%);
-    }
-
     /* Responsive adjustments for narrow screens */
     @media (max-width: 380px) {
       .nav-tab {
@@ -903,7 +896,8 @@
     }
 
     .reco-reason {
-      margin-top: 8px;
+      margin-top: 0;
+      margin-bottom: 10px;
       padding: 10px 12px;
       background: linear-gradient(135deg, #fefce8 0%, #fef9c3 100%);
       border-radius: 6px;
@@ -2386,8 +2380,8 @@
             Scan
           </button>
 
-          <!-- CallRail Toggle with Active Calls Dropdown (Centered - absolute positioned) -->
-          <div class="callrail-toggle" style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
+          <!-- CTM Toggle with Active Calls Dropdown -->
+          <div class="ctm-toggle-section" style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
             <div class="active-calls-dropdown" style="position: relative;">
               <button id="openActiveCallsBtn" class="btn-icon" title="View active calls" style="padding: 4px; cursor: pointer; position: relative;">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -2402,8 +2396,8 @@
                 </div>
               </div>
             </div>
-            <label class="switch" style="margin: 0;" title="CallRail Auto-Search">
-              <input type="checkbox" id="callrail-toggle">
+            <label class="switch" style="margin: 0;" title="CTM Auto-Search">
+              <input type="checkbox" id="ctm-toggle">
               <span class="slider"></span>
             </label>
             <span id="assigned-rep-display" class="assigned-rep-name" title="Assigned rep from job">--</span>
@@ -2459,12 +2453,25 @@
                 </div>
                 <button id="addrGoBtn" class="btn">Go</button>
               </div>
-              <div class="priority-row">
+              <div class="priority-row" style="flex-wrap: wrap; gap: 8px;">
                 <span class="priority-label">Priority:</span>
                 <div class="priority-pills">
                   <button class="priority-pill" data-priority="high" title="Tomorrow (+1 day)">High</button>
                   <button class="priority-pill" data-priority="med" title="+3 days from today">Med</button>
                   <button class="priority-pill" data-priority="low" title="+5 days from today">Low</button>
+                </div>
+                <div class="skill-selector" style="display: flex; align-items: center; gap: 6px;">
+                  <span class="priority-label">Job Type:</span>
+                  <select id="skillSelect" style="padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--text-main); font-size: 0.85rem;">
+                    <option value="">Any</option>
+                    <option value="SHINGLE">Shingle</option>
+                    <option value="TILE">Tile</option>
+                    <option value="METAL">Metal</option>
+                    <option value="FLAT">Flat</option>
+                    <option value="COMMERCIAL">Commercial</option>
+                    <option value="INSURANCE">Insurance</option>
+                    <option value="REPAIR">Repair</option>
+                  </select>
                 </div>
               </div>
             </div>
@@ -2613,6 +2620,16 @@ Available:
             <button id="run-batch-automation" class="btn" style="width: 100%; padding: 12px; display: none;">
               Run Batch Automation
             </button>
+
+            <!-- Automation Control Buttons -->
+            <div id="batch-control-buttons" style="display: none; gap: 8px; margin-top: 8px;">
+              <button id="stop-batch-automation" class="btn" style="flex: 1; padding: 10px; background: var(--danger, #ef4444); border: none;">
+                Stop Automation
+              </button>
+              <button id="restart-batch-automation" class="btn" style="flex: 1; padding: 10px; background: var(--warning, #f59e0b); border: none;">
+                Restart from Beginning
+              </button>
+            </div>
 
 
             <!-- Batch Log (click to expand) -->
@@ -2977,43 +2994,43 @@ Available:
       </div>
     </div>
 
-    <!-- CallRail CSR Selection Modal -->
-    <div id="callrail-csr-modal" class="modal hidden">
+    <!-- CTM CSR Selection Modal -->
+    <div id="ctm-csr-modal" class="modal hidden">
       <div class="modal-content" style="max-width: 300px;">
         <div class="modal-header">
           <span class="modal-title">📞 Who's Taking Calls?</span>
-          <button id="close-callrail-csr-modal" class="modal-close">&times;</button>
+          <button id="close-ctm-csr-modal" class="modal-close">&times;</button>
         </div>
         <div style="margin-bottom: 16px; font-size: 0.9rem; color: var(--text-muted);">
           Select who will be handling incoming calls:
         </div>
         <div style="margin-bottom: 12px;">
           <label style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-bottom: 4px;">CSR</label>
-          <select id="callrail-csr-select" style="width: 100%; padding: 10px; font-size: 1rem; font-weight: 600;">
+          <select id="ctm-csr-select" style="width: 100%; padding: 10px; font-size: 1rem; font-weight: 600;">
             <option value="">-- Select CSR --</option>
           </select>
         </div>
         <div style="margin-bottom: 12px;">
           <label style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Production</label>
-          <select id="callrail-production-select" style="width: 100%; padding: 10px; font-size: 1rem; font-weight: 600;">
+          <select id="ctm-production-select" style="width: 100%; padding: 10px; font-size: 1rem; font-weight: 600;">
             <option value="">-- Select Production --</option>
           </select>
         </div>
         <div style="margin-bottom: 12px;">
           <label style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Insurance</label>
-          <select id="callrail-insurance-select" style="width: 100%; padding: 10px; font-size: 1rem; font-weight: 600;">
+          <select id="ctm-insurance-select" style="width: 100%; padding: 10px; font-size: 1rem; font-weight: 600;">
             <option value="">-- Select Insurance --</option>
           </select>
         </div>
         <div style="margin-bottom: 16px;">
           <label style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Management</label>
-          <select id="callrail-mgmt-select" style="width: 100%; padding: 10px; font-size: 1rem; font-weight: 600;">
+          <select id="ctm-mgmt-select" style="width: 100%; padding: 10px; font-size: 1rem; font-weight: 600;">
             <option value="">-- Select Management --</option>
           </select>
         </div>
         <div style="display: flex; gap: 8px;">
-          <button id="callrail-csr-cancel" class="btn secondary" style="flex: 1;">Cancel</button>
-          <button id="callrail-csr-confirm" class="btn" style="flex: 1;">Start Calls</button>
+          <button id="ctm-csr-cancel" class="btn secondary" style="flex: 1;">Cancel</button>
+          <button id="ctm-csr-confirm" class="btn" style="flex: 1;">Start Calls</button>
         </div>
       </div>
     </div>

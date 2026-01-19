@@ -386,7 +386,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         showJobSortingTab: false,
         showPeopleTab: true,
         showClipboardTab: true,
-        showReportsTab: false,
+        showReportsTab: true,
         showQuickNotes: true,
         showFindBar: true
     };
@@ -832,21 +832,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 addLog('Settings changed in options page. Applying...');
                 applyUserPrefs();
             }
-            // Sync CallRail toggle state between popup/sidepanel and across browsers
-            if (changes.callrail_enabled !== undefined || changes.callrail_csr !== undefined) {
-                addLog('CallRail settings changed externally. Updating UI.');
-                const enabled = changes.callrail_enabled?.newValue;
-                const csr = changes.callrail_csr?.newValue;
-                if (callrailToggle && enabled !== undefined) {
-                    callrailToggle.checked = enabled;
-                }
-                // Update the display name
-                if (enabled && csr) {
-                    updateAssignedRepDisplay(csr);
-                } else if (enabled === false) {
-                    updateAssignedRepDisplay(null);
-                }
-            }
         }
     });
 
@@ -1255,11 +1240,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     function clearAllSuggested() {
         document.querySelectorAll(".block-item.suggested").forEach(el => {
             el.classList.remove("suggested");
-            const reason = el.querySelector('.reco-reason');
-            if (reason) reason.remove();
+        });
+        // Remove reco-reason from day cards (new location)
+        document.querySelectorAll(".day-card .reco-reason").forEach(el => {
+            el.remove();
         });
     }
-    function highlightSuggested(card, blockKey, reasonText) {
+    function highlightSuggested(card, blockKey, reasonText, availableReps = []) {
         clearAllSuggested();
         const target = card.querySelector(`.block-item[data-block-key="${blockKey}"]`);
         if (target) {
@@ -1268,6 +1255,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             const hasMultiple = state.recoCandidates && state.recoCandidates.length > 1;
             const currentIdx = state.recoIndex + 1;
             const total = state.recoCandidates ? state.recoCandidates.length : 0;
+
+            // Get the time slot label for display
+            const timeSlotEl = target.querySelector('.time-slot');
+            const timeSlotLabel = timeSlotEl ? timeSlotEl.textContent : blockKey;
 
             const reasonDiv = document.createElement('div');
             reasonDiv.className = 'reco-reason';
@@ -1278,7 +1269,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             row.style.alignItems = 'flex-start';
 
             const textDiv = document.createElement('div');
-            textDiv.innerHTML = `<strong>Recommendation ${hasMultiple ? `(${currentIdx}/${total})` : ''}:</strong> ${reasonText}`;
+
+            // Build recommendation text with rep info
+            let recoText = `<strong>Recommendation ${hasMultiple ? `(${currentIdx}/${total})` : ''}:</strong> ${timeSlotLabel} - ${reasonText}`;
+            if (availableReps.length > 0) {
+                // Show first names only for cleaner display
+                const repNames = availableReps.map(name => name.split(' ')[0]).join(', ');
+                recoText += `<br><span style="font-size: 0.8rem; opacity: 0.9;">Available: ${repNames}</span>`;
+            }
+            textDiv.innerHTML = recoText;
             row.appendChild(textDiv);
 
             if (hasMultiple) {
@@ -1306,9 +1305,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             reasonDiv.appendChild(row);
-            target.appendChild(reasonDiv);
 
-            target.scrollIntoView({ behavior: "smooth", block: "center" });
+            // Insert recommendation after the header instead of inside block-item
+            const header = card.querySelector('.card-header');
+            if (header) {
+                header.insertAdjacentElement('afterend', reasonDiv);
+            } else {
+                card.insertBefore(reasonDiv, card.firstChild);
+            }
+
+            card.scrollIntoView({ behavior: "smooth", block: "center" });
         }
     }
 
@@ -1828,7 +1834,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     /* ========= Region filter/render ========= */
-    function applyRegionFilter() {
+    async function applyRegionFilter() {
         addLog(`Applying region filter: ${state.currentRegion}`);
 
         const filteredEvents = (state.allEvents || []).filter(e => {
@@ -1848,7 +1854,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             const card = document.querySelector(`.day-card[data-date="${current.dateStr}"]`);
             if (card) {
                 setCardCollapsed(card, false);
-                highlightSuggested(card, current.blockKey, current.reason);
+
+                // If candidate has repName (from smart API), use that; otherwise fetch from sheet
+                let availableReps = [];
+                if (current.repName) {
+                    availableReps = [current.repName];
+                } else {
+                    const targetDate = new Date(current.dateStr + "T00:00");
+                    availableReps = await fetchRepsForSlot(targetDate, current.blockKey);
+                }
+
+                highlightSuggested(card, current.blockKey, current.reason, availableReps);
             }
         }
     }
@@ -2292,6 +2308,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
         });
+
+        // Allow clicking links inside the notes area (contenteditable captures clicks)
+        dockNoteInput.addEventListener('click', (e) => {
+            const link = e.target.closest('a');
+            if (link && link.href) {
+                e.preventDefault();
+                e.stopPropagation();
+                window.open(link.href, '_blank');
+            }
+        });
     }
 
     // === DOCK NOTES TEXT SIZE & FORMAT CONTROLS ===
@@ -2468,12 +2494,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (chrome.storage && chrome.storage.sync) {
             const keys = [
                 "NEXT_SHEET_ID", "AVAIL_RANGE_PHX", "AVAIL_RANGE_NORTH", "AVAIL_RANGE_SOUTH",
-                "search_google_earth", "search_gemini", "search_roofr"
+                "search_google_earth", "search_gemini", "search_roofr",
+                "ROUTING_API_URL", "ROUTING_API_KEY", "scanner_name"
             ];
             const defaults = {
+                NEXT_SHEET_ID: "1cFFEZNl7wXt40riZHnuZxGc1Zfm5lTlOz0rDCWGZJ0g",
+                AVAIL_RANGE_PHX: "I2:Q9",
+                AVAIL_RANGE_NORTH: "I18:Q25",
+                AVAIL_RANGE_SOUTH: "I10:Q17",
                 search_google_earth: true,
                 search_gemini: true,
-                search_roofr: true
+                search_roofr: true,
+                ROUTING_API_URL: '', // e.g., "https://your-api.vercel.app/api/v1"
+                ROUTING_API_KEY: '',
+                scanner_name: '' // Name of person using the scanner (for shared caching)
             };
             const result = await chrome.storage.sync.get(keys);
             settings = { ...defaults, ...settings, ...result };
@@ -2568,6 +2602,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                     delete state.weekDataCache[cacheKeys.shift()];
                 }
                 addLog(`Cached week data for ${weekKey} (${Object.keys(state.weekDataCache).length} weeks cached)`);
+
+                // Save to Routing API for sharing with coworkers (non-blocking)
+                saveCalendarCacheToAPI(
+                    weekKey,
+                    state.currentRegion,
+                    state.allEvents,
+                    state.availability,
+                    state.weekDays
+                ).catch(e => addLog(`API cache save failed: ${e.message}`, 'WARN'));
 
                 addLog(`Scan complete. Extracted ${state.allEvents.length} events.`);
                 await debouncedSaveState();
@@ -3364,9 +3407,51 @@ document.addEventListener('DOMContentLoaded', async () => {
         await sendFindCommand({ type: 'CLEAR_HIGHLIGHT' });
         await sendFindCommand({ type: 'HIGHLIGHT_CITY', city: primaryCity });
 
-        const candidates = findBestSlotStacking(
-            primaryCity, state.weekDays, state.allEvents, state.availability, state.currentRegion
-        );
+        // Try to get smart recommendations from the Routing API first
+        const address = state.addressInput || primaryCity;
+        const smartRecs = await getSmartRecommendations(address, [], state.weekDays, 'normal');
+
+        let candidates = [];
+
+        if (smartRecs && smartRecs.length > 0) {
+            // Convert API recommendations to our candidate format
+            candidates = smartRecs.map(rec => {
+                // Map API time slot to block key
+                const slotToBlock = { 'ts-1': 'B1', 'ts-2': 'B2', 'ts-3': 'B3', 'ts-4': 'B4' };
+                const blockKey = slotToBlock[rec.timeSlotId] || 'B1';
+
+                // Build reason text with rep name and skills
+                let reason = '';
+                if (rec.repName) {
+                    reason = `${rec.repName}`;
+                    if (rec.reasons && rec.reasons.length > 0) {
+                        reason += ` - ${rec.reasons.join(', ')}`;
+                    }
+                } else if (rec.reasons && rec.reasons.length > 0) {
+                    reason = rec.reasons.join(', ');
+                } else {
+                    reason = 'Available slot';
+                }
+
+                return {
+                    dateStr: rec.date,
+                    blockKey,
+                    stackSize: 0,
+                    reason,
+                    remaining: rec.remaining || 1,
+                    repName: rec.repName,
+                    repId: rec.repId,
+                    score: rec.score
+                };
+            });
+            addLog(`Using ${candidates.length} smart recommendations from API`);
+        } else {
+            // Fall back to local stacking algorithm
+            candidates = findBestSlotStacking(
+                primaryCity, state.weekDays, state.allEvents, state.availability, state.currentRegion
+            );
+            addLog(`Using ${candidates.length} local stacking recommendations`);
+        }
 
         state.recoCandidates = candidates;
         state.recoIndex = 0;
@@ -3375,6 +3460,48 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderUIFromState();
 
         if (candidates.length === 0) {
+            // Check if there's cached data for next week
+            const weekStart = state.weekDays[0];
+            const nextWeekData = await checkNextWeekAvailability(weekStart, state.currentRegion);
+
+            if (nextWeekData.hasCache) {
+                const scannedAgo = nextWeekData.scannedAt
+                    ? Math.round((Date.now() - new Date(nextWeekData.scannedAt).getTime()) / (1000 * 60))
+                    : null;
+                const timeAgoText = scannedAgo ? ` (scanned ${scannedAgo}m ago by ${nextWeekData.scannedBy})` : '';
+
+                const useNextWeek = confirm(
+                    `No availability in current week for ${primaryCity}.\n\n` +
+                    `Cached data found for next week${timeAgoText}.\n\n` +
+                    `Would you like to use the cached data to find availability?\n` +
+                    `(You can still navigate to verify)`
+                );
+
+                if (useNextWeek) {
+                    // Use the cached next week data
+                    const nextCandidates = findBestSlotStacking(
+                        primaryCity,
+                        nextWeekData.weekDays,
+                        nextWeekData.events,
+                        nextWeekData.availability,
+                        state.currentRegion
+                    );
+
+                    if (nextCandidates.length > 0) {
+                        // Mark these as from cached data
+                        nextCandidates.forEach(c => {
+                            c.reason = `[From cache] ${c.reason}`;
+                        });
+                        state.recoCandidates = nextCandidates;
+                        state.recoIndex = 0;
+                        debouncedSaveState();
+                        renderUIFromState();
+                        showToast(`Found ${nextCandidates.length} options in next week (cached)`);
+                        return;
+                    }
+                }
+            }
+
             alert(`No available capacity found for ${primaryCity} in the visible week.`);
         }
     }
@@ -4086,10 +4213,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                             if (dockNoteInput) {
                                 // Build the property info block
                                 let propertyInfo = `<div><strong>${verifiedAddress}</strong></div>`;
-                                propertyInfo += `<div>APN: ${apnResult.apn}</div>`;
-                                if (apnResult.owner) {
-                                    propertyInfo += `<div>Owner: ${apnResult.owner}</div>`;
+
+                                // APN as clickable link to county assessor
+                                if (apnResult.detailUrl) {
+                                    propertyInfo += `<div>APN: <a href="${apnResult.detailUrl}" target="_blank" style="color:#1a73e8;text-decoration:underline;">${apnResult.apn}</a></div>`;
+                                } else {
+                                    propertyInfo += `<div>APN: ${apnResult.apn}</div>`;
                                 }
+
+                                // Owner as clickable link to county assessor
+                                if (apnResult.owner && apnResult.detailUrl) {
+                                    propertyInfo += `<div>Owner: <a href="${apnResult.detailUrl}" target="_blank" style="color:#1a73e8;text-decoration:underline;">${apnResult.owner}</a></div>`;
+                                } else if (apnResult.owner) {
+                                    propertyInfo += `<div>Owner: ${apnResult.owner}</div>`;
+                                } else if (apnResult.detailUrl) {
+                                    // For counties without owner data (like Pima), show link to view info
+                                    propertyInfo += `<div>Owner: <a href="${apnResult.detailUrl}" target="_blank" style="color:#1a73e8;text-decoration:underline;">View on ${apnResult.county} site</a></div>`;
+                                }
+
                                 propertyInfo += `<div>---</div>`;
 
                                 // Get existing notes content
@@ -5098,7 +5239,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const group = container.closest('.people-group');
         const isRepsContainer = container.id === 'repsList';
-        const hasAvailabilityData = isRepsContainer && Object.keys(repAvailabilityStatus).length > 0;
+        // Always show availability UI for reps container, even if no data (shows all as unavailable)
+        const hasAvailabilityData = isRepsContainer;
 
         if (group) {
             const header = group.querySelector('.people-header');
@@ -5299,8 +5441,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             btn.className = "name-tag";
             btn.textContent = name;
 
-            // Apply desaturated styling for off reps
-            if (isRepsContainer && repAvailabilityStatus[name] === false) {
+            // Apply desaturated styling for off reps (false or undefined/no data)
+            if (isRepsContainer && repAvailabilityStatus[name] !== true) {
                 btn.classList.add('rep-off');
             }
 
@@ -5440,13 +5582,243 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    // Fetch reps available for a specific date and time slot (B1, B2, B3, B4)
+    async function fetchRepsForSlot(targetDate, blockKey) {
+        try {
+            const apiKey = CONFIG.apiKey;
+            const sheetId = settings.NEXT_SHEET_ID;
+            if (!apiKey || !sheetId) return [];
+
+            // Map block key to slot offset (1-4)
+            const slotOffsets = { 'B1': 1, 'B2': 2, 'B3': 3, 'B4': 4 };
+            const slotOffset = slotOffsets[blockKey];
+            if (!slotOffset) return [];
+
+            // Find the tab for the target date's week
+            const tabName = await discoverWeeklyTabNameForDate(targetDate);
+            if (!tabName) return [];
+
+            // Determine which day column to check (0=Monday, 6=Sunday)
+            const dayOfWeek = targetDate.getDay();
+            const monFirstIndex = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+            const checkColumn = monFirstIndex + 1; // B=1 (Monday), C=2 (Tuesday), etc.
+
+            // Fetch the entire sheet
+            const qTab = `'${tabName.replace(/'/g, "''")}'`;
+            const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(qTab)}?key=${encodeURIComponent(apiKey)}&valueRenderOption=UNFORMATTED_VALUE`;
+
+            const res = await fetch(url, { cache: "no-store" });
+            if (!res.ok) return [];
+            const data = await res.json();
+            const values = data.values || [];
+
+            const availableReps = [];
+
+            for (let i = 0; i < values.length; i++) {
+                const row = values[i] || [];
+                const cellA = String(row[0] || '').trim();
+
+                // Match rep name in column A (no colon = header row)
+                const matchedRep = PEOPLE_DATA.REPS.find(rep => {
+                    return cellA.includes(rep) && !cellA.includes(':');
+                });
+
+                if (matchedRep && (i + slotOffset) < values.length) {
+                    const timeSlotRow = values[i + slotOffset] || [];
+                    const cellValue = timeSlotRow[checkColumn];
+
+                    // Check if this specific slot is available
+                    if (cellValue === true) {
+                        availableReps.push(matchedRep);
+                    }
+                }
+            }
+
+            return availableReps;
+        } catch (e) {
+            addLog(`Error fetching reps for slot: ${e.message}`, 'ERROR');
+            return [];
+        }
+    }
+
+    // ============ ROUTING API INTEGRATION ============
+
+    // Save scanned calendar data to the Routing API for sharing with coworkers
+    async function saveCalendarCacheToAPI(weekStartISO, region, events, availability, weekDays) {
+        try {
+            const apiUrl = settings.ROUTING_API_URL;
+            const apiKey = settings.ROUTING_API_KEY;
+            if (!apiUrl) {
+                addLog('Routing API URL not configured, skipping cache save');
+                return false;
+            }
+
+            const response = await fetch(`${apiUrl}/sync/calendar-cache`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(apiKey ? { 'X-API-Key': apiKey } : {})
+                },
+                body: JSON.stringify({
+                    weekStartISO,
+                    region,
+                    events,
+                    availability,
+                    weekDays,
+                    scannedBy: settings.scanner_name || 'Unknown'
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`API error: ${response.statusText}`);
+            }
+
+            const result = await response.json();
+            addLog(`Calendar cache saved to API for ${weekStartISO} (${region})`);
+            return result.success;
+        } catch (e) {
+            addLog(`Error saving calendar cache to API: ${e.message}`, 'ERROR');
+            return false;
+        }
+    }
+
+    // Fetch cached calendar data from the Routing API
+    async function fetchCalendarCacheFromAPI(weekStartISO = null, region = null) {
+        try {
+            const apiUrl = settings.ROUTING_API_URL;
+            const apiKey = settings.ROUTING_API_KEY;
+            if (!apiUrl) {
+                return { caches: [] };
+            }
+
+            const params = new URLSearchParams();
+            if (weekStartISO) params.append('weekStartISO', weekStartISO);
+            if (region) params.append('region', region);
+
+            const response = await fetch(`${apiUrl}/sync/calendar-cache?${params.toString()}`, {
+                method: 'GET',
+                headers: {
+                    ...(apiKey ? { 'X-API-Key': apiKey } : {})
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error(`API error: ${response.statusText}`);
+            }
+
+            return await response.json();
+        } catch (e) {
+            addLog(`Error fetching calendar cache from API: ${e.message}`, 'ERROR');
+            return { caches: [] };
+        }
+    }
+
+    // Get list of cached weeks from the API (for checking availability without scanning)
+    async function fetchCachedWeeksFromAPI(region = null) {
+        try {
+            const apiUrl = settings.ROUTING_API_URL;
+            const apiKey = settings.ROUTING_API_KEY;
+            if (!apiUrl) {
+                return { weeks: [] };
+            }
+
+            const params = new URLSearchParams();
+            if (region) params.append('region', region);
+
+            const response = await fetch(`${apiUrl}/sync/calendar-cache/weeks?${params.toString()}`, {
+                method: 'GET',
+                headers: {
+                    ...(apiKey ? { 'X-API-Key': apiKey } : {})
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error(`API error: ${response.statusText}`);
+            }
+
+            return await response.json();
+        } catch (e) {
+            addLog(`Error fetching cached weeks from API: ${e.message}`, 'ERROR');
+            return { weeks: [] };
+        }
+    }
+
+    // Get smart recommendations from the Routing API (considers rep skills, proximity, workload)
+    async function getSmartRecommendations(address, requiredSkills = [], preferredDays = [], urgency = 'normal') {
+        try {
+            const apiUrl = settings.ROUTING_API_URL;
+            const apiKey = settings.ROUTING_API_KEY;
+            if (!apiUrl) {
+                addLog('Routing API URL not configured, using local stacking algorithm');
+                return null;
+            }
+
+            const response = await fetch(`${apiUrl}/appointments/recommend`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(apiKey ? { 'X-API-Key': apiKey } : {})
+                },
+                body: JSON.stringify({
+                    address,
+                    requiredSkills,
+                    preferredDays,
+                    urgency
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`API error: ${response.statusText}`);
+            }
+
+            const result = await response.json();
+            addLog(`Got ${result.recommendations?.length || 0} smart recommendations from API`);
+            return result.recommendations;
+        } catch (e) {
+            addLog(`Error getting smart recommendations: ${e.message}`, 'ERROR');
+            return null;
+        }
+    }
+
+    // Check for cached next week data when current week is full
+    async function checkNextWeekAvailability(currentWeekStart, region) {
+        try {
+            // Calculate next week's start date
+            const currentStart = new Date(currentWeekStart + 'T00:00');
+            const nextWeekStart = new Date(currentStart);
+            nextWeekStart.setDate(nextWeekStart.getDate() + 7);
+            const nextWeekISO = toISO(nextWeekStart);
+
+            // Check if we have cached data for next week
+            const cached = await fetchCalendarCacheFromAPI(nextWeekISO, region);
+            if (cached.caches && cached.caches.length > 0) {
+                const cache = cached.caches[0];
+                addLog(`Found cached next week data (${nextWeekISO}) from ${cache.scannedBy}`);
+                return {
+                    hasCache: true,
+                    weekStartISO: nextWeekISO,
+                    events: cache.events,
+                    availability: cache.availability,
+                    weekDays: cache.weekDays,
+                    scannedBy: cache.scannedBy,
+                    scannedAt: cache.scannedAt
+                };
+            }
+
+            return { hasCache: false, weekStartISO: nextWeekISO };
+        } catch (e) {
+            addLog(`Error checking next week availability: ${e.message}`, 'ERROR');
+            return { hasCache: false };
+        }
+    }
+
     async function loadPeopleLists() {
         if (chrome.storage && chrome.storage.sync) {
             const keys = ["PEOPLE_REPS", "PEOPLE_MGMT", "PEOPLE_CSRS"];
             const settings = await chrome.storage.sync.get(keys);
 
             // Check if stored data contains old removed reps or is missing new people and clear if so
-            const removedReps = ["Brandon Cook", "Brian Griggs", "Phil Merrell", "Ted Pear"];
+            const removedReps = ["Brandon Cook", "Brian Griggs", "Phil Merrell", "Ted Pear", "Kyle Ludewig", "William Yost"];
             const removedCSRs = ["Layla Fairfield"];
             const newMgmt = ["Andrew Clark"]; // New management members to check for
             let needsClear = false;
@@ -5483,6 +5855,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (settings.PEOPLE_CSRS) PEOPLE_DATA.CSRS = settings.PEOPLE_CSRS.split(',').map(s => s.trim()).filter(Boolean).sort();
             }
         }
+
+        // Initialize selected date to tomorrow (ensures date nav shows even if fetch fails)
+        initializeSelectedDate();
 
         // Fetch tomorrow's availability
         repAvailabilityStatus = await fetchTomorrowRepAvailability();
@@ -5922,7 +6297,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     show_job_sorting: false,
                     show_people: true,
                     show_clipboard: true,
-                    show_reports: false
+                    show_reports: true
                 }, () => {
                     chrome.storage.local.set({ tabs_visibility_migrated_v4: true });
                     console.log('[Popup] Migrated tab visibility: Scanner + People + Clipboard on, others off');
@@ -6189,12 +6564,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (chrome.storage && chrome.storage.sync) {
             const keys = [
                 "NEXT_SHEET_ID", "AVAIL_RANGE_PHX", "AVAIL_RANGE_NORTH", "AVAIL_RANGE_SOUTH",
-                "search_google_earth", "search_gemini", "search_roofr"
+                "search_google_earth", "search_gemini", "search_roofr",
+                "ROUTING_API_URL", "ROUTING_API_KEY", "scanner_name"
             ];
             const defaults = {
+                NEXT_SHEET_ID: "1cFFEZNl7wXt40riZHnuZxGc1Zfm5lTlOz0rDCWGZJ0g",
+                AVAIL_RANGE_PHX: "I2:Q9",
+                AVAIL_RANGE_NORTH: "I18:Q25",
+                AVAIL_RANGE_SOUTH: "I10:Q17",
                 search_google_earth: true,
                 search_gemini: true,
-                search_roofr: true
+                search_roofr: true,
+                ROUTING_API_URL: '', // e.g., "https://your-api.vercel.app/api/v1"
+                ROUTING_API_KEY: '',
+                scanner_name: '' // Name of person using the scanner (for shared caching)
             };
             const result = await chrome.storage.sync.get(keys);
             settings = { ...defaults, ...settings, ...result };
@@ -6446,7 +6829,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Send message to content script (with auto-injection if needed)
     async function sendReportsCommand(tabId, message) {
+        // Verify tab still exists before attempting operations
+        const tabExists = async () => {
+            try {
+                await chrome.tabs.get(tabId);
+                return true;
+            } catch {
+                return false;
+            }
+        };
+
         const injectAndRetry = async () => {
+            if (!await tabExists()) {
+                return { ok: false, error: 'Tab no longer exists' };
+            }
             addReportsLog("Injecting content script...");
             try {
                 // Clear the flag so the script re-initializes
@@ -6460,8 +6856,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const response = await chrome.tabs.sendMessage(tabId, message);
                 return response || { ok: false, error: 'No response after injection' };
             } catch (retryError) {
+                const errorMsg = retryError.message || String(retryError);
+                if (errorMsg.includes('No tab with id')) {
+                    return { ok: false, error: 'Tab was closed' };
+                }
                 console.error('[Reports] Injection failed:', retryError);
-                return { ok: false, error: `Failed to inject script: ${retryError.message}` };
+                return { ok: false, error: `Failed to inject script: ${errorMsg}` };
             }
         };
 
@@ -6643,6 +7043,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const batchProgressText = document.getElementById('batch-progress-text');
     const batchProgressBar = document.getElementById('batch-progress-bar');
     const batchLog = document.getElementById('batch-log');
+    const batchControlButtons = document.getElementById('batch-control-buttons');
+    const stopBatchBtn = document.getElementById('stop-batch-automation');
+    const restartBatchBtn = document.getElementById('restart-batch-automation');
 
     let parsedAppointments = [];
     let batchIsPaused = false;
@@ -6691,7 +7094,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     endTime: normalizeTime(endTime),
                     address: address,
                     fullLine: trimmedLine,
-                    status: 'pending'
+                    status: 'pending',
+                    calendarAdded: false,
+                    jobCardAdded: false
                 });
             }
         }
@@ -6789,8 +7194,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             const statusIcon = apt.status === 'done' ? '✓' : apt.status === 'error' ? '✗' : '○';
             const statusColor = apt.status === 'done' ? 'var(--success)' : apt.status === 'error' ? 'var(--danger)' : 'var(--text-muted)';
-            html += `<div style="margin-left: 12px; color: ${statusColor};" id="batch-apt-${i}">
-                ${statusIcon} ${apt.startTime}: ${apt.address}
+
+            // Checkbox icons for calendar and job card status
+            const calIcon = apt.calendarAdded ? '☑' : '☐';
+            const calColor = apt.calendarAdded ? 'var(--success)' : 'var(--text-muted)';
+            const jobIcon = apt.jobCardAdded ? '☑' : '☐';
+            const jobColor = apt.jobCardAdded ? 'var(--success)' : 'var(--text-muted)';
+
+            html += `<div style="margin-left: 12px; display: flex; align-items: center; gap: 8px;" id="batch-apt-${i}">
+                <span style="color: ${statusColor};">${statusIcon}</span>
+                <span style="color: ${calColor}; font-size: 12px;" title="Calendar Event">📅${calIcon}</span>
+                <span style="color: ${jobColor}; font-size: 12px;" title="Job Card">📋${jobIcon}</span>
+                <span style="color: ${statusColor};">${apt.startTime}: ${apt.address}</span>
             </div>`;
         }
         if (currentRep !== null) html += '</div>';
@@ -6860,9 +7275,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             batchIsRunning = true;
 
             clearBatchLog();
-            addBatchLog('Starting batch automation... (right-click to cancel)');
+            addBatchLog('Starting batch automation...');
             runBatchBtn.textContent = 'Pause Automation';
             runBatchBtn.style.background = 'var(--warning, #f59e0b)';
+
+            // Show control buttons
+            if (batchControlButtons) {
+                batchControlButtons.style.display = 'flex';
+            }
 
             // Get the calendar tab in target window only
             const calQueryOpts = { url: "*://app.roofr.com/*/calendar*" };
@@ -6875,6 +7295,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 runBatchBtn.textContent = 'Run Batch Automation';
                 runBatchBtn.style.background = '';
                 runBatchBtn.disabled = false;
+                if (batchControlButtons) batchControlButtons.style.display = 'none';
                 return;
             }
 
@@ -6932,8 +7353,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 addBatchLog(`Rep: ${apt.rep}, Time: ${apt.startTime}, Address: ${apt.address}`);
 
                 try {
-                    // Step 1: Find and click the calendar event (runs in background - no tab activation)
+                    // Step 1: Find and click the calendar event
                     addBatchLog('Step 1: Finding calendar event...');
+
+                    // Activate calendar tab to ensure DOM operations work properly
+                    try {
+                        await chrome.tabs.update(calendarTab.id, { active: true });
+                        addBatchLog('Activated calendar tab');
+                    } catch (activateErr) {
+                        addBatchLog(`Note: Could not activate calendar tab - ${activateErr.message}`);
+                    }
 
                     // On first appointment, give extra time for page and scripts to be ready
                     if (i === 0) {
@@ -6942,7 +7371,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         await new Promise(r => setTimeout(r, 500));
                     }
 
-                    // Send message to find and click the event (works on inactive tabs)
+                    // Send message to find and click the event
                     const findResult = await sendMessageToTab(calendarTab.id, {
                         type: 'BATCH_FIND_EVENT',
                         address: apt.address,
@@ -6995,13 +7424,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // Job tab opened in background (no focus stealing)
                     addBatchLog('Step 3: Job opened in new tab (running in background)');
 
-                    // Add job tab to the Reports tab group
+                    // Add job tab to the Reports tab group (with retry for race conditions)
                     if (reportsGroupId) {
-                        try {
-                            await chrome.tabs.group({ tabIds: [jobTabId], groupId: reportsGroupId });
-                            addBatchLog('Added job tab to Reports group');
-                        } catch (groupErr) {
-                            console.warn('[Batch] Could not add job tab to group:', groupErr);
+                        let groupRetries = 3;
+                        while (groupRetries > 0) {
+                            try {
+                                await chrome.tabs.group({ tabIds: [jobTabId], groupId: reportsGroupId });
+                                addBatchLog('Added job tab to Reports group');
+                                break;
+                            } catch (groupErr) {
+                                groupRetries--;
+                                if (groupErr.message?.includes('cannot be edited right now') && groupRetries > 0) {
+                                    // User may be dragging a tab - wait and retry
+                                    await new Promise(r => setTimeout(r, 500));
+                                } else if (groupRetries === 0) {
+                                    console.warn('[Batch] Could not add job tab to group after retries:', groupErr);
+                                }
+                            }
                         }
                     }
 
@@ -7016,12 +7455,61 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                     const maxJobOwnerAttempts = 3;
                     let jobOwnerSet = false;
+                    let addressVerified = false;
+
+                    // Helper function to normalize address for comparison
+                    const normalizeAddress = (addr) => {
+                        if (!addr) return '';
+                        return addr.toLowerCase()
+                            .replace(/[,.\-#]/g, ' ')
+                            .replace(/\s+/g, ' ')
+                            .trim();
+                    };
+
+                    // Extract key address parts for matching
+                    const getAddressParts = (addr) => {
+                        const normalized = normalizeAddress(addr);
+                        const parts = normalized.split(' ');
+                        // Get street number (first numeric part)
+                        const streetNum = parts.find(p => /^\d+$/.test(p)) || '';
+                        // Get street name words (non-numeric, non-directional, longer than 2 chars)
+                        const streetWords = parts.filter(p =>
+                            p.length > 2 &&
+                            !/^\d+$/.test(p) &&
+                            !['az', 'st', 'rd', 'ln', 'dr', 'ave', 'blvd', 'ct', 'cir', 'pl', 'way', 'n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].includes(p)
+                        );
+                        return { streetNum, streetWords };
+                    };
 
                     for (let attempt = 1; attempt <= maxJobOwnerAttempts && !jobOwnerSet; attempt++) {
                         try {
-                            // First check if rep is already the job owner
+                            // First get job info including address
                             const jobInfoBefore = await sendMessageToTab(jobTabId, { type: 'GET_JOB_INFO' });
                             const currentOwner = jobInfoBefore?.info?.jobOwner || '';
+                            const jobAddress = jobInfoBefore?.info?.address || '';
+
+                            // Verify address matches before proceeding
+                            if (!addressVerified) {
+                                const expectedParts = getAddressParts(apt.address);
+                                const actualParts = getAddressParts(jobAddress);
+
+                                // Check if street number matches
+                                const numMatch = expectedParts.streetNum === actualParts.streetNum;
+
+                                // Check if at least one street word matches
+                                const wordMatch = expectedParts.streetWords.some(w =>
+                                    actualParts.streetWords.some(aw => aw.includes(w) || w.includes(aw))
+                                );
+
+                                if (numMatch && wordMatch) {
+                                    addressVerified = true;
+                                    addBatchLog(`Address verified: "${jobAddress}"`, 'success');
+                                } else {
+                                    addBatchLog(`Address mismatch! Expected: "${apt.address}", Got: "${jobAddress}"`, 'error');
+                                    addBatchLog('Skipping job owner assignment - wrong job card', 'error');
+                                    break;
+                                }
+                            }
 
                             // Check if the current owner matches the rep (case-insensitive, handle partial matches)
                             const repNameLower = apt.rep.toLowerCase();
@@ -7030,6 +7518,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             if (currentOwnerLower === repNameLower || currentOwnerLower.includes(repNameLower) || repNameLower.includes(currentOwnerLower)) {
                                 addBatchLog(`Job owner already set to ${currentOwner}`, 'success');
                                 jobOwnerSet = true;
+                                apt.jobCardAdded = true;
                                 break;
                             }
 
@@ -7060,6 +7549,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             if (newOwnerLower === repNameLower || newOwnerLower.includes(repNameLower) || repNameLower.includes(newOwnerLower)) {
                                 addBatchLog(`Job owner confirmed: ${newOwner}`, 'success');
                                 jobOwnerSet = true;
+                                apt.jobCardAdded = true;
                             } else {
                                 addBatchLog(`Attempt ${attempt}: Verification failed - owner is "${newOwner}", expected "${apt.rep}"`, 'error');
                                 if (attempt < maxJobOwnerAttempts) {
@@ -7085,8 +7575,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                         addBatchLog(`Report status: ${reportStatus || 'unknown'}`);
 
-                        // Close the job tab if rep was assigned AND report is pending or complete
-                        if (jobOwnerSet && (reportStatus === 'pending' || reportStatus === 'complete')) {
+                        // Close the job tab if rep was assigned AND report is pending, complete, or processing
+                        const closeStatuses = ['pending', 'complete', 'processing'];
+                        if (jobOwnerSet && closeStatuses.includes(reportStatus)) {
                             addBatchLog('Closing job tab (report is ready)...');
                             await chrome.tabs.remove(jobTabId);
                             addBatchLog('Job tab closed', 'success');
@@ -7102,8 +7593,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // Brief wait after job owner step
                     await new Promise(r => setTimeout(r, 1000));
 
-                    // Step 5: Edit the calendar event (runs in background)
+                    // Step 5: Edit the calendar event
                     addBatchLog('Step 5: Adding rep to calendar event...');
+
+                    // Re-activate calendar tab before editing event (may have lost focus)
+                    try {
+                        await chrome.tabs.update(calendarTab.id, { active: true });
+                        addBatchLog('Re-activated calendar tab');
+                    } catch (activateErr) {
+                        addBatchLog(`Note: Could not activate calendar tab - ${activateErr.message}`);
+                    }
+
                     await new Promise(r => setTimeout(r, 500));
 
                     // Find the event again and click Edit
@@ -7117,7 +7617,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (!editResult || !editResult.ok) {
                         addBatchLog(`Warning: Could not edit event - ${editResult?.error || 'unknown'}`, 'error');
                     } else {
-                        addBatchLog('Rep added to calendar event', 'success');
+                        // Show CSR removal details if any
+                        if (editResult.csrsRemoved > 0) {
+                            addBatchLog(`Removed ${editResult.csrsRemoved} CSR(s) from event`, 'success');
+                        }
+                        if (editResult.details) {
+                            addBatchLog(`Details: ${editResult.details}`, 'info');
+                        }
+                        if (editResult.skipped) {
+                            addBatchLog(`Skipped: ${editResult.reason}`, 'info');
+                        } else {
+                            addBatchLog('Rep added to calendar event', 'success');
+                        }
+                        apt.calendarAdded = true;
                     }
 
                     apt.status = 'done';
@@ -7156,6 +7668,63 @@ document.addEventListener('DOMContentLoaded', async () => {
             runBatchBtn.textContent = 'Run Batch Automation';
             runBatchBtn.style.background = '';
             runBatchBtn.disabled = false;
+
+            // Hide control buttons
+            if (batchControlButtons) {
+                batchControlButtons.style.display = 'none';
+            }
+        });
+    }
+
+    // Stop button handler
+    if (stopBatchBtn) {
+        stopBatchBtn.addEventListener('click', () => {
+            if (batchIsRunning) {
+                batchIsCancelled = true;
+                batchIsPaused = false;
+                addBatchLog('Stopping automation...', 'error');
+                runBatchBtn.textContent = 'Stopping...';
+                runBatchBtn.style.background = 'var(--danger, #ef4444)';
+            }
+        });
+    }
+
+    // Restart button handler
+    if (restartBatchBtn) {
+        restartBatchBtn.addEventListener('click', async () => {
+            if (parsedAppointments.length === 0) {
+                alert('No appointments to restart');
+                return;
+            }
+
+            // If currently running, stop first
+            if (batchIsRunning) {
+                batchIsCancelled = true;
+                batchIsPaused = false;
+                addBatchLog('Stopping current run for restart...', 'info');
+
+                // Wait for the current run to stop
+                let waitCount = 0;
+                while (batchIsRunning && waitCount < 20) {
+                    await new Promise(r => setTimeout(r, 500));
+                    waitCount++;
+                }
+            }
+
+            // Reset all appointments to pending
+            for (const apt of parsedAppointments) {
+                apt.status = 'pending';
+                apt.calendarAdded = false;
+                apt.jobCardAdded = false;
+            }
+            renderParsedAppointments();
+
+            addBatchLog('\n=== Restarting automation from beginning ===', 'info');
+
+            // Trigger the run button click to restart
+            if (runBatchBtn) {
+                runBatchBtn.click();
+            }
         });
     }
 
@@ -7218,7 +7787,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Helper to send message to a specific tab (with auto-injection)
     async function sendMessageToTab(tabId, message) {
+        // Verify tab still exists before attempting operations
+        const tabExists = async () => {
+            try {
+                await chrome.tabs.get(tabId);
+                return true;
+            } catch {
+                return false;
+            }
+        };
+
         const injectAndRetry = async () => {
+            if (!await tabExists()) {
+                return { ok: false, error: 'Tab no longer exists' };
+            }
             addBatchLog("Injecting content script...");
             try {
                 // Clear the flag so the script re-initializes
@@ -7232,8 +7814,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const response = await chrome.tabs.sendMessage(tabId, message);
                 return response || { ok: false, error: 'No response after injection' };
             } catch (retryError) {
+                const errorMsg = retryError.message || String(retryError);
+                if (errorMsg.includes('No tab with id')) {
+                    return { ok: false, error: 'Tab was closed' };
+                }
                 console.error('[Batch] Injection failed:', retryError);
-                return { ok: false, error: `Failed to inject script: ${retryError.message}` };
+                return { ok: false, error: `Failed to inject script: ${errorMsg}` };
             }
         };
 
@@ -7260,376 +7846,254 @@ document.addEventListener('DOMContentLoaded', async () => {
     // ========================================
 
     // ========================================
-    // CALLRAIL TOGGLE SECTION
+    // CTM (CALLTRACKINGMETRICS) TOGGLE SECTION
     // ========================================
 
-    // Nickname mappings for CSR name matching
-    const NICKNAME_MAP = {
-        'madison': ['madi', 'maddie', 'maddy'],
-        'madi': ['madison'],
-        'maddie': ['madison'],
-        'maddy': ['madison'],
-        'bronte': ['bronté'],
-        'bronté': ['bronte'],
-        'robert': ['rob', 'bob', 'bobby'],
-        'michael': ['mike', 'mikey'],
-        'mike': ['michael'],
-        'christopher': ['chris'],
-        'chris': ['christopher'],
-        'jennifer': ['jen', 'jenny'],
-        'elizabeth': ['liz', 'beth', 'lizzy'],
-        'katherine': ['kate', 'katie', 'kathy'],
-        'nicholas': ['nick', 'nicky'],
-        'nick': ['nicholas'],
-        'alexander': ['alex'],
-        'alex': ['alexander', 'alexandra'],
-        'benjamin': ['ben'],
-        'ben': ['benjamin'],
-        'daniel': ['dan', 'danny'],
-        'matthew': ['matt'],
-        'matt': ['matthew'],
-        'anthony': ['tony'],
-        'joseph': ['joe', 'joey'],
-        'joshua': ['josh'],
-        'josh': ['joshua'],
-        'andrew': ['andy', 'drew'],
-        'timothy': ['tim', 'timmy'],
-        'steven': ['steve'],
-        'steve': ['steven', 'stephen'],
-        'jonathan': ['jon'],
-        'jessica': ['jess', 'jessie'],
-        'samantha': ['sam', 'sammy'],
-        'sam': ['samantha', 'samuel'],
-        'rebecca': ['becca', 'becky'],
-        'travis': ['trav'],
-        'trav': ['travis']
-    };
+    const ctmToggle = document.getElementById('ctm-toggle');
+    const ctmCsrModal = document.getElementById('ctm-csr-modal');
+    const ctmCsrSelect = document.getElementById('ctm-csr-select');
+    const ctmProductionSelect = document.getElementById('ctm-production-select');
+    const ctmMgmtSelect = document.getElementById('ctm-mgmt-select');
+    const ctmInsuranceSelect = document.getElementById('ctm-insurance-select');
+    const ctmCsrConfirm = document.getElementById('ctm-csr-confirm');
+    const ctmCsrCancel = document.getElementById('ctm-csr-cancel');
+    const closeCtmCsrModal = document.getElementById('close-ctm-csr-modal');
+    const ctmAssignedRepDisplay = document.getElementById('ctm-assigned-rep-display');
 
-    // Remove accents from characters (Bronté → Bronte)
-    function removeAccents(str) {
-        return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    }
-
-    // Check if two names match (including nickname variations)
-    function csrNamesMatch(name1, name2) {
-        if (!name1 || !name2) return false;
-
-        const n1 = removeAccents(name1.toLowerCase().trim());
-        const n2 = removeAccents(name2.toLowerCase().trim());
-
-        // Direct match
-        if (n1 === n2) return true;
-
-        // Check if one contains the other
-        if (n1.includes(n2) || n2.includes(n1)) return true;
-
-        // Split into parts
-        const parts1 = n1.split(' ').filter(p => p.length > 1);
-        const parts2 = n2.split(' ').filter(p => p.length > 1);
-
-        // Check nickname mappings for first names
-        if (parts1.length >= 1 && parts2.length >= 1) {
-            const firstName1 = parts1[0];
-            const firstName2 = parts2[0];
-            const lastName1 = parts1.length > 1 ? parts1[parts1.length - 1] : '';
-            const lastName2 = parts2.length > 1 ? parts2[parts2.length - 1] : '';
-
-            // Check if first names are nickname variations
-            const nicknames1 = NICKNAME_MAP[firstName1] || [];
-            const nicknames2 = NICKNAME_MAP[firstName2] || [];
-            const firstNamesMatch = firstName1 === firstName2 ||
-                                   nicknames1.includes(firstName2) ||
-                                   nicknames2.includes(firstName1) ||
-                                   firstName1.includes(firstName2) ||
-                                   firstName2.includes(firstName1);
-
-            // If last names match (or one is missing) and first names match
-            if (firstNamesMatch && (!lastName1 || !lastName2 || lastName1 === lastName2)) {
-                return true;
-            }
-        }
-
-        // Check if any parts match
-        const allPartsMatch = parts1.some(part =>
-            parts2.some(p2 => {
-                const nicknames = NICKNAME_MAP[part] || [];
-                return part === p2 || p2.includes(part) || part.includes(p2) ||
-                       nicknames.includes(p2) || (NICKNAME_MAP[p2] || []).includes(part);
-            })
-        );
-
-        return allPartsMatch;
-    }
-
-    const callrailToggle = document.getElementById('callrail-toggle');
-    const callrailCsrModal = document.getElementById('callrail-csr-modal');
-    const callrailCsrSelect = document.getElementById('callrail-csr-select');
-    const callrailProductionSelect = document.getElementById('callrail-production-select');
-    const callrailMgmtSelect = document.getElementById('callrail-mgmt-select');
-    const callrailInsuranceSelect = document.getElementById('callrail-insurance-select');
-    const callrailCsrConfirm = document.getElementById('callrail-csr-confirm');
-    const callrailCsrCancel = document.getElementById('callrail-csr-cancel');
-    const closeCallrailCsrModal = document.getElementById('close-callrail-csr-modal');
-
-    // Populate all CallRail dropdowns
-    function populateCallRailDropdowns() {
-        // Populate CSR dropdown
-        if (callrailCsrSelect) {
-            callrailCsrSelect.innerHTML = '<option value="">-- Select CSR --</option>';
+    // Populate all CTM dropdowns
+    function populateCtmDropdowns() {
+        if (ctmCsrSelect) {
+            ctmCsrSelect.innerHTML = '<option value="">-- Select CSR --</option>';
             const csrs = PEOPLE_DATA.CSRS || [];
             csrs.forEach(name => {
                 const opt = document.createElement('option');
                 opt.value = name;
                 opt.textContent = name;
-                callrailCsrSelect.appendChild(opt);
+                ctmCsrSelect.appendChild(opt);
             });
         }
 
-        // Populate Production dropdown
-        if (callrailProductionSelect) {
-            callrailProductionSelect.innerHTML = '<option value="">-- Select Production --</option>';
+        if (ctmProductionSelect) {
+            ctmProductionSelect.innerHTML = '<option value="">-- Select Production --</option>';
             const production = PEOPLE_DATA.PRODUCTION || [];
             production.forEach(name => {
                 const opt = document.createElement('option');
                 opt.value = name;
                 opt.textContent = name;
-                callrailProductionSelect.appendChild(opt);
+                ctmProductionSelect.appendChild(opt);
             });
         }
 
-        // Populate Management dropdown
-        if (callrailMgmtSelect) {
-            callrailMgmtSelect.innerHTML = '<option value="">-- Select Management --</option>';
+        if (ctmMgmtSelect) {
+            ctmMgmtSelect.innerHTML = '<option value="">-- Select Management --</option>';
             const mgmt = PEOPLE_DATA.MGMT || [];
             mgmt.forEach(name => {
                 const opt = document.createElement('option');
                 opt.value = name;
                 opt.textContent = name;
-                callrailMgmtSelect.appendChild(opt);
+                ctmMgmtSelect.appendChild(opt);
             });
         }
 
-        // Populate Insurance dropdown
-        if (callrailInsuranceSelect) {
-            callrailInsuranceSelect.innerHTML = '<option value="">-- Select Insurance --</option>';
+        if (ctmInsuranceSelect) {
+            ctmInsuranceSelect.innerHTML = '<option value="">-- Select Insurance --</option>';
             const insurance = ['Aaron Munz', 'Caite Bonomo'];
             insurance.forEach(name => {
                 const opt = document.createElement('option');
                 opt.value = name;
                 opt.textContent = name;
-                callrailInsuranceSelect.appendChild(opt);
+                ctmInsuranceSelect.appendChild(opt);
             });
         }
     }
 
-    // Clear other dropdowns when one is selected
-    function setupCallRailDropdownListeners() {
-        if (callrailCsrSelect) {
-            callrailCsrSelect.addEventListener('change', () => {
-                if (callrailCsrSelect.value) {
-                    if (callrailProductionSelect) callrailProductionSelect.value = '';
-                    if (callrailMgmtSelect) callrailMgmtSelect.value = '';
-                    if (callrailInsuranceSelect) callrailInsuranceSelect.value = '';
+    // Clear other CTM dropdowns when one is selected
+    function setupCtmDropdownListeners() {
+        if (ctmCsrSelect) {
+            ctmCsrSelect.addEventListener('change', () => {
+                if (ctmCsrSelect.value) {
+                    if (ctmProductionSelect) ctmProductionSelect.value = '';
+                    if (ctmMgmtSelect) ctmMgmtSelect.value = '';
+                    if (ctmInsuranceSelect) ctmInsuranceSelect.value = '';
                 }
             });
         }
-        if (callrailProductionSelect) {
-            callrailProductionSelect.addEventListener('change', () => {
-                if (callrailProductionSelect.value) {
-                    if (callrailCsrSelect) callrailCsrSelect.value = '';
-                    if (callrailMgmtSelect) callrailMgmtSelect.value = '';
-                    if (callrailInsuranceSelect) callrailInsuranceSelect.value = '';
+        if (ctmProductionSelect) {
+            ctmProductionSelect.addEventListener('change', () => {
+                if (ctmProductionSelect.value) {
+                    if (ctmCsrSelect) ctmCsrSelect.value = '';
+                    if (ctmMgmtSelect) ctmMgmtSelect.value = '';
+                    if (ctmInsuranceSelect) ctmInsuranceSelect.value = '';
                 }
             });
         }
-        if (callrailMgmtSelect) {
-            callrailMgmtSelect.addEventListener('change', () => {
-                if (callrailMgmtSelect.value) {
-                    if (callrailCsrSelect) callrailCsrSelect.value = '';
-                    if (callrailProductionSelect) callrailProductionSelect.value = '';
-                    if (callrailInsuranceSelect) callrailInsuranceSelect.value = '';
+        if (ctmMgmtSelect) {
+            ctmMgmtSelect.addEventListener('change', () => {
+                if (ctmMgmtSelect.value) {
+                    if (ctmCsrSelect) ctmCsrSelect.value = '';
+                    if (ctmProductionSelect) ctmProductionSelect.value = '';
+                    if (ctmInsuranceSelect) ctmInsuranceSelect.value = '';
                 }
             });
         }
-        if (callrailInsuranceSelect) {
-            callrailInsuranceSelect.addEventListener('change', () => {
-                if (callrailInsuranceSelect.value) {
-                    if (callrailCsrSelect) callrailCsrSelect.value = '';
-                    if (callrailProductionSelect) callrailProductionSelect.value = '';
-                    if (callrailMgmtSelect) callrailMgmtSelect.value = '';
+        if (ctmInsuranceSelect) {
+            ctmInsuranceSelect.addEventListener('change', () => {
+                if (ctmInsuranceSelect.value) {
+                    if (ctmCsrSelect) ctmCsrSelect.value = '';
+                    if (ctmProductionSelect) ctmProductionSelect.value = '';
+                    if (ctmMgmtSelect) ctmMgmtSelect.value = '';
                 }
             });
         }
     }
 
-    // Get selected person from any dropdown
-    function getSelectedCallHandler() {
-        if (callrailCsrSelect?.value) return callrailCsrSelect.value;
-        if (callrailProductionSelect?.value) return callrailProductionSelect.value;
-        if (callrailMgmtSelect?.value) return callrailMgmtSelect.value;
-        if (callrailInsuranceSelect?.value) return callrailInsuranceSelect.value;
+    // Get selected person from any CTM dropdown
+    function getSelectedCtmCallHandler() {
+        if (ctmCsrSelect?.value) return ctmCsrSelect.value;
+        if (ctmProductionSelect?.value) return ctmProductionSelect.value;
+        if (ctmMgmtSelect?.value) return ctmMgmtSelect.value;
+        if (ctmInsuranceSelect?.value) return ctmInsuranceSelect.value;
         return '';
     }
 
-    // Show CSR modal
-    function showCallRailCsrModal() {
-        if (!callrailCsrModal) return;
-        populateCallRailDropdowns();
-        setupCallRailDropdownListeners();
-        callrailCsrModal.classList.remove('hidden');
+    // Show CTM CSR modal
+    function showCtmCsrModal() {
+        if (!ctmCsrModal) return;
+        populateCtmDropdowns();
+        setupCtmDropdownListeners();
+        ctmCsrModal.classList.remove('hidden');
     }
 
-    // Hide CSR modal
-    function hideCallRailCsrModal() {
-        if (!callrailCsrModal) return;
-        callrailCsrModal.classList.add('hidden');
+    // Hide CTM CSR modal
+    function hideCtmCsrModal() {
+        if (!ctmCsrModal) return;
+        ctmCsrModal.classList.add('hidden');
     }
 
-    // Initialize CallRail toggle state from storage
-    async function initCallRailToggle() {
-        if (!callrailToggle) return;
+    // Update CTM assigned rep display
+    function updateCtmAssignedRepDisplay(name) {
+        if (ctmAssignedRepDisplay) {
+            if (name) {
+                // Get first name only for display
+                const firstName = name.split(' ')[0];
+                ctmAssignedRepDisplay.textContent = firstName;
+                ctmAssignedRepDisplay.title = `CTM: ${name}`;
+            } else {
+                ctmAssignedRepDisplay.textContent = '--';
+                ctmAssignedRepDisplay.title = 'CTM assigned rep';
+            }
+        }
+    }
+
+    // Initialize CTM toggle state from storage
+    async function initCtmToggle() {
+        if (!ctmToggle) return;
 
         try {
-            // Get CSR from popup modal, settings page user, or settings page display name
             const result = await chrome.storage.sync.get({
-                callrail_enabled: false,
-                callrail_csr: '',
-                callrail_user: '',
-                callrail_display_name: ''
+                ctm_enabled: false,
+                ctm_csr: '',
+                ctm_user: '',
+                ctm_display_name: ''
             });
-            callrailToggle.checked = result.callrail_enabled;
-            // Update the display to show who's taking calls - prefer popup selection, fallback to settings
-            const csrName = result.callrail_csr || result.callrail_display_name || result.callrail_user;
-            if (result.callrail_enabled && csrName) {
-                updateAssignedRepDisplay(csrName);
+            ctmToggle.checked = result.ctm_enabled;
+            const csrName = result.ctm_csr || result.ctm_display_name || result.ctm_user;
+            if (result.ctm_enabled && csrName) {
+                updateCtmAssignedRepDisplay(csrName);
             } else {
-                updateAssignedRepDisplay(null);
+                updateCtmAssignedRepDisplay(null);
             }
         } catch (e) {
-            console.warn('Could not load CallRail setting:', e);
-            callrailToggle.checked = false; // Default to disabled
-            updateAssignedRepDisplay(null);
+            console.warn('Could not load CTM setting:', e);
+            ctmToggle.checked = false;
+            updateCtmAssignedRepDisplay(null);
         }
     }
 
-    // Open/pin CallRail Lead Center in target window and optionally reload
-    async function openCallRailLeadCenter(shouldReload = false) {
-        const CALLRAIL_URL = 'https://app.callrail.com/lead-center/a/629065099/agent-tool/dialer/call?company_id=459564228';
+    // Open CTM Calls page (and pin it) - ONLY the exact /calls URL should be pinned
+    async function openCtmCallsPage() {
+        const CTM_CALLS_URL = 'https://app.calltrackingmetrics.com/calls';
 
         try {
-            // Search for CallRail tabs in target window only
-            const queryOpts = { url: '*://app.callrail.com/*' };
+            // Find all CTM tabs
+            const queryOpts = { url: '*://app.calltrackingmetrics.com/*' };
             if (window.__targetWindowId) queryOpts.windowId = window.__targetWindowId;
-            const tabs = await chrome.tabs.query(queryOpts);
-            const leadCenterTab = tabs.find(t => t.url && t.url.includes('/lead-center'));
+            const allCtmTabs = await chrome.tabs.query(queryOpts);
 
-            if (leadCenterTab) {
-                // Lead Center is already open
-                if (!leadCenterTab.pinned) {
-                    await chrome.tabs.update(leadCenterTab.id, { pinned: true });
-                    console.log('[Popup] Pinned existing CallRail Lead Center tab:', leadCenterTab.id);
+            let callsTab = null;
+
+            // Check each CTM tab
+            for (const tab of allCtmTabs) {
+                // Check if this is the exact /calls URL (no query params, no subpaths)
+                const url = new URL(tab.url);
+                const isExactCallsUrl = url.pathname === '/calls' && !url.search;
+
+                if (isExactCallsUrl) {
+                    // This is the correct calls tab - pin it if not pinned
+                    callsTab = tab;
+                    if (!tab.pinned) {
+                        await chrome.tabs.update(tab.id, { pinned: true });
+                        console.log('[Popup] Pinned CTM /calls tab:', tab.id);
+                    }
+                } else if (tab.pinned) {
+                    // This is a different CTM page that's pinned - unpin it
+                    await chrome.tabs.update(tab.id, { pinned: false });
+                    console.log('[Popup] Unpinned non-/calls CTM tab:', tab.id, tab.url);
                 }
-                if (shouldReload) {
-                    await chrome.tabs.reload(leadCenterTab.id);
-                    console.log('[Popup] Reloaded CallRail Lead Center tab:', leadCenterTab.id);
-                }
-            } else if (tabs.length > 0) {
-                // CallRail is open but not Lead Center - navigate to Lead Center
-                await chrome.tabs.update(tabs[0].id, { url: CALLRAIL_URL, pinned: true });
-                console.log('[Popup] Navigated to Lead Center and pinned tab:', tabs[0].id);
-            } else {
-                // No CallRail tab open - create one in target window and pin it
-                const createOpts = { url: CALLRAIL_URL, active: false, pinned: true };
+            }
+
+            // If no /calls tab exists, create one
+            if (!callsTab) {
+                const createOpts = { url: CTM_CALLS_URL, active: false, pinned: true };
                 if (window.__targetWindowId) createOpts.windowId = window.__targetWindowId;
                 const newTab = await chrome.tabs.create(createOpts);
-                console.log('[Popup] Opened and pinned CallRail Lead Center tab:', newTab.id);
+                console.log('[Popup] Created and pinned CTM /calls tab:', newTab.id);
             }
         } catch (err) {
-            console.error('Could not open/pin CallRail tab:', err);
+            console.error('Could not open CTM tab:', err);
         }
     }
 
-    // Handle CallRail toggle change
-    if (callrailToggle) {
-        callrailToggle.addEventListener('change', async (e) => {
+    // Handle CTM toggle change
+    if (ctmToggle) {
+        ctmToggle.addEventListener('change', async (e) => {
             const enabled = e.target.checked;
 
             if (enabled) {
-                // Check if a CSR is already selected
                 try {
-                    const result = await chrome.storage.sync.get({ callrail_csr: '' });
-                    if (!result.callrail_csr) {
-                        // No CSR selected - show modal
-                        // Don't save enabled state yet - wait for CSR selection
-                        e.target.checked = false; // Revert toggle
-                        showCallRailCsrModal();
+                    const result = await chrome.storage.sync.get({ ctm_csr: '' });
+                    if (!result.ctm_csr) {
+                        e.target.checked = false;
+                        showCtmCsrModal();
                         return;
                     }
 
-                    // CSR is selected - proceed with enabling
-                    await chrome.storage.sync.set({ callrail_enabled: true });
-                    console.log('[Popup] CallRail auto-search: enabled for', result.callrail_csr);
-                    // Update the display to show who's taking calls
-                    updateAssignedRepDisplay(result.callrail_csr);
-                    await openCallRailLeadCenter(false);
-
-                    // Check if the selected CSR is already on an active call and open that contact
-                    const selectedCsr = result.callrail_csr;
-                    try {
-                        const calls = await fetchActiveCalls();
-                        if (calls.length > 0) {
-                            // Find calls handled by the selected CSR (using nickname-aware matching)
-                            const csrCalls = calls.filter(call => {
-                                if (!call.agentName) return false;
-                                return csrNamesMatch(call.agentName, selectedCsr);
-                            });
-
-                            if (csrCalls.length > 0) {
-                                console.log('[Popup] Found active call(s) for', selectedCsr, ':', csrCalls);
-                                for (const call of csrCalls) {
-                                    try {
-                                        await chrome.runtime.sendMessage({
-                                            type: 'OPEN_CONTACTS_FOR_PHONE',
-                                            phoneNumber: call.phoneNumber,
-                                            formattedPhone: call.formattedPhone,
-                                            callerName: call.callerName,
-                                            windowId: window.__targetWindowId // Pass target window for window isolation
-                                        });
-                                        showToast(`Opened contact for ${call.callerName || call.formattedPhone}`);
-                                    } catch (err) {
-                                        console.error('[Popup] Error opening contact for CSR call:', err);
-                                    }
-                                }
-                            }
-                        }
-                    } catch (callErr) {
-                        console.error('[Popup] Error checking for active CSR calls:', callErr);
-                    }
+                    await chrome.storage.sync.set({ ctm_enabled: true });
+                    console.log('[Popup] CTM auto-search: enabled for', result.ctm_csr);
+                    updateCtmAssignedRepDisplay(result.ctm_csr);
+                    await openCtmCallsPage();
                 } catch (err) {
-                    console.error('Could not check/save CallRail setting:', err);
+                    console.error('Could not check/save CTM setting:', err);
                 }
             } else {
-                // Turning OFF - save setting but KEEP the CSR selection for next time
                 try {
-                    await chrome.storage.sync.set({ callrail_enabled: false });
-                    console.log('[Popup] CallRail auto-search: disabled (CSR selection preserved)');
-                    // Clear the display (CSR still saved, just not shown while disabled)
-                    updateAssignedRepDisplay(null);
+                    await chrome.storage.sync.set({ ctm_enabled: false });
+                    console.log('[Popup] CTM auto-search: disabled (CSR selection preserved)');
+                    updateCtmAssignedRepDisplay(null);
                 } catch (err) {
-                    console.error('Could not save CallRail setting:', err);
+                    console.error('Could not save CTM setting:', err);
                 }
             }
         });
     }
 
-    // Handle CSR confirmation
-    if (callrailCsrConfirm) {
-        callrailCsrConfirm.addEventListener('click', async () => {
-            const selectedPerson = getSelectedCallHandler();
+    // Handle CTM CSR confirmation
+    if (ctmCsrConfirm) {
+        ctmCsrConfirm.addEventListener('click', async () => {
+            const selectedPerson = getSelectedCtmCallHandler();
 
             if (!selectedPerson) {
-                // No person selected - show error state on all dropdowns briefly
-                const dropdowns = [callrailCsrSelect, callrailProductionSelect, callrailMgmtSelect, callrailInsuranceSelect];
+                const dropdowns = [ctmCsrSelect, ctmProductionSelect, ctmMgmtSelect, ctmInsuranceSelect];
                 dropdowns.forEach(select => {
                     if (select) {
                         select.style.borderColor = 'var(--danger)';
@@ -7642,141 +8106,101 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             try {
-                // Save selected person and enable CallRail
                 await chrome.storage.sync.set({
-                    callrail_enabled: true,
-                    callrail_csr: selectedPerson
+                    ctm_enabled: true,
+                    ctm_csr: selectedPerson
                 });
-                console.log('[Popup] CallRail enabled for:', selectedPerson);
+                console.log('[Popup] CTM enabled for:', selectedPerson);
 
-                // Update toggle state
-                if (callrailToggle) {
-                    callrailToggle.checked = true;
+                if (ctmToggle) {
+                    ctmToggle.checked = true;
                 }
 
-                // Update the display to show who's taking calls
-                updateAssignedRepDisplay(selectedPerson);
-
-                // Hide modal
-                hideCallRailCsrModal();
-
-                // Open/reload CallRail Lead Center
-                await openCallRailLeadCenter(true);
-
-                // Check if the selected CSR is already on an active call and open that contact
-                try {
-                    const calls = await fetchActiveCalls();
-                    if (calls.length > 0) {
-                        // Find calls handled by the selected CSR (using nickname-aware matching)
-                        const csrCalls = calls.filter(call => {
-                            if (!call.agentName) return false;
-                            return csrNamesMatch(call.agentName, selectedPerson);
-                        });
-
-                        if (csrCalls.length > 0) {
-                            console.log('[Popup] Found active call(s) for', selectedPerson, ':', csrCalls);
-                            // Open contact for the CSR's active call
-                            for (const call of csrCalls) {
-                                try {
-                                    await chrome.runtime.sendMessage({
-                                        type: 'OPEN_CONTACTS_FOR_PHONE',
-                                        phoneNumber: call.phoneNumber,
-                                        formattedPhone: call.formattedPhone,
-                                        callerName: call.callerName,
-                                        windowId: window.__targetWindowId // Pass target window for window isolation
-                                    });
-                                    showToast(`Opened contact for ${call.callerName || call.formattedPhone}`);
-                                } catch (err) {
-                                    console.error('[Popup] Error opening contact for CSR call:', err);
-                                }
-                            }
-                        } else {
-                            console.log('[Popup] No active calls for', selectedPerson);
-                        }
-                    }
-                } catch (err) {
-                    console.error('[Popup] Error checking for active CSR calls:', err);
-                }
-
+                updateCtmAssignedRepDisplay(selectedPerson);
+                hideCtmCsrModal();
+                await openCtmCallsPage();
             } catch (err) {
-                console.error('Could not save CallRail CSR setting:', err);
+                console.error('Could not save CTM CSR setting:', err);
             }
         });
     }
 
-    // Handle CSR cancel
-    if (callrailCsrCancel) {
-        callrailCsrCancel.addEventListener('click', () => {
-            hideCallRailCsrModal();
-            // Make sure toggle stays off
-            if (callrailToggle) {
-                callrailToggle.checked = false;
+    // Handle CTM CSR cancel
+    if (ctmCsrCancel) {
+        ctmCsrCancel.addEventListener('click', () => {
+            hideCtmCsrModal();
+            if (ctmToggle) {
+                ctmToggle.checked = false;
             }
         });
     }
 
-    // Handle modal close button
-    if (closeCallrailCsrModal) {
-        closeCallrailCsrModal.addEventListener('click', () => {
-            hideCallRailCsrModal();
-            // Make sure toggle stays off
-            if (callrailToggle) {
-                callrailToggle.checked = false;
+    // Handle CTM modal close button
+    if (closeCtmCsrModal) {
+        closeCtmCsrModal.addEventListener('click', () => {
+            hideCtmCsrModal();
+            if (ctmToggle) {
+                ctmToggle.checked = false;
             }
         });
     }
 
-    // Close modal on backdrop click
-    if (callrailCsrModal) {
-        callrailCsrModal.addEventListener('click', (e) => {
-            if (e.target === callrailCsrModal) {
-                hideCallRailCsrModal();
-                if (callrailToggle) {
-                    callrailToggle.checked = false;
+    // Close CTM modal on backdrop click
+    if (ctmCsrModal) {
+        ctmCsrModal.addEventListener('click', (e) => {
+            if (e.target === ctmCsrModal) {
+                hideCtmCsrModal();
+                if (ctmToggle) {
+                    ctmToggle.checked = false;
                 }
             }
         });
     }
 
-    // Initialize toggle on load
-    initCallRailToggle();
+    // Initialize CTM toggle on load
+    initCtmToggle();
 
     // ========================================
-    // END CALLRAIL TOGGLE SECTION
+    // END CTM TOGGLE SECTION
     // ========================================
 
     // ========================================
     // PHONE ICON - OPEN CONTACTS FOR ACTIVE CALLS
     // ========================================
 
-    // Fetch active calls from CallRail tabs in target window
+    // Fetch active calls from CTM tabs in target window
     async function fetchActiveCalls() {
-        try {
-            // Find CallRail tabs in target window only
-            const queryOpts = { url: '*://app.callrail.com/*' };
-            if (window.__targetWindowId) queryOpts.windowId = window.__targetWindowId;
-            const callrailTabs = await chrome.tabs.query(queryOpts);
-            if (callrailTabs.length === 0) {
-                return [];
-            }
+        const allCalls = [];
 
-            // Try to get active calls from each tab
-            for (const tab of callrailTabs) {
+        // Query CTM tabs
+        try {
+            const ctmQueryOpts = { url: '*://app.calltrackingmetrics.com/*' };
+            if (window.__targetWindowId) ctmQueryOpts.windowId = window.__targetWindowId;
+            console.log('[Popup] Querying CTM tabs with:', JSON.stringify(ctmQueryOpts));
+            const ctmTabs = await chrome.tabs.query(ctmQueryOpts);
+            console.log('[Popup] Found CTM tabs:', ctmTabs.length, ctmTabs.map(t => ({ id: t.id, url: t.url })));
+
+            for (const tab of ctmTabs) {
                 try {
-                    const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_ACTIVE_CALLS' });
-                    if (response && response.ok && response.calls) {
-                        return response.calls;
+                    console.log('[Popup] Sending GET_CTM_ACTIVE_CALLS to tab', tab.id);
+                    const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_CTM_ACTIVE_CALLS' });
+                    console.log('[Popup] CTM response from tab', tab.id, ':', response);
+                    if (response?.ok && response.calls) {
+                        // Mark calls as CTM source
+                        const ctmCalls = response.calls.map(c => ({ ...c, source: 'ctm' }));
+                        allCalls.push(...ctmCalls);
+                        console.log('[Popup] Added', ctmCalls.length, 'CTM calls to list');
                     }
                 } catch (e) {
                     // Tab might not have content script loaded
-                    console.log('[Popup] Could not get active calls from tab', tab.id);
+                    console.log('[Popup] Could not get CTM calls from tab', tab.id, ':', e.message);
                 }
             }
-            return [];
         } catch (e) {
-            console.warn('[Popup] Error fetching active calls:', e);
-            return [];
+            console.log('[Popup] Error querying CTM tabs:', e);
         }
+
+        return allCalls;
     }
 
     // Active Calls Dropdown

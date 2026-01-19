@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Extension signing key - NEVER commit this
+*.pem
+
+# Claude Code temporary files
+tmpclaude-*
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

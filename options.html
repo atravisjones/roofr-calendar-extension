@@ -398,7 +398,7 @@
           <a href="#scanner" class="nav-link" data-target="scanner">Scanner</a>
           <a href="#home-searches" class="nav-link" data-target="home-searches">Home Searches</a>
           <a href="#phone-searches" class="nav-link" data-target="phone-searches">Phone</a>
-          <a href="#callrail" class="nav-link" data-target="callrail">CallRail</a>
+          <a href="#ctm" class="nav-link" data-target="ctm">CTM</a>
           <a href="#job-sorting" class="nav-link" data-target="job-sorting">Job Sorting</a>
           <a href="#reports" class="nav-link" data-target="reports">Reports</a>
           <a href="#people" class="nav-link" data-target="people">People</a>
@@ -640,6 +640,61 @@
               </div>
               <label class="toggle-switch">
                 <input type="checkbox" id="auto_expand_days">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+          <div class="section-label">Footer Tools</div>
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Find in Page</p>
+                <p class="toggle-hint">Show search box in footer</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="footer_show_find">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Quick Notes</p>
+                <p class="toggle-hint">Show notes scratchpad in footer</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="footer_show_notes">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Formatting Tools</p>
+                <p class="toggle-hint">Show T, A-, A+ text controls</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="footer_show_formatting">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Popup Button</p>
+                <p class="toggle-hint">Show open in popup window button</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="footer_show_popup_btn">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Links Dropdown</p>
+                <p class="toggle-hint">Show quick links menu</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="footer_show_links">
                 <span class="toggle-slider"></span>
               </label>
             </div>
@@ -1009,17 +1064,17 @@
         </div>
       </div>
 
-      <!-- CALLS (CALLRAIL) -->
-      <div class="category" id="callrail" data-category="calls">
+      <!-- CALLS (CTM - CALLTRACKINGMETRICS) -->
+      <div class="category" id="ctm" data-category="ctm">
         <div class="category-header">
-          <div class="category-icon" style="background: #10b981;">
+          <div class="category-icon" style="background: #6366f1;">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M15.05 5A5 5 0 0 1 19 8.95M15.05 1A9 9 0 0 1 23 8.94m-1 7.98v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
             </svg>
           </div>
           <div class="category-title">
-            <h2>Calls (CallRail)</h2>
-            <p>CallRail integration and incoming call handling</p>
+            <h2>Calls (CTM)</h2>
+            <p>CallTrackingMetrics integration and incoming call handling</p>
           </div>
           <div class="category-toggle">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1031,11 +1086,11 @@
           <div class="toggle-group">
             <div class="toggle-item">
               <div class="toggle-info">
-                <p class="toggle-label">CallRail Enabled</p>
-                <p class="toggle-hint">Master toggle for CallRail integration</p>
+                <p class="toggle-label">CTM Enabled</p>
+                <p class="toggle-hint">Master toggle for CallTrackingMetrics integration</p>
               </div>
               <label class="toggle-switch">
-                <input type="checkbox" id="callrail_enabled">
+                <input type="checkbox" id="ctm_enabled">
                 <span class="toggle-slider"></span>
               </label>
             </div>
@@ -1045,7 +1100,7 @@
                 <p class="toggle-hint">Auto-search contacts on incoming calls</p>
               </div>
               <label class="toggle-switch">
-                <input type="checkbox" id="callrail_auto_search">
+                <input type="checkbox" id="ctm_auto_search">
                 <span class="toggle-slider"></span>
               </label>
             </div>
@@ -1055,7 +1110,7 @@
                 <p class="toggle-hint">Display call notifications</p>
               </div>
               <label class="toggle-switch">
-                <input type="checkbox" id="callrail_show_notifications">
+                <input type="checkbox" id="ctm_show_notifications">
                 <span class="toggle-slider"></span>
               </label>
             </div>
@@ -1065,17 +1120,17 @@
                 <p class="toggle-hint">Display active calls dropdown</p>
               </div>
               <label class="toggle-switch">
-                <input type="checkbox" id="callrail_show_active_calls">
+                <input type="checkbox" id="ctm_show_active_calls">
                 <span class="toggle-slider"></span>
               </label>
             </div>
             <div class="toggle-item">
               <div class="toggle-info">
-                <p class="toggle-label">Auto Open Lead Center</p>
-                <p class="toggle-hint">Keep CallRail Lead Center open</p>
+                <p class="toggle-label">Auto Open Calls Page</p>
+                <p class="toggle-hint">Keep CTM calls page open</p>
               </div>
               <label class="toggle-switch">
-                <input type="checkbox" id="callrail_auto_open_lead_center">
+                <input type="checkbox" id="ctm_auto_open_calls_page">
                 <span class="toggle-slider"></span>
               </label>
             </div>
@@ -1085,7 +1140,7 @@
                 <p class="toggle-hint">Group call-related tabs together</p>
               </div>
               <label class="toggle-switch">
-                <input type="checkbox" id="callrail_group_tabs">
+                <input type="checkbox" id="ctm_group_tabs">
                 <span class="toggle-slider"></span>
               </label>
             </div>
@@ -1098,45 +1153,54 @@
           </p>
 
           <div class="group">
-            <label for="callrail_csr_setting">CSR</label>
-            <select id="callrail_csr_setting">
+            <label for="ctm_csr_setting">CSR</label>
+            <select id="ctm_csr_setting">
               <option value="">-- Select CSR --</option>
             </select>
           </div>
 
           <div class="group">
-            <label for="callrail_production_setting">Production</label>
-            <select id="callrail_production_setting">
+            <label for="ctm_production_setting">Production</label>
+            <select id="ctm_production_setting">
               <option value="">-- Select Production --</option>
             </select>
           </div>
 
           <div class="group">
-            <label for="callrail_insurance_setting">Insurance</label>
-            <select id="callrail_insurance_setting">
+            <label for="ctm_insurance_setting">Insurance</label>
+            <select id="ctm_insurance_setting">
               <option value="">-- Select Insurance --</option>
             </select>
           </div>
 
           <div class="group">
-            <label for="callrail_mgmt_setting">Management</label>
-            <select id="callrail_mgmt_setting">
+            <label for="ctm_mgmt_setting">Management</label>
+            <select id="ctm_mgmt_setting">
               <option value="">-- Select Management --</option>
             </select>
           </div>
 
-          <div id="current_call_handler" style="margin-top: 12px; padding: 10px; background: var(--surface-hover); border-radius: 6px; font-size: 0.9rem;">
-            <strong>Current Handler:</strong> <span id="current_handler_name" style="color: var(--primary);">None selected</span>
+          <div id="current_ctm_call_handler" style="margin-top: 12px; padding: 10px; background: var(--surface-hover); border-radius: 6px; font-size: 0.9rem;">
+            <strong>Current Handler:</strong> <span id="current_ctm_handler_name" style="color: var(--primary);">None selected</span>
           </div>
 
+          <div class="divider"></div>
           <div class="section-label">Quick Links</div>
           <div class="quick-links">
-            <a href="https://app.callrail.com/lead-center/a/629065099/agent-tool/dialer/call?company_id=459564228"
-               target="_blank" class="btn">
+            <a href="https://app.calltrackingmetrics.com/calls"
+               target="_blank" class="btn" style="background: #6366f1; border-color: #6366f1;">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
               </svg>
-              Open CallRail
+              Open CTM
+            </a>
+            <a href="https://app.calltrackingmetrics.com/settings#api"
+               target="_blank" class="btn btn-secondary">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+              Get API Keys
             </a>
             <a href="https://app.roofr.com/dashboard/team/239329/contacts"
                target="_blank" class="btn" style="background: #10b981; border-color: #10b981;">

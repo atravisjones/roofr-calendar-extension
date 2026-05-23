@@ -15,8 +15,8 @@ const fields = [
   "PEOPLE_MGMT",
   "PEOPLE_CSRS",
   "theme",
-  "callrail_user",
-  "callrail_display_name",
+  "ctm_user",
+  "ctm_display_name",
 
   // Appearance toggles
   "compact_mode",
@@ -37,6 +37,13 @@ const fields = [
   "auto_expand_days",
   "show_tab_badges",
   "global_panel_mode",
+
+  // Footer tools toggles
+  "footer_show_find",
+  "footer_show_notes",
+  "footer_show_formatting",
+  "footer_show_popup_btn",
+  "footer_show_links",
 
   // Scanner toggles
   "scanner_enabled",
@@ -72,13 +79,13 @@ const fields = [
   "show_phone_history",
   "phone_search_auto_open",
 
-  // CallRail toggles
-  "callrail_enabled",
-  "callrail_auto_search",
-  "callrail_show_notifications",
-  "callrail_show_active_calls",
-  "callrail_auto_open_lead_center",
-  "callrail_group_tabs",
+  // CTM (CallTrackingMetrics) toggles
+  "ctm_enabled",
+  "ctm_auto_search",
+  "ctm_show_notifications",
+  "ctm_show_active_calls",
+  "ctm_auto_open_calls_page",
+  "ctm_group_tabs",
 
   // Job sorting toggles
   "job_sorting_auto_load",
@@ -139,8 +146,8 @@ const defaults = {
   PEOPLE_MGMT: PEOPLE_DATA.MGMT.join(", "),
   PEOPLE_CSRS: PEOPLE_DATA.CSRS.join(", "),
   theme: "light",
-  callrail_user: "",
-  callrail_display_name: "",
+  ctm_user: "",
+  ctm_display_name: "",
 
   // Appearance
   compact_mode: false,
@@ -152,7 +159,7 @@ const defaults = {
   show_job_sorting: false,
   show_people: true,
   show_clipboard: true,
-  show_reports: false,
+  show_reports: true,
   // Interface - Navigation
   show_dock_note: true,
   show_week_navigation: true,
@@ -162,6 +169,13 @@ const defaults = {
   auto_expand_days: true,
   show_tab_badges: true,
   global_panel_mode: true,
+
+  // Footer tools
+  footer_show_find: true,
+  footer_show_notes: true,
+  footer_show_formatting: true,
+  footer_show_popup_btn: true,
+  footer_show_links: true,
 
   // Scanner
   scanner_enabled: true,
@@ -197,13 +211,13 @@ const defaults = {
   show_phone_history: true,
   phone_search_auto_open: true,
 
-  // CallRail
-  callrail_enabled: false,
-  callrail_auto_search: true,
-  callrail_show_notifications: true,
-  callrail_show_active_calls: true,
-  callrail_auto_open_lead_center: true,
-  callrail_group_tabs: true,
+  // CTM (CallTrackingMetrics)
+  ctm_enabled: false,
+  ctm_auto_search: true,
+  ctm_show_notifications: true,
+  ctm_show_active_calls: true,
+  ctm_auto_open_calls_page: true,
+  ctm_group_tabs: true,
 
   // Job sorting
   job_sorting_auto_load: false,
@@ -275,8 +289,6 @@ async function load() {
       if (k === 'theme') {
         el.value = cfg[k] || "light";
         applyThemePreview(cfg[k] || "light");
-      } else if (k === 'callrail_user') {
-        el.value = cfg[k] || "";
       } else if (el.type === 'checkbox') {
         el.checked = cfg[k] !== undefined ? cfg[k] : defaults[k];
       } else {
@@ -288,7 +300,7 @@ async function load() {
 }
 
 function populateCSRDropdown() {
-  const dropdown = $("callrail_user");
+  const dropdown = $("ctm_user");
   if (!dropdown) return;
 
   // Clear existing options except the first one
@@ -307,10 +319,10 @@ function populateCSRDropdown() {
 
 // Setup call handler selection dropdowns (for persistent CSR selection)
 function setupCallHandlerDropdowns() {
-  const csrDropdown = $("callrail_csr_setting");
-  const productionDropdown = $("callrail_production_setting");
-  const insuranceDropdown = $("callrail_insurance_setting");
-  const mgmtDropdown = $("callrail_mgmt_setting");
+  const csrDropdown = $("ctm_csr_setting");
+  const productionDropdown = $("ctm_production_setting");
+  const insuranceDropdown = $("ctm_insurance_setting");
+  const mgmtDropdown = $("ctm_mgmt_setting");
   const currentHandlerDisplay = $("current_handler_name");
 
   // Populate CSR dropdown
@@ -356,8 +368,8 @@ function setupCallHandlerDropdowns() {
   }
 
   // Load current selection
-  chrome.storage.sync.get({ callrail_csr: '' }, (data) => {
-    const currentHandler = data.callrail_csr || '';
+  chrome.storage.sync.get({ ctm_csr: '' }, (data) => {
+    const currentHandler = data.ctm_csr || '';
     if (currentHandler && currentHandlerDisplay) {
       currentHandlerDisplay.textContent = currentHandler;
     }
@@ -389,7 +401,7 @@ function setupCallHandlerDropdowns() {
     });
 
     // Save to storage
-    chrome.storage.sync.set({ callrail_csr: selectedValue }, () => {
+    chrome.storage.sync.set({ ctm_csr: selectedValue }, () => {
       if (currentHandlerDisplay) {
         currentHandlerDisplay.textContent = selectedValue || 'None selected';
       }

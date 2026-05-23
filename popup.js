@@ -191,6 +191,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const mainTabs = Array.from(document.querySelectorAll(".nav-tab"));
     const sections = {
         "sec-scanner": document.getElementById("sec-scanner"),
+        "sec-calls": document.getElementById("sec-calls"),
         "sec-sorting": document.getElementById("sec-sorting"),
         "sec-reports": document.getElementById("sec-reports"),
         "sec-people": document.getElementById("sec-people"),
@@ -271,6 +272,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const settingShowReports = document.getElementById("setting-show-reports");
     const settingShowNotes = document.getElementById("setting-show-notes");
     const settingShowFind = document.getElementById("setting-show-find");
+    const settingShowFormatting = document.getElementById("setting-show-formatting");
+    const settingShowPopupBtn = document.getElementById("setting-show-popup-btn");
+    const settingShowLinks = document.getElementById("setting-show-links");
 
     // Idle Recommendation Modal (legacy - keeping for settings)
     const idleModal = document.getElementById("idle-modal");
@@ -281,9 +285,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const idlePriorityBtns = document.querySelectorAll(".idle-priority-btn");
     const settingIdleTimeout = document.getElementById("setting-idle-timeout");
     const idleTimeoutRow = document.getElementById("idle-timeout-row");
-
-    // Main priority pills (inline in scanner)
-    const mainPriorityPills = document.querySelectorAll(".priority-pill");
 
     // Address Input Recommendation Modal
     const addressRecoModal = document.getElementById("address-reco-modal");
@@ -357,13 +358,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         highlightedCity: null,
         recoCandidates: [],
         recoIndex: 0,
+        recoGlobalIndex: 0, // Track position across ALL candidates (including fallbacks)
+        recoDayIndex: 0, // Current day index for day navigation
+        recoAvailableDays: [], // Array of date strings with available slots
+        allCandidatesForCity: [], // All candidates before day filtering
+        recoBestPerDay: {}, // Map: dateStr -> best candidate for that day (for day-based navigation)
         regionOverrides: {}, // Store overrides mapping: "Event Title + Start Time" -> "PHX" | "NORTH" | "SOUTH"
         dayCutoffs: [], // Array of booleans for Mon-Sun indicating if day is cutoff
         ignoredEvents: {}, // Store ignored uncategorized events: "Event Title + Start Time" -> true
         earliestAvailableByCity: {}, // Track earliest available date per city across weeks: { "MESA": "2025-12-27", ... }
         recentAddresses: [], // Track last 3 entered addresses/cities for quick access
-        lastNavDirection: null, // Track last week navigation direction to prevent loops
-        weekNavCount: 0, // Count of week navigations to prevent infinite loops
         weekDataCache: {} // Cache scan data per week: { "2026-01-04": { events, availability, weekDays, timestamp } }
     };
     let clipboards = [];
@@ -371,6 +375,322 @@ document.addEventListener('DOMContentLoaded', async () => {
     let settings = {};
     let pageDatesISO = null;
     let userAddedCities = { PHX: [], NORTH: [], SOUTH: [] };
+    let isNavigatingDays = false; // Flag to prevent full re-render during day navigation
+
+    // ========= Roofr Job Database (fetched from roofr-search API) =========
+    let _roofrDataCache = null;
+    let _roofrDataPromise = null;
+    window.__selectedRoofrJobLink = null;
+    window.__selectedRoofrJob = null;
+    window.__selectedRoofrJobInputValue = null;
+
+    function _normalizeAddress(val) {
+        if (!val) return '';
+        return String(val).toLowerCase()
+            .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^\w\s]/g, ' ')
+            .replace(/\bstreet\b/g, 'st').replace(/\bavenue\b/g, 'ave')
+            .replace(/\bboulevard\b/g, 'blvd').replace(/\broad\b/g, 'rd')
+            .replace(/\bdrive\b/g, 'dr').replace(/\blane\b/g, 'ln')
+            .replace(/\bcourt\b/g, 'ct').replace(/\bplace\b/g, 'pl')
+            .replace(/\bparkway\b/g, 'pkwy').replace(/\bnorth\b/g, 'n')
+            .replace(/\bsouth\b/g, 's').replace(/\beast\b/g, 'e').replace(/\bwest\b/g, 'w')
+            .replace(/\s+/g, ' ').trim();
+    }
+
+    function _normalizePhone(val) { return String(val || '').replace(/\D/g, ''); }
+
+    function _escapeHtml(val) {
+        return String(val || '')
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function _highlightMatch(text, query) {
+        if (!text || !query) return _escapeHtml(text);
+        const idx = text.toLowerCase().indexOf(query.toLowerCase());
+        if (idx === -1) return _escapeHtml(text);
+        return _escapeHtml(text.slice(0, idx)) +
+            `<mark>${_escapeHtml(text.slice(idx, idx + query.length))}</mark>` +
+            _escapeHtml(text.slice(idx + query.length));
+    }
+
+    async function fetchRoofrData() {
+        if (_roofrDataCache) return _roofrDataCache;
+        if (_roofrDataPromise) return _roofrDataPromise;
+        _roofrDataPromise = (async () => {
+            try {
+                const resp = await fetch('https://roofr-search.vercel.app/api/data', {
+                    cache: 'no-store',
+                    headers: { 'X-Internal-Key': '8ro2zxtukE2ESsn4Cbogc_jq-FSt76EgY1CD68vcK6o' }
+                });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const json = await resp.json();
+                if (!json?.success || !Array.isArray(json.rows)) throw new Error('Bad payload');
+                _roofrDataCache = json.rows.map(job => ({
+                    ...job,
+                    _nAddr: _normalizeAddress(job.Address || ''),
+                    _nCust: (job.Customer || '').toLowerCase().trim(),
+                    _nPhone: _normalizePhone(job.Phone || '')
+                }));
+                console.log(`[Roofr Data] Cached ${_roofrDataCache.length} jobs`);
+                _suggestionCatalog = _buildSuggestionCatalog();
+                console.log(`[Roofr Data] Catalog: ${_suggestionCatalog?.customers.size || 0} customers, ${_suggestionCatalog?.cities.size || 0} cities`);
+                return _roofrDataCache;
+            } catch (e) {
+                console.error('[Roofr Data] Fetch failed:', e);
+                _roofrDataCache = [];
+                _roofrDataPromise = null;
+                return [];
+            }
+        })();
+        return _roofrDataPromise;
+    }
+
+    function searchRoofrData(query) {
+        if (!query || query.length < 2 || !_roofrDataCache || !_roofrDataCache.length) return [];
+        const q = query.toLowerCase().trim();
+        const qAddr = _normalizeAddress(query);
+        const qPhone = _normalizePhone(query);
+        const qTokens = qAddr.split(' ').filter(Boolean);
+
+        return _roofrDataCache
+            .map(job => {
+                let score = 0;
+                // Phone match (highest priority)
+                if (qPhone.length >= 4 && job._nPhone) {
+                    if (job._nPhone === qPhone) score += 300;
+                    else if (job._nPhone.includes(qPhone)) score += 240;
+                }
+                // Customer match
+                if (job._nCust) {
+                    if (job._nCust === q) score += 220;
+                    else if (job._nCust.startsWith(q)) score += 180;
+                    else if (job._nCust.includes(q)) score += 140;
+                }
+                // Address match
+                if (job._nAddr) {
+                    if (job._nAddr === qAddr) score += 260;
+                    else if (job._nAddr.startsWith(qAddr)) score += 210;
+                    else if (job._nAddr.includes(qAddr)) score += 170;
+                    else if (qTokens.length > 1 && qTokens.every(t => job._nAddr.includes(t))) score += 130;
+                }
+                return score > 0 ? { ...job, _score: score } : null;
+            })
+            .filter(Boolean)
+            .sort((a, b) => b._score - a._score || (a.Customer || '').localeCompare(b.Customer || ''))
+            .slice(0, 8);
+    }
+
+    // Preload Roofr data on popup open
+    fetchRoofrData().catch(() => {});
+
+    // ========= Suggestion Catalog (roofr-search style) =========
+    let _suggestionCatalog = null;
+    let _activeSuggestionIndex = -1;
+    let _suggestionItems = []; // flat list of clickable elements for keyboard nav
+
+    function _buildSuggestionCatalog() {
+        if (!_roofrDataCache || !_roofrDataCache.length) return null;
+        const catalog = {
+            customers: new Map(),
+            addresses: new Map(),
+            phones: new Map(),
+            stages: new Map(),
+            cities: new Map(),
+            tags: new Map(),
+        };
+        for (const job of _roofrDataCache) {
+            // Customer
+            if (job._nCust) {
+                const display = job.Customer?.trim() || '';
+                if (!catalog.customers.has(job._nCust)) {
+                    catalog.customers.set(job._nCust, { display, jobs: [], count: 0 });
+                }
+                const entry = catalog.customers.get(job._nCust);
+                entry.jobs.push(job);
+                entry.count++;
+            }
+            // Address (street only, before first comma)
+            if (job._nAddr) {
+                const display = (job.Address || '').split(',')[0].trim();
+                const key = _normalizeAddress(display);
+                if (display && key) {
+                    if (!catalog.addresses.has(key)) {
+                        catalog.addresses.set(key, { display, jobs: [], count: 0 });
+                    }
+                    const entry = catalog.addresses.get(key);
+                    entry.jobs.push(job);
+                    entry.count++;
+                }
+            }
+            // Phone
+            if (job._nPhone && job._nPhone.length >= 10) {
+                if (!catalog.phones.has(job._nPhone)) {
+                    catalog.phones.set(job._nPhone, { display: job.Phone?.trim() || job._nPhone, jobs: [] });
+                }
+                catalog.phones.get(job._nPhone).jobs.push(job);
+            }
+            // Stage
+            const stage = job.Stage?.trim();
+            if (stage) catalog.stages.set(stage, (catalog.stages.get(stage) || 0) + 1);
+            // City (extract from address: "123 Main St, Mesa, AZ 85201" → "Mesa")
+            const city = (job.Address || '').split(',')[1]?.trim();
+            if (city && city.length > 1 && !/^\d/.test(city)) {
+                catalog.cities.set(city, (catalog.cities.get(city) || 0) + 1);
+            }
+            // Tags
+            if (job.Tags) {
+                for (const tag of job.Tags.split(',')) {
+                    const t = tag.trim();
+                    if (t) catalog.tags.set(t, (catalog.tags.get(t) || 0) + 1);
+                }
+            }
+        }
+        return catalog;
+    }
+
+    function _queryMatchesCatalog(q, catalog) {
+        if (!catalog || !q || q.length < 2) return null;
+        const qLow = q.toLowerCase().trim();
+        const qNAddr = _normalizeAddress(q);
+        const qNPhone = _normalizePhone(q);
+        const results = { customers: [], addresses: [], phones: [], stages: [], cities: [], tags: [] };
+        let total = 0;
+
+        // Customers
+        for (const [key, entry] of catalog.customers) {
+            if (key.includes(qLow) || entry.display.toLowerCase().includes(qLow)) {
+                results.customers.push(entry);
+                total++;
+            }
+        }
+        results.customers.sort((a, b) => b.count - a.count || a.display.localeCompare(b.display));
+        results.customers = results.customers.slice(0, 5);
+
+        // Addresses (need 3+ chars)
+        if (qNAddr.length >= 3) {
+            for (const [key, entry] of catalog.addresses) {
+                if (key.includes(qNAddr) || entry.display.toLowerCase().includes(qLow)) {
+                    results.addresses.push(entry);
+                    total++;
+                }
+            }
+            results.addresses.sort((a, b) => b.count - a.count);
+            results.addresses = results.addresses.slice(0, 5);
+        }
+
+        // Phones (need 4+ digits)
+        if (qNPhone.length >= 4) {
+            for (const [key, entry] of catalog.phones) {
+                if (key.includes(qNPhone)) {
+                    results.phones.push(entry);
+                    total++;
+                }
+            }
+            results.phones = results.phones.slice(0, 3);
+        }
+
+        // Stages
+        for (const [stage, count] of catalog.stages) {
+            if (stage.toLowerCase().includes(qLow)) {
+                results.stages.push({ display: stage, count });
+                total++;
+            }
+        }
+        results.stages.sort((a, b) => b.count - a.count);
+        results.stages = results.stages.slice(0, 4);
+
+        // Cities
+        for (const [city, count] of catalog.cities) {
+            if (city.toLowerCase().includes(qLow)) {
+                results.cities.push({ display: city, count });
+                total++;
+            }
+        }
+        results.cities.sort((a, b) => b.count - a.count);
+        results.cities = results.cities.slice(0, 4);
+
+        // Tags
+        for (const [tag, count] of catalog.tags) {
+            if (tag.toLowerCase().includes(qLow)) {
+                results.tags.push({ display: tag, count });
+                total++;
+            }
+        }
+        results.tags.sort((a, b) => b.count - a.count);
+        results.tags = results.tags.slice(0, 4);
+
+        return total > 0 ? results : null;
+    }
+
+    async function openJobCard(job) {
+        if (!job || !job.Link) {
+            showToast('No job link found');
+            return;
+        }
+        try {
+            const createOpts = { url: job.Link, active: false };
+            if (window.__targetWindowId) createOpts.windowId = window.__targetWindowId;
+            await chrome.tabs.create(createOpts);
+            addLog(`Opened job card: ${job.Customer || ''} — ${job.Address || ''}`);
+        } catch (err) {
+            console.error('[Popup] Error opening job card:', err);
+            showToast('Error opening job card');
+        }
+    }
+
+    async function selectCalendarSuggestion(suggestion) {
+        if (!suggestion) return;
+
+        if (suggestion.group === 'Customer') {
+            const jobs = suggestion.jobs || [];
+            if (jobs.length === 1) {
+                await openJobCard(jobs[0]);
+            } else if (jobs.length > 1) {
+                // Show sub-list of addresses for this customer
+                if (!verifiedAddressesList) return;
+                verifiedAddressesList.innerHTML = '';
+                _suggestionItems = [];
+                _activeSuggestionIndex = -1;
+                const hdr = document.createElement('div');
+                hdr.className = 'suggestion-section-header';
+                hdr.textContent = `${suggestion.display} — ${jobs.length} jobs`;
+                verifiedAddressesList.appendChild(hdr);
+                for (const job of jobs) {
+                    const el = document.createElement('div');
+                    el.className = 'suggestion-item sheet-match';
+                    const addr = _escapeHtml((job.Address || '').trim() || 'Unknown');
+                    const stage = _escapeHtml(job.Stage || '');
+                    el.innerHTML = `<div class="match-primary">${addr}</div><div class="match-meta">${stage}</div>`;
+                    el.addEventListener('mousedown', (e) => e.preventDefault());
+                    el.addEventListener('click', () => {
+                        verifiedAddressesList.classList.add('hidden');
+                        openJobCard(job);
+                    });
+                    verifiedAddressesList.appendChild(el);
+                    _suggestionItems.push(el);
+                }
+                verifiedAddressesList.classList.remove('hidden');
+            }
+            return;
+        }
+
+        if (suggestion.group === 'Address' || suggestion.group === 'Phone') {
+            const jobs = suggestion.jobs || [];
+            if (jobs.length > 0) {
+                await openJobCard(jobs[0]);
+            }
+            return;
+        }
+
+        // Stage/City/Tags — put value in input as filter text
+        if (addrInput) {
+            addrInput.value = suggestion.display;
+            addrInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        if (verifiedAddressesList) verifiedAddressesList.classList.add('hidden');
+    }
 
     let userPrefs = {
         theme: 'light',
@@ -388,7 +708,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         showClipboardTab: true,
         showReportsTab: true,
         showQuickNotes: true,
-        showFindBar: true
+        showFindBar: true,
+        // Footer tools
+        footerShowFormatting: true,
+        footerShowPopupBtn: true,
+        footerShowLinks: true,
+        // New settings from options page
+        showColorIndicators: true,
+        showIcons: true,
+        animateTransitions: true,
+        autoExpandDays: false  // Default to collapsed
     };
 
     function showToast(msg) {
@@ -444,6 +773,53 @@ document.addEventListener('DOMContentLoaded', async () => {
         return `(${digits.slice(0,3)}) ${digits.slice(3,6)}-${digits.slice(6)}`;
     }
 
+    // Name detection - returns the name if it looks like a person's name, null otherwise
+    function detectName(input) {
+        if (!input) return null;
+
+        // Already detected as phone number? Not a name.
+        if (detectPhoneNumber(input)) return null;
+
+        // Contains numbers at the start (like an address "123 Main St")? Not a name.
+        if (/^\d/.test(input.trim())) return null;
+
+        // Contains address indicators? Not a name.
+        const addressIndicators = /\b(rd|road|st|street|ave|avenue|blvd|boulevard|ln|lane|dr|drive|ct|court|cir|circle|way|pl|place|pkwy|parkway|hwy|highway|apt|suite|ste|unit|#)\b/i;
+        if (addressIndicators.test(input)) return null;
+
+        // Contains state abbreviations or zip codes? Not a name.
+        const stateZipPattern = /\b(AZ|CA|TX|NV|NM|CO|UT|OR|WA|FL|GA|NC|SC|VA|MD|PA|NY|NJ|OH|MI|IL|MO|TN|AL|MS|LA|AR|OK|KS|NE|SD|ND|MT|WY|ID|HI|AK|WI|MN|IA|IN|KY|WV|DE|CT|RI|MA|VT|NH|ME|DC)\b|\b\d{5}(-\d{4})?\b/i;
+        if (stateZipPattern.test(input)) return null;
+
+        // Contains commas (likely an address like "City, AZ")? Not a name.
+        if (input.includes(',')) return null;
+
+        // Check if it looks like a name: mostly letters, spaces, hyphens, apostrophes
+        // Names can be 1-4 words (first, first last, first middle last, etc.)
+        const namePattern = /^[A-Za-z][A-Za-z'\-\s]*$/;
+        const trimmed = input.trim();
+
+        // Must match name pattern
+        if (!namePattern.test(trimmed)) return null;
+
+        // Should be 2-40 characters (reasonable name length)
+        if (trimmed.length < 2 || trimmed.length > 40) return null;
+
+        // Should have 1-4 words
+        const words = trimmed.split(/\s+/).filter(w => w.length > 0);
+        if (words.length < 1 || words.length > 4) return null;
+
+        // Check if this matches a known city name (from CONFIG) - if so, it's not a name
+        // This prevents "Mesa" or "Phoenix" from being treated as person names
+        const cityList = CONFIG.resolveCityCandidatesFromInput(trimmed);
+        if (cityList.length > 0) {
+            // It's a known city, not a person name
+            return null;
+        }
+
+        return trimmed;
+    }
+
     function updateScanButtonState() {
         if (!scanBtn) return;
         const isOutOfSync = pageDatesISO && state.weekDays && JSON.stringify(pageDatesISO) !== JSON.stringify(state.weekDays);
@@ -458,7 +834,34 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    function renderUIFromState() {
+    // Debounce render to prevent stutter from multiple rapid calls
+    let _renderTimeout = null;
+    let _lastRenderTime = 0;
+    const RENDER_DEBOUNCE_MS = 50;
+
+    function renderUIFromState(immediate = false) {
+        const now = Date.now();
+
+        // If immediate or enough time has passed, render now
+        if (immediate || now - _lastRenderTime > RENDER_DEBOUNCE_MS) {
+            if (_renderTimeout) {
+                clearTimeout(_renderTimeout);
+                _renderTimeout = null;
+            }
+            _lastRenderTime = now;
+            _doRenderUI();
+        } else {
+            // Debounce: schedule render for later, canceling any pending render
+            if (_renderTimeout) clearTimeout(_renderTimeout);
+            _renderTimeout = setTimeout(() => {
+                _renderTimeout = null;
+                _lastRenderTime = Date.now();
+                _doRenderUI();
+            }, RENDER_DEBOUNCE_MS);
+        }
+    }
+
+    function _doRenderUI() {
         addLog(`Rendering UI for region: ${state.currentRegion}`);
         regionPills.forEach(t => t.classList.toggle("active", t.dataset.region === state.currentRegion));
         if (addrInput) {
@@ -617,159 +1020,304 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Fetch address suggestions using multiple geocoding APIs for better coverage
     async function fetchAddressSuggestions(query) {
         if (!verifiedAddressesList) return;
+        _activeSuggestionIndex = -1;
+        _suggestionItems = [];
 
-        // Hide if query is too short
-        if (!query || query.length < 3) {
+        if (!query || query.length < 2) {
+            verifiedAddressesList.innerHTML = '';
             verifiedAddressesList.classList.add('hidden');
             return;
         }
 
-        // Clear existing options first
+        // Clear Roofr job selection if user changed input
+        if (window.__selectedRoofrJobLink && window.__selectedRoofrJobInputValue &&
+            query.trim() !== window.__selectedRoofrJobInputValue) {
+            window.__selectedRoofrJobLink = null;
+            window.__selectedRoofrJob = null;
+            window.__selectedRoofrJobInputValue = null;
+        }
+
         verifiedAddressesList.innerHTML = '';
-        const addedAddresses = new Set();
+        const addedNormalized = new Set();
         let hasResults = false;
 
-        try {
-            // Try LocationIQ first - has better residential address coverage
-            // Free tier: 5000 requests/day
-            const locationIQKey = 'pk.c79c63c7e7d0dcbde7a65c67af5de77f'; // Free tier demo key
-            const locationIQUrl = `https://us1.locationiq.com/v1/autocomplete?key=${locationIQKey}&q=${encodeURIComponent(query)}&countrycodes=us&limit=10&dedupe=1&tag=place:house,place:address,highway:residential`;
+        // ═══ SECTION 1: DB Catalog Matches (grouped) ═══
+        const catalogResults = _queryMatchesCatalog(query, _suggestionCatalog);
 
-            const locationIQResponse = await fetch(locationIQUrl);
+        if (catalogResults) {
+            const addGroup = (label, items, renderFn) => {
+                if (!items.length) return;
+                const hdr = document.createElement('div');
+                hdr.className = 'suggestion-section-header';
+                hdr.textContent = label;
+                verifiedAddressesList.appendChild(hdr);
+                for (const item of items) renderFn(item);
+            };
 
-            if (locationIQResponse.ok) {
-                const locationIQData = await locationIQResponse.json();
+            // Customers → click opens job card directly
+            addGroup('Customers', catalogResults.customers, (entry) => {
+                const el = document.createElement('div');
+                el.className = 'suggestion-item sheet-match';
+                const countBadge = entry.count > 1 ? `<span class="match-count">${entry.count} jobs</span>` : '';
+                const firstJob = entry.jobs[0];
+                const stage = _escapeHtml(firstJob?.Stage || '');
+                el.innerHTML = `<div class="match-primary">${_highlightMatch(entry.display, query)} ${countBadge}</div>` +
+                    `<div class="match-meta">${stage}${entry.count > 1 ? ' +more' : ''}</div>`;
+                el.addEventListener('mousedown', (e) => e.preventDefault());
+                el.addEventListener('click', () => {
+                    verifiedAddressesList.classList.add('hidden');
+                    selectCalendarSuggestion({ group: 'Customer', display: entry.display, jobs: entry.jobs, count: entry.count });
+                });
+                verifiedAddressesList.appendChild(el);
+                _suggestionItems.push(el);
+                el.__suggestion = { group: 'Customer', display: entry.display, jobs: entry.jobs, count: entry.count };
+                hasResults = true;
+                // Track addresses to avoid dupes with geocoding
+                for (const j of entry.jobs) {
+                    if (j._nAddr) addedNormalized.add(j._nAddr);
+                }
+            });
 
-                for (const result of locationIQData) {
-                    const addr = result.address || {};
-                    const state = addr.state || '';
+            // Addresses → click opens job card directly
+            addGroup('Addresses', catalogResults.addresses, (entry) => {
+                const el = document.createElement('div');
+                el.className = 'suggestion-item sheet-match';
+                const firstJob = entry.jobs[0];
+                el.innerHTML = `<div class="match-primary">${_highlightMatch(entry.display, query)}</div>` +
+                    `<div class="match-meta">${_escapeHtml(firstJob?.Customer || '')} — ${_escapeHtml(firstJob?.Stage || '')}</div>`;
+                el.addEventListener('mousedown', (e) => e.preventDefault());
+                el.addEventListener('click', () => {
+                    verifiedAddressesList.classList.add('hidden');
+                    selectCalendarSuggestion({ group: 'Address', display: entry.display, jobs: entry.jobs });
+                });
+                verifiedAddressesList.appendChild(el);
+                _suggestionItems.push(el);
+                el.__suggestion = { group: 'Address', display: entry.display, jobs: entry.jobs };
+                hasResults = true;
+                if (entry.jobs[0]?._nAddr) addedNormalized.add(entry.jobs[0]._nAddr);
+            });
 
-                    // Filter to Arizona and nearby states
-                    if (state && !['Arizona'].includes(state) &&
-                        !['Nevada', 'California', 'New Mexico', 'Utah'].includes(state)) {
-                        continue;
-                    }
+            // Phones → click opens job card directly
+            addGroup('Phone', catalogResults.phones, (entry) => {
+                const el = document.createElement('div');
+                el.className = 'suggestion-item sheet-match';
+                const firstJob = entry.jobs[0];
+                el.innerHTML = `<div class="match-primary">${_highlightMatch(entry.display, query)}</div>` +
+                    `<div class="match-meta">${_escapeHtml(firstJob?.Customer || '')} — ${_escapeHtml(firstJob?.Address || '')}</div>`;
+                el.addEventListener('mousedown', (e) => e.preventDefault());
+                el.addEventListener('click', () => {
+                    verifiedAddressesList.classList.add('hidden');
+                    selectCalendarSuggestion({ group: 'Phone', display: entry.display, jobs: entry.jobs });
+                });
+                verifiedAddressesList.appendChild(el);
+                _suggestionItems.push(el);
+                el.__suggestion = { group: 'Phone', display: entry.display, jobs: entry.jobs };
+                hasResults = true;
+            });
 
-                    // Build formatted address
-                    let parts = [];
+            // Stages → filter text
+            addGroup('Stage', catalogResults.stages, (entry) => {
+                const el = document.createElement('div');
+                el.className = 'suggestion-item filter-match';
+                el.innerHTML = `<div class="match-primary">${_highlightMatch(entry.display, query)}</div>` +
+                    `<div class="match-meta">${entry.count} job${entry.count !== 1 ? 's' : ''}</div>`;
+                el.addEventListener('mousedown', (e) => e.preventDefault());
+                el.addEventListener('click', () => {
+                    verifiedAddressesList.classList.add('hidden');
+                    selectCalendarSuggestion({ group: 'Stage', display: entry.display });
+                });
+                verifiedAddressesList.appendChild(el);
+                _suggestionItems.push(el);
+                el.__suggestion = { group: 'Stage', display: entry.display };
+                hasResults = true;
+            });
 
-                    // Street address
-                    if (addr.house_number && addr.road) {
-                        parts.push(`${addr.house_number} ${addr.road}`);
-                    } else if (addr.road) {
-                        parts.push(addr.road);
-                    } else if (result.display_name) {
-                        // Use first part of display name
-                        const displayParts = result.display_name.split(',');
-                        if (displayParts[0]) parts.push(displayParts[0].trim());
-                    }
+            // Cities → filter text
+            addGroup('City', catalogResults.cities, (entry) => {
+                const el = document.createElement('div');
+                el.className = 'suggestion-item filter-match';
+                el.innerHTML = `<div class="match-primary">${_highlightMatch(entry.display, query)}</div>` +
+                    `<div class="match-meta">${entry.count} job${entry.count !== 1 ? 's' : ''}</div>`;
+                el.addEventListener('mousedown', (e) => e.preventDefault());
+                el.addEventListener('click', () => {
+                    verifiedAddressesList.classList.add('hidden');
+                    selectCalendarSuggestion({ group: 'City', display: entry.display });
+                });
+                verifiedAddressesList.appendChild(el);
+                _suggestionItems.push(el);
+                el.__suggestion = { group: 'City', display: entry.display };
+                hasResults = true;
+            });
 
-                    // City
-                    const city = addr.city || addr.town || addr.village || addr.hamlet || addr.municipality;
-                    if (city) parts.push(city);
+            // Tags → filter text
+            addGroup('Tags', catalogResults.tags, (entry) => {
+                const el = document.createElement('div');
+                el.className = 'suggestion-item filter-match';
+                el.innerHTML = `<div class="match-primary">${_highlightMatch(entry.display, query)}</div>` +
+                    `<div class="match-meta">${entry.count} job${entry.count !== 1 ? 's' : ''}</div>`;
+                el.addEventListener('mousedown', (e) => e.preventDefault());
+                el.addEventListener('click', () => {
+                    verifiedAddressesList.classList.add('hidden');
+                    selectCalendarSuggestion({ group: 'Tag', display: entry.display });
+                });
+                verifiedAddressesList.appendChild(el);
+                _suggestionItems.push(el);
+                el.__suggestion = { group: 'Tag', display: entry.display };
+                hasResults = true;
+            });
+        }
 
-                    // State abbreviation
-                    if (state) {
-                        const stateMap = { 'Arizona': 'AZ', 'Nevada': 'NV', 'California': 'CA', 'New Mexico': 'NM', 'Utah': 'UT' };
-                        parts.push(stateMap[state] || state);
-                    }
+        // ═══ SECTION 2: Geocoding API fallback (address-like queries only) ═══
+        const looksLikeAddress = /\d/.test(query) || query.includes(',');
+        // When query is specific (house number + 15+ chars), prioritize new address results
+        // Short queries → DB first (find existing jobs fast). Long queries → geo first (entering a new address).
+        const queryIsSpecific = /\d/.test(query) && query.trim().length >= 15;
+        const dbInsertRef = queryIsSpecific ? verifiedAddressesList.firstChild : null;
+        if (looksLikeAddress) {
+            let geoHeaderAdded = false;
+            const geoSuggestionItems = []; // track geo items for re-ordering _suggestionItems
+            const addGeoOption = (address) => {
+                if (!address || address.length <= 3) return;
+                const titleCaseAddress = toTitleCase(address);
+                const norm = _normalizeAddress(titleCaseAddress);
+                if (addedNormalized.has(norm)) return;
+                addedNormalized.add(norm);
 
-                    // Zip code
-                    if (addr.postcode) parts.push(addr.postcode);
-
-                    const formatted = parts.join(', ');
-                    if (formatted.length > 5) {
-                        addOption(formatted, addedAddresses);
-                        hasResults = true;
+                if (!geoHeaderAdded) {
+                    geoHeaderAdded = true;
+                    const hdr = document.createElement('div');
+                    hdr.className = 'suggestion-section-header';
+                    hdr.textContent = 'Address Suggestions';
+                    if (queryIsSpecific && dbInsertRef) {
+                        verifiedAddressesList.insertBefore(hdr, dbInsertRef);
+                    } else {
+                        verifiedAddressesList.appendChild(hdr);
                     }
                 }
+
+                const el = document.createElement('div');
+                el.className = 'suggestion-item api-match';
+                el.textContent = titleCaseAddress;
+                el.addEventListener('mousedown', (e) => e.preventDefault());
+                el.addEventListener('click', () => {
+                    if (addrInput) {
+                        addrInput.value = titleCaseAddress;
+                        addrInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                    window.__selectedRoofrJobLink = null;
+                    window.__selectedRoofrJob = null;
+                    window.__selectedRoofrJobInputValue = null;
+                    verifiedAddressesList.classList.add('hidden');
+                    updateGoButtonState();
+                });
+                if (queryIsSpecific && dbInsertRef) {
+                    verifiedAddressesList.insertBefore(el, dbInsertRef);
+                } else {
+                    verifiedAddressesList.appendChild(el);
+                }
+                geoSuggestionItems.push(el);
+                _suggestionItems.push(el);
+                el.__suggestion = null; // geocoding result, not a DB match
+                hasResults = true;
+            };
+
+            try {
+                // LocationIQ autocomplete
+                const locationIQKey = 'pk.c79c63c7e7d0dcbde7a65c67af5de77f';
+                const locationIQUrl = `https://us1.locationiq.com/v1/autocomplete?key=${locationIQKey}&q=${encodeURIComponent(query)}&countrycodes=us&limit=10&dedupe=1&tag=place:house,place:address,highway:residential`;
+                const locationIQResponse = await fetch(locationIQUrl);
+                if (locationIQResponse.ok) {
+                    const locationIQData = await locationIQResponse.json();
+                    for (const result of locationIQData) {
+                        const addr = result.address || {};
+                        const st = addr.state || '';
+                        if (st && !['Arizona'].includes(st) && !['Nevada', 'California', 'New Mexico', 'Utah'].includes(st)) continue;
+                        let parts = [];
+                        if (addr.house_number && addr.road) parts.push(`${addr.house_number} ${addr.road}`);
+                        else if (addr.road) parts.push(addr.road);
+                        else if (result.display_name) { const dp = result.display_name.split(','); if (dp[0]) parts.push(dp[0].trim()); }
+                        const city = addr.city || addr.town || addr.village || addr.hamlet || addr.municipality;
+                        if (city) parts.push(city);
+                        if (st) { const stateMap = { 'Arizona': 'AZ', 'Nevada': 'NV', 'California': 'CA', 'New Mexico': 'NM', 'Utah': 'UT' }; parts.push(stateMap[st] || st); }
+                        if (addr.postcode) parts.push(addr.postcode);
+                        const formatted = parts.join(', ');
+                        if (formatted.length > 5) addGeoOption(formatted);
+                    }
+                }
+
+                // Geoapify fallback
+                if (addedNormalized.size < 10) {
+                    const geoapifyKey = 'a23dc46289844c50a3b12c3ab8b6759b';
+                    const geoapifyUrl = `https://api.geoapify.com/v1/geocode/autocomplete?text=${encodeURIComponent(query)}&filter=countrycode:us&bias=proximity:-112.07,33.45&limit=8&apiKey=${geoapifyKey}`;
+                    try {
+                        const geoapifyResponse = await fetch(geoapifyUrl);
+                        if (geoapifyResponse.ok) {
+                            const geoapifyData = await geoapifyResponse.json();
+                            for (const feature of geoapifyData.features || []) {
+                                const props = feature.properties;
+                                const st = props.state || '';
+                                if (st && !['Arizona', 'AZ'].includes(st) && !['Nevada', 'NV', 'California', 'CA', 'New Mexico', 'NM', 'Utah', 'UT'].includes(st)) continue;
+                                let formattedAddress = props.formatted || '';
+                                formattedAddress = formattedAddress.replace(/,?\s*United States\s*$/i, '').trim();
+                                addGeoOption(formattedAddress);
+                            }
+                        }
+                    } catch (e) { console.log('Geoapify error', e); }
+                }
+
+                // Census Bureau geocoder
+                if (addedNormalized.size < 8) {
+                    const censusUrl = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(query + ', AZ')}&benchmark=Public_AR_Current&format=json`;
+                    try {
+                        const censusResponse = await fetch(censusUrl);
+                        if (censusResponse.ok) {
+                            const censusData = await censusResponse.json();
+                            const matches = censusData.result?.addressMatches || [];
+                            for (const match of matches) {
+                                const formatted = match.matchedAddress;
+                                if (formatted) addGeoOption(formatted.replace(/,\s*USA?\s*$/i, '').trim());
+                            }
+                        }
+                    } catch (e) { /* Census API can be slow */ }
+                }
+            } catch (error) {
+                addLog(`Address suggestion error: ${error.message}`, 'WARN');
             }
 
-            // If we didn't get enough results, also try Geoapify
-            if (addedAddresses.size < 5) {
-                const geoapifyKey = 'a23dc46289844c50a3b12c3ab8b6759b';
-                const geoapifyUrl = `https://api.geoapify.com/v1/geocode/autocomplete?text=${encodeURIComponent(query)}&filter=countrycode:us&bias=proximity:-112.07,33.45&limit=8&apiKey=${geoapifyKey}`;
+            // Re-order keyboard nav to match visual order: geo items first when specific
+            if (queryIsSpecific && geoSuggestionItems.length > 0) {
+                const dbItems = _suggestionItems.filter(el => !geoSuggestionItems.includes(el));
+                _suggestionItems = [...geoSuggestionItems, ...dbItems];
+            }
+        }
 
-                try {
-                    const geoapifyResponse = await fetch(geoapifyUrl);
-
-                    if (geoapifyResponse.ok) {
-                        const geoapifyData = await geoapifyResponse.json();
-
-                        for (const feature of geoapifyData.features || []) {
-                            const props = feature.properties;
-                            const state = props.state || '';
-
-                            // Filter to Arizona and nearby states
-                            if (state && !['Arizona', 'AZ'].includes(state) &&
-                                !['Nevada', 'NV', 'California', 'CA', 'New Mexico', 'NM', 'Utah', 'UT'].includes(state)) {
-                                continue;
-                            }
-
-                            let formattedAddress = props.formatted || '';
-                            formattedAddress = formattedAddress.replace(/,?\s*United States\s*$/i, '').trim();
-                            addOption(formattedAddress, addedAddresses);
+        // Also add matching cities from our whitelists
+        if (!looksLikeAddress) {
+            const queryUpper = query.toUpperCase();
+            for (const regionKey of ['PHX', 'NORTH', 'SOUTH']) {
+                const cities = CONFIG.REGION_CITY_WHITELISTS[regionKey];
+                if (cities) {
+                    for (const city of cities) {
+                        if (city.includes(queryUpper) && !addedNormalized.has(_normalizeAddress(city))) {
+                            const el = document.createElement('div');
+                            el.className = 'suggestion-item filter-match';
+                            el.innerHTML = `<div class="match-primary">${_highlightMatch(city, query)}</div><div class="match-meta">Region city</div>`;
+                            el.addEventListener('mousedown', (e) => e.preventDefault());
+                            el.addEventListener('click', () => {
+                                if (addrInput) { addrInput.value = city; addrInput.dispatchEvent(new Event('input', { bubbles: true })); }
+                                verifiedAddressesList.classList.add('hidden');
+                            });
+                            verifiedAddressesList.appendChild(el);
+                            _suggestionItems.push(el);
                             hasResults = true;
                         }
                     }
-                } catch (e) {
-                    console.log('Geoapify error', e);
-                }
-            }
-
-            // Also try the US Census Bureau geocoder for exact matches (best for US addresses)
-            if (addedAddresses.size < 3) {
-                const censusUrl = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(query + ', AZ')}&benchmark=Public_AR_Current&format=json`;
-
-                try {
-                    const censusResponse = await fetch(censusUrl);
-                    if (censusResponse.ok) {
-                        const censusData = await censusResponse.json();
-                        const matches = censusData.result?.addressMatches || [];
-
-                        for (const match of matches) {
-                            const formatted = match.matchedAddress;
-                            if (formatted) {
-                                // Clean up the address format
-                                const cleaned = formatted.replace(/,\s*USA?\s*$/i, '').trim();
-                                addOption(cleaned, addedAddresses);
-                                hasResults = true;
-                            }
-                        }
-                    }
-                } catch (e) {
-                    // Census API can be slow, don't block on errors
-                }
-            }
-
-            addLog(`Fetched ${addedAddresses.size} address suggestions from APIs`);
-
-        } catch (error) {
-            addLog(`Address suggestion error: ${error.message}`, 'WARN');
-        }
-
-        // Also add matching cities from our whitelists for quick access
-        const queryUpper = query.toUpperCase();
-        for (const regionKey of ['PHX', 'NORTH', 'SOUTH']) {
-            const cities = CONFIG.REGION_CITY_WHITELISTS[regionKey];
-            if (cities) {
-                for (const city of cities) {
-                    if (city.includes(queryUpper)) {
-                        addOption(city, addedAddresses);
-                        hasResults = true;
-                    }
                 }
             }
         }
 
-        // Show/hide container based on results
-        // Don't show if the only suggestion matches the current input (already verified)
-        const currentInputValue = addrInput?.value?.trim() || '';
-        const suggestions = Array.from(addedAddresses);
-        const onlyMatchesInput = suggestions.length === 1 &&
-            suggestions[0].toLowerCase() === currentInputValue.toLowerCase();
-
-        if (hasResults && addedAddresses.size > 0 && !onlyMatchesInput) {
+        // Show/hide container
+        if (hasResults) {
             verifiedAddressesList.classList.remove('hidden');
         } else {
             verifiedAddressesList.classList.add('hidden');
@@ -789,9 +1337,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Debounced version for typing
     const debouncedFetchAddressSuggestions = debounce(fetchAddressSuggestions, 300);
 
+    let _selfSavingState = false; // Flag to prevent re-render when we save state ourselves
     const debouncedSaveState = debounce(async () => {
+        _selfSavingState = true;
         if (chrome.storage && chrome.storage.local) await chrome.storage.local.set({ [SHARED_STATE_KEY]: state });
         addLog('Shared state saved.');
+        // Reset flag after a short delay to allow storage event to fire
+        setTimeout(() => { _selfSavingState = false; }, 100);
     }, 250);
 
     async function loadState() {
@@ -810,6 +1362,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     chrome.storage.onChanged.addListener((changes, namespace) => {
         if (namespace === 'local' && changes[SHARED_STATE_KEY]) {
+            // Skip re-render if we're the ones who saved the state
+            if (_selfSavingState) {
+                addLog('Shared state changed (self-triggered). Skipping re-render.');
+                return;
+            }
+            // Skip full re-render if we're just navigating between days
+            if (isNavigatingDays) {
+                addLog('Shared state changed (day navigation). Skipping full re-render.');
+                state = { ...state, ...changes[SHARED_STATE_KEY].newValue };
+                return;
+            }
             addLog('Shared state changed externally. Updating UI.');
             state = { ...state, ...changes[SHARED_STATE_KEY].newValue };
             renderUIFromState();
@@ -823,14 +1386,73 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Listen for settings changes from options page (sync storage)
         if (namespace === 'sync') {
             const settingsToWatch = [
-                'theme', 'compact_mode', 'global_panel_mode', 'auto_scan_on_load',
+                // Appearance
+                'theme', 'compact_mode', 'show_color_indicators', 'show_icons', 'animate_transitions',
+                // Interface - Tab visibility
                 'show_job_sorting', 'show_people', 'show_clipboard', 'show_reports',
-                'show_uncategorized_alerts'
+                // Interface - Navigation & Controls
+                'show_week_navigation', 'show_date_picker', 'show_team_selector',
+                'show_refresh_button', 'show_tab_badges', 'show_dock_note',
+                'global_panel_mode', 'auto_expand_days',
+                // Footer Tools
+                'footer_show_find', 'footer_show_notes', 'footer_show_formatting',
+                'footer_show_popup_btn', 'footer_show_links',
+                // Scanner
+                'scanner_enabled', 'auto_scan_on_load', 'show_capacity_display',
+                'show_daily_totals', 'show_city_chips', 'show_region_filter',
+                'show_availability_section', 'show_booked_count', 'show_available_count',
+                'show_uncategorized_alerts', 'highlight_recommended_slots',
+                'show_out_of_sync_warning', 'show_overbooked_warning',
+                // Home Search
+                'home_search_enabled', 'address_verification_enabled', 'show_recent_addresses',
+                'show_address_suggestions', 'auto_copy_verified_address', 'show_geocode_results',
+                'normalize_addresses', 'search_google_earth', 'search_gemini', 'search_roofr',
+                // Phone Search
+                'phone_search_enabled', 'auto_format_phone', 'show_phone_history', 'phone_search_auto_open',
+                // CTM
+                'ctm_enabled', 'ctm_auto_search', 'ctm_show_notifications',
+                'ctm_show_active_calls', 'ctm_auto_open_calls_page', 'ctm_group_tabs',
+                // Job Sorting
+                'job_sorting_auto_load', 'job_sorting_remember_filters', 'job_sorting_multi_select',
+                'job_sorting_show_residential', 'job_sorting_show_commercial', 'job_sorting_show_insurance',
+                'job_sorting_show_unknown_roof', 'job_sorting_show_unknown_stories',
+                // Reports
+                'reports_enabled', 'reports_calendar_enabled', 'reports_job_card_enabled',
+                'reports_batch_enabled', 'reports_auto_export',
+                // People
+                'people_show_reps', 'people_show_mgmt', 'people_show_csrs', 'people_show_production',
+                'people_clickable_names', 'people_show_counts',
+                // Clipboard
+                'clipboard_smart_formatting', 'clipboard_auto_format_paste',
+                'clipboard_show_day_copy', 'clipboard_show_week_copy', 'clipboard_preserve_formatting',
+                // Find
+                'find_enabled', 'find_highlight_enabled', 'find_case_sensitive',
+                'find_whole_word', 'find_regex_enabled', 'find_show_counter', 'find_show_navigation',
+                // Data & Cities
+                'dynamic_city_learning', 'city_whitelist_strict', 'show_learned_cities', 'auto_categorize_jobs',
+                // Configuration
+                'NEXT_SHEET_ID', 'AVAIL_RANGE_PHX', 'AVAIL_RANGE_NORTH', 'AVAIL_RANGE_SOUTH',
+                'PEOPLE_REPS', 'PEOPLE_MGMT', 'PEOPLE_CSRS'
             ];
             const hasSettingChange = settingsToWatch.some(key => changes[key]);
             if (hasSettingChange) {
                 addLog('Settings changed in options page. Applying...');
-                applyUserPrefs();
+                // Reload all settings and refresh UI
+                (async () => {
+                    await loadSettings();
+                    applyUserPrefs();
+                    await loadPeopleLists();
+                    // Update setup banner visibility
+                    const setupBanner = document.getElementById('setup-banner');
+                    if (setupBanner) {
+                        if (settings.NEXT_SHEET_ID) {
+                            setupBanner.classList.add('hidden');
+                        } else {
+                            setupBanner.classList.remove('hidden');
+                        }
+                    }
+                    renderUIFromState();
+                })();
             }
         }
     });
@@ -839,17 +1461,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         chrome.runtime.onMessage.addListener((msg) => {
             if (msg.type === "ROOFR_DATES_CHANGED") {
                 addLog(`Page navigated to new dates.`);
+                console.log('[RECO DEBUG] ROOFR_DATES_CHANGED received');
+                console.log('[RECO DEBUG] pageDatesISO:', msg.datesISO);
+                console.log('[RECO DEBUG] userPrefs.autoScanWeek:', userPrefs.autoScanWeek);
+                console.log('[RECO DEBUG] state.addressInput:', state.addressInput);
                 pageDatesISO = msg.datesISO;
                 updateScanButtonState();
                 // Check if we should auto-scan this new week
-                // BUT skip if we're already doing a recommendation-triggered navigation (pendingWeekNav is set)
-                // to avoid duplicate scans
-                if (userPrefs.autoScanWeek && !state.pendingWeekNav) {
+                if (userPrefs.autoScanWeek) {
                     // Only if dates are actually different from what we have
                     if (state.weekDays && JSON.stringify(pageDatesISO) !== JSON.stringify(state.weekDays)) {
-                        console.log("Auto-scanning new week...");
+                        console.log("[RECO DEBUG] Auto-scanning new week...");
                         runScanFlow(true); // Pass true for isAuto
+                    } else {
+                        console.log("[RECO DEBUG] Skipped auto-scan - dates same as current");
                     }
+                } else {
+                    console.log("[RECO DEBUG] Skipped auto-scan - autoScanWeek disabled");
                 }
             }
             // Auto-scan when calendar first loads (after Sales checkbox is checked)
@@ -988,7 +1616,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         addLog(`Looking for tab with date range: ${monSimple}-${sunSimple}`);
 
-        const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}?fields=sheets.properties.title&key=${encodeURIComponent(apiKey)}`;
+        const metaUrl = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(sheetId)}&fields=sheets.properties.title`;
         try {
             const res = await fetch(metaUrl, { cache: "no-store" });
             if (!res.ok) throw new Error(`API error ${res.status}`);
@@ -1039,7 +1667,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const sheetId = settings.NEXT_SHEET_ID;
         const ranges = { phxRange: settings.AVAIL_RANGE_PHX, southRange: settings.AVAIL_RANGE_SOUTH, northRange: settings.AVAIL_RANGE_NORTH };
         const qTab = `'${tabName.replace(/'/g, "''")}'`;
-        let url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values:batchGet?key=${encodeURIComponent(apiKey)}`;
+        let url = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(sheetId)}&op=batchGet`;
         Object.values(ranges).forEach(r => { if (r) url += `&ranges=${encodeURIComponent(`${qTab}!${r}`)}`; });
         try {
             const res = await fetch(url, { cache: "no-store" });
@@ -1066,7 +1694,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Row 250 contains the "Next Days Cutoff" checkboxes (B250:H250 for Mon-Sun)
         // Using UNFORMATTED_VALUE to get boolean true/false for checkboxes
         const range = `${qTab}!B250:H250`;
-        const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(range)}?key=${encodeURIComponent(apiKey)}&valueRenderOption=UNFORMATTED_VALUE`;
+        const url = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(sheetId)}&range=${encodeURIComponent(range)}&valueRenderOption=UNFORMATTED_VALUE`;
 
         try {
             const res = await fetch(url, { cache: "no-store" });
@@ -1108,7 +1736,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!apiKey) return null;
 
         const qTab = `'${CITIES_SHEET_TAB.replace(/'/g, "''")}'`;
-        const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(CITIES_SHEET_ID)}/values/${encodeURIComponent(`${qTab}!${CITIES_RANGE}`)}?key=${encodeURIComponent(apiKey)}`;
+        const url = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(CITIES_SHEET_ID)}&range=${encodeURIComponent(`${qTab}!${CITIES_RANGE}`)}`;
 
         try {
             const res = await fetch(url, { cache: "no-store" });
@@ -1137,7 +1765,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // First, get current data to find the next empty row for this region
         const qTab = `'${CITIES_SHEET_TAB.replace(/'/g, "''")}'`;
-        const readUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(CITIES_SHEET_ID)}/values/${encodeURIComponent(`${qTab}!${CITIES_RANGE}`)}?key=${encodeURIComponent(apiKey)}`;
+        const readUrl = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(CITIES_SHEET_ID)}&range=${encodeURIComponent(`${qTab}!${CITIES_RANGE}`)}`;
 
         try {
             const readRes = await fetch(readUrl, { cache: "no-store" });
@@ -1241,9 +1869,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.querySelectorAll(".block-item.suggested").forEach(el => {
             el.classList.remove("suggested");
         });
-        // Remove reco-reason from day cards (new location)
+        // Remove reco-reason from day cards
         document.querySelectorAll(".day-card .reco-reason").forEach(el => {
             el.remove();
+        });
+        // Restore block-context elements and remove wrapper rows
+        document.querySelectorAll(".block-context-row").forEach(row => {
+            const blockContext = row.querySelector('.block-context');
+            if (blockContext && row.parentNode) {
+                row.parentNode.insertBefore(blockContext, row);
+            }
+            row.remove();
         });
     }
     function highlightSuggested(card, blockKey, reasonText, availableReps = []) {
@@ -1252,69 +1888,82 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (target) {
             target.classList.add("suggested");
 
-            const hasMultiple = state.recoCandidates && state.recoCandidates.length > 1;
-            const currentIdx = state.recoIndex + 1;
-            const total = state.recoCandidates ? state.recoCandidates.length : 0;
+            // Day-based navigation: check if there are multiple days with recommendations
+            const hasMultipleDays = state.recoAvailableDays && state.recoAvailableDays.length > 1;
 
-            // Get the time slot label for display
-            const timeSlotEl = target.querySelector('.time-slot');
-            const timeSlotLabel = timeSlotEl ? timeSlotEl.textContent : blockKey;
-
+            // Create recommendation container inside the block
             const reasonDiv = document.createElement('div');
             reasonDiv.className = 'reco-reason';
 
-            const row = document.createElement('div');
-            row.style.display = 'flex';
-            row.style.justifyContent = 'space-between';
-            row.style.alignItems = 'flex-start';
-
+            // Recommendation text with day position indicator
             const textDiv = document.createElement('div');
+            const totalDays = state.recoAvailableDays?.length || 1;
+            const currentDayPos = (state.recoDayIndex || 0) + 1;
+            const posIndicator = totalDays > 1 ? ` <span style="opacity:0.7">(Day ${currentDayPos}/${totalDays})</span>` : '';
+            textDiv.innerHTML = `<strong>Recommendation${posIndicator}:</strong> ${reasonText}`;
+            reasonDiv.appendChild(textDiv);
 
-            // Build recommendation text with rep info
-            let recoText = `<strong>Recommendation ${hasMultiple ? `(${currentIdx}/${total})` : ''}:</strong> ${timeSlotLabel} - ${reasonText}`;
-            if (availableReps.length > 0) {
-                // Show first names only for cleaner display
-                const repNames = availableReps.map(name => name.split(' ')[0]).join(', ');
-                recoText += `<br><span style="font-size: 0.8rem; opacity: 0.9;">Available: ${repNames}</span>`;
+            // Insert recommendation inside the block-item
+            target.appendChild(reasonDiv);
+
+            // Always show prev/next navigation arrows (outside reco box, next to cities)
+            const navRow = document.createElement('div');
+            navRow.className = 'reco-nav-row reco-nav-external';
+
+            const prevBtn = document.createElement('button');
+            prevBtn.className = 'reco-nav-btn';
+            prevBtn.type = 'button';
+            prevBtn.innerHTML = '&#9664;'; // ◀
+            prevBtn.title = 'Previous day';
+            if (!hasMultipleDays) {
+                prevBtn.disabled = true;
+                prevBtn.style.opacity = '0.4';
             }
-            textDiv.innerHTML = recoText;
-            row.appendChild(textDiv);
+            prevBtn.addEventListener('click', (e) => {
+                console.log('[RECO DEBUG] Prev day button CLICKED');
+                e.stopPropagation();
+                e.preventDefault();
+                handlePrevRecommendation();
+            });
 
-            if (hasMultiple) {
-                const btnDiv = document.createElement('div');
-                btnDiv.style.display = 'flex';
-                btnDiv.style.gap = '4px';
-                btnDiv.style.marginLeft = '8px';
-                btnDiv.style.flexShrink = '0';
-
-                const prevBtn = document.createElement('button');
-                prevBtn.className = 'reco-nav-btn';
-                prevBtn.innerHTML = '◀';
-                prevBtn.title = 'Previous recommendation';
-                prevBtn.onclick = (e) => { e.stopPropagation(); handlePrevRecommendation(); };
-
-                const nextBtn = document.createElement('button');
-                nextBtn.className = 'reco-nav-btn';
-                nextBtn.innerHTML = '▶';
-                nextBtn.title = 'Next recommendation';
-                nextBtn.onclick = (e) => { e.stopPropagation(); handleNextRecommendation(); };
-
-                btnDiv.appendChild(prevBtn);
-                btnDiv.appendChild(nextBtn);
-                row.appendChild(btnDiv);
+            const nextBtn = document.createElement('button');
+            nextBtn.className = 'reco-nav-btn';
+            nextBtn.type = 'button';
+            nextBtn.innerHTML = '&#9654;'; // ▶
+            nextBtn.title = 'Next day';
+            if (!hasMultipleDays) {
+                nextBtn.disabled = true;
+                nextBtn.style.opacity = '0.4';
             }
+            nextBtn.addEventListener('click', (e) => {
+                console.log('[RECO DEBUG] Next button CLICKED');
+                e.stopPropagation();
+                e.preventDefault();
+                handleNextRecommendation();
+            });
 
-            reasonDiv.appendChild(row);
+            navRow.appendChild(prevBtn);
+            navRow.appendChild(nextBtn);
 
-            // Insert recommendation after the header instead of inside block-item
-            const header = card.querySelector('.card-header');
-            if (header) {
-                header.insertAdjacentElement('afterend', reasonDiv);
+            // Find the block-context (cities line) and add nav next to it
+            const blockContext = target.querySelector('.block-context');
+            if (blockContext) {
+                // Wrap cities and nav in a flex container
+                const wrapper = document.createElement('div');
+                wrapper.className = 'block-context-row';
+                blockContext.parentNode.insertBefore(wrapper, blockContext);
+                wrapper.appendChild(blockContext);
+                wrapper.appendChild(navRow);
             } else {
-                card.insertBefore(reasonDiv, card.firstChild);
+                // No cities shown, create a row just for nav
+                const wrapper = document.createElement('div');
+                wrapper.className = 'block-context-row';
+                wrapper.appendChild(navRow);
+                // Insert before the reco-reason
+                reasonDiv.parentNode.insertBefore(wrapper, reasonDiv);
             }
 
-            card.scrollIntoView({ behavior: "smooth", block: "center" });
+            // Note: Scrolling is handled by the caller to allow control over scroll behavior
         }
     }
 
@@ -1399,6 +2048,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         let badgesHtml = '';
         if (isCutoff) {
             badgesHtml += `<span class="badge warning" style="background: #f59e0b; color: white;">Reps Scheduled</span> `;
+        } else if (isPast && !noAvailability) {
+            // Past day with availability set - reps were scheduled
+            badgesHtml += `<span class="badge warning" style="background: #f59e0b; color: white;">Reps Scheduled</span> `;
         } else if (noAvailability) {
             // No capacity set for this day
             badgesHtml += `<span class="badge muted">No Availability</span>`;
@@ -1406,6 +2058,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (totals.dayOver > 0) badgesHtml += `<span class="badge danger">${totals.dayOver} Over</span> `;
             if (totals.netAvailable > 0) badgesHtml += `<span class="badge success">${totals.netAvailable} Open</span>`;
             else if (totals.dayOver === 0) badgesHtml += `<span class="badge neutral">Full</span>`;
+        }
+
+        // Add recommendation badge if this day has a pre-computed best recommendation
+        const dayReco = state.recoBestPerDay?.[dateStr];
+        if (dayReco && !isPast && !isCutoff && !noAvailability) {
+            const blocks = CONFIG.blockWindowForDate(d);
+            const blockObj = blocks.find(b => b.key === dayReco.blockKey);
+            const timeLabel = blockObj ? blockObj.label : dayReco.blockKey;
+            badgesHtml += ` <span class="badge reco-badge" title="Recommended: ${timeLabel}">★ ${timeLabel}</span>`;
         }
 
         const dayName = d.toLocaleDateString(undefined, { weekday: "short" });
@@ -1657,8 +2318,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const cityItems = uniqueCities.map(c => {
                 const classes = ["city-hover"];
-                if (state.highlightedCity && c.toUpperCase() === state.highlightedCity.toUpperCase()) {
+                const cityUpper = c.toUpperCase();
+                const highlightedUpper = (state.highlightedCity || '').toUpperCase();
+
+                if (highlightedUpper && cityUpper === highlightedUpper) {
+                    // Primary city - yellow highlight
                     classes.push("city-text-highlight");
+                } else if (highlightedUpper && CONFIG.isAdjacentTo(cityUpper, highlightedUpper)) {
+                    // Adjacent city - light blue highlight
+                    classes.push("city-text-highlight-adjacent");
                 }
                 return `<span class="${classes.join(' ')}">${c}</span>`;
             });
@@ -1770,6 +2438,34 @@ document.addEventListener('DOMContentLoaded', async () => {
                 else card.uncatBox.classList.add('hidden');
             }
 
+            // When manually expanding a day that has a recommendation, show it
+            if (willExpand && state.recoBestPerDay?.[dateStr]) {
+                const reco = state.recoBestPerDay[dateStr];
+                // Update recoDayIndex to match manually expanded day
+                const dayIdx = state.recoAvailableDays?.indexOf(dateStr);
+                if (dayIdx !== -1 && dayIdx !== undefined) {
+                    state.recoDayIndex = dayIdx;
+                    state.recoCandidates = [reco];
+                    state.recoIndex = 0;
+                }
+                // Highlight the recommendation after a short delay (to let DOM update)
+                setTimeout(() => {
+                    highlightSuggested(card, reco.blockKey, reco.reason);
+                    // Smooth scroll for user-initiated expansion
+                    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }, 50);
+            } else if (!willExpand) {
+                // When collapsing, clear suggestion from this card
+                const suggested = card.querySelector('.block-item.suggested');
+                if (suggested) {
+                    suggested.classList.remove('suggested');
+                    const reasonDiv = suggested.querySelector('.reco-reason');
+                    if (reasonDiv) reasonDiv.remove();
+                    const navRow = suggested.querySelector('.block-context-row');
+                    if (navRow) navRow.remove();
+                }
+            }
+
             updateToggleAllLabel();
         });
 
@@ -1780,7 +2476,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             await openDailyCalendarForDate(dateStr);
         });
 
-        setCardCollapsed(card, true);
+        // Determine collapse state:
+        // - If there's an active recommendation search, only expand the first available day
+        // - Otherwise, respect the auto_expand_days user preference
+        const isFirstRecoDay = state.recoAvailableDays?.length > 0 &&
+                               state.recoAvailableDays[state.recoDayIndex || 0] === dateStr;
+        const hasActiveReco = state.recoBestPerDay && Object.keys(state.recoBestPerDay).length > 0;
+
+        if (hasActiveReco) {
+            // In recommendation mode: only expand the current recommended day
+            setCardCollapsed(card, !isFirstRecoDay);
+        } else {
+            // Normal mode: respect user preference
+            setCardCollapsed(card, !userPrefs.autoExpandDays);
+        }
         // If userPrefs.showUncatCollapsed is true, uncatBox is already visible.
 
         return card;
@@ -1788,32 +2497,202 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function buildCopyLinesForDay(dateStr, eventsForDay) {
         const day = new Date(dateStr + "T00:00");
-        const blocks = CONFIG.blockWindowForDate(day);
         const sorted = [...eventsForDay].sort((a, b) => new Date(a.start) - new Date(b.start));
         const dateHeader = day.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", year: "numeric" });
-        const result = [dateHeader, ""];
-        for (const blk of blocks) {
-            const evs = sorted.filter(ev => CONFIG.overlapMinutes({ start: ev.start, end: ev.end }, blk) >= 15);
-            result.push(`${blk.label} (${evs.length})`);
-            evs.forEach(ev => {
-                const city = (CONFIG.getCityFromEvent(ev) || "UNCAT").toUpperCase();
-                const rawTitle = ev.title || "";
-                const title = rawTitle.trim();
-                const cityRegex = new RegExp(`^${city}`, 'i');
-                if (cityRegex.test(title)) {
-                    result.push(title);
-                } else {
-                    result.push(`${city} - ${title}`);
-                }
-            });
-            result.push("");
+        const result = [dateHeader, `Total: ${sorted.length} jobs`, ""];
+
+        // Format time as "8:30am" style
+        function formatTime(date) {
+            const d = new Date(date);
+            let hours = d.getHours();
+            const minutes = d.getMinutes();
+            const ampm = hours >= 12 ? 'pm' : 'am';
+            hours = hours % 12;
+            hours = hours ? hours : 12; // 0 should be 12
+            const minStr = minutes < 10 ? '0' + minutes : minutes;
+            return `${hours}:${minStr}${ampm}`;
         }
+
+        // Show ALL jobs with their exact start and end times
+        sorted.forEach(ev => {
+            const city = (CONFIG.getCityFromEvent(ev) || "UNCAT").toUpperCase();
+            const rawTitle = ev.title || "";
+            const title = rawTitle.trim();
+            const startTime = formatTime(ev.start);
+            const endTime = formatTime(ev.end);
+            const timeRange = `${startTime}-${endTime}`;
+
+            // Build the line with exact time range
+            const cityRegex = new RegExp(`^${city}`, 'i');
+            if (cityRegex.test(title)) {
+                result.push(`${timeRange} - ${title}`);
+            } else {
+                result.push(`${timeRange} - ${city} - ${title}`);
+            }
+        });
+
+        result.push("");
         return result;
     }
     function buildCopyLinesForWeek() {
         if (!state.weekDays || state.weekDays.length === 0) return ["No days detected."];
         const days = state.weekDays;
         return days.flatMap(d => [...buildCopyLinesForDay(d, (state.allEvents || []).filter(e => localDayKey(e.start) === d)), ""]);
+    }
+
+    /* ========= Production Copy Functions ========= */
+    function isAllDayEvent(event) {
+        // Check if event is explicitly marked as all-day
+        if (event.isAllDay === true) return true;
+
+        if (!event.start || !event.end) return true;
+
+        const start = new Date(event.start);
+        const end = new Date(event.end);
+
+        // Check if duration is >= 23 hours
+        const durationHours = (end - start) / (1000 * 60 * 60);
+        if (durationHours >= 23) return true;
+
+        // Check if times are midnight to midnight or 00:00 to 23:59
+        if (start.getHours() === 0 && start.getMinutes() === 0 &&
+            (end.getHours() === 23 && end.getMinutes() === 59 ||
+             end.getHours() === 0 && end.getMinutes() === 0)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    function formatEventTime(event) {
+        if (isAllDayEvent(event)) return null;
+
+        const start = new Date(event.start);
+        const end = new Date(event.end);
+
+        // Format start time - simplified (7am not 7:00am)
+        const startHours = start.getHours();
+        const startMinutes = start.getMinutes();
+        const startAmpm = startHours >= 12 ? 'pm' : 'am';
+        const startDisplayHours = startHours % 12 || 12;
+        const startDisplayMinutes = startMinutes > 0 ? `:${String(startMinutes).padStart(2, '0')}` : '';
+
+        // Format end time
+        const endHours = end.getHours();
+        const endMinutes = end.getMinutes();
+        const endAmpm = endHours >= 12 ? 'pm' : 'am';
+        const endDisplayHours = endHours % 12 || 12;
+        const endDisplayMinutes = endMinutes > 0 ? `:${String(endMinutes).padStart(2, '0')}` : '';
+
+        // Return simplified time range (7am - 9am, not 7:00am - 9:00am)
+        return `${startDisplayHours}${startDisplayMinutes}${startAmpm} - ${endDisplayHours}${endDisplayMinutes}${endAmpm}`;
+    }
+
+    function buildProductionCopyLinesForDay(dateStr, events) {
+        if (!events || events.length === 0) return [];
+
+        const result = [];
+
+        // Parse date and format day header
+        const date = new Date(dateStr + 'T12:00:00');
+        const dayHeader = date.toLocaleDateString('en-US', {
+            weekday: 'long',
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric'
+        });
+        result.push(dayHeader);
+        result.push("");
+
+        // Group events by type
+        const dropoffs = events.filter(e =>
+            e.eventType === 'Dropoffs and pickups' ||
+            (isAllDayEvent(e) && !e.eventType) // Fallback for all-day events without type
+        );
+        const production = events.filter(e => e.eventType === 'Production');
+        const postProduction = events.filter(e => e.eventType === 'Post-production');
+
+        // Sort function for timed events
+        const sortByTime = (a, b) => {
+            const timeA = new Date(a.start).getTime();
+            const timeB = new Date(b.start).getTime();
+            if (timeA === timeB) {
+                return (a.title || '').localeCompare(b.title || '');
+            }
+            return timeA - timeB;
+        };
+
+        // DROPOFFS section (all-day events)
+        if (dropoffs.length > 0) {
+            result.push("DROPOFFS:");
+            dropoffs.forEach(event => {
+                result.push(`- ${event.title}`);
+            });
+            result.push("");
+        }
+
+        // PRODUCTION section
+        if (production.length > 0) {
+            result.push("PRODUCTION:");
+            production.sort(sortByTime).forEach(event => {
+                const time = formatEventTime(event);
+                if (time) {
+                    result.push(`${time} - ${event.title}`);
+                } else {
+                    result.push(`- ${event.title}`);
+                }
+            });
+            result.push("");
+        }
+
+        // POST-PRODUCTION section
+        if (postProduction.length > 0) {
+            result.push("POST-PRODUCTION:");
+            postProduction.sort(sortByTime).forEach(event => {
+                const time = formatEventTime(event);
+                if (time) {
+                    result.push(`${time} - ${event.title}`);
+                } else {
+                    result.push(`- ${event.title}`);
+                }
+            });
+            result.push("");
+        }
+
+        return result;
+    }
+
+    function buildProductionCopyLinesForWeek(events) {
+        if (!state.weekDays || state.weekDays.length === 0) return ["No days detected."];
+        if (!events || events.length === 0) return ["No production events found."];
+
+        const days = state.weekDays;
+        const lines = [];
+
+        days.forEach((dateStr, index) => {
+            const dayEvents = events.filter(e => {
+                const eventDate = localDayKey(e.start);
+                // Handle multi-day events - show on each day they span
+                if (isAllDayEvent(e) && e.start && e.end) {
+                    const start = new Date(e.start);
+                    const end = new Date(e.end);
+                    const current = new Date(dateStr + 'T12:00:00');
+                    return current >= start && current <= end;
+                }
+                return eventDate === dateStr;
+            });
+
+            const dayLines = buildProductionCopyLinesForDay(dateStr, dayEvents);
+            if (dayLines.length > 0) {
+                lines.push(...dayLines);
+                // Add blank line between days (but not after the last day)
+                if (index < days.length - 1) {
+                    lines.push("");
+                }
+            }
+        });
+
+        return lines.length > 0 ? lines : ["No production events found."];
     }
 
     /* ========= Helpers ========= */
@@ -1865,6 +2744,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 highlightSuggested(card, current.blockKey, current.reason, availableReps);
+                // Instant scroll to prevent flash during UI updates
+                card.scrollIntoView({ behavior: 'instant', block: 'center' });
             }
         }
     }
@@ -2037,7 +2918,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const dayOrder = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
         updateSelectOptions(jobSortFilters.day, availableOptions.day, (a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
 
-        const timeOrder = ['7:30am-9am', '10am-12pm', '1pm-3pm', '4pm-6pm'];
+        const timeBlocks = CONFIG.blockWindowForDate(new Date());
+        const timeOrder = timeBlocks.map(b => b.label);
         updateSelectOptions(jobSortFilters.time, availableOptions.time, (a, b) => timeOrder.indexOf(a) - timeOrder.indexOf(b));
 
         // Special handling for tags dropdown
@@ -2411,6 +3293,404 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Export formatting state for paste handler
     window.__dockNoteFormattingEnabled = () => dockNoteFormattingEnabled;
 
+    // === DOCK NOTES UNDO / REDO ===
+    const dockNoteUndo = document.getElementById('dock-note-undo');
+    const dockNoteRedo = document.getElementById('dock-note-redo');
+
+    if (dockNoteUndo && dockNoteInput) {
+        dockNoteUndo.addEventListener('click', () => {
+            dockNoteInput.focus();
+            document.execCommand('undo');
+        });
+    }
+    if (dockNoteRedo && dockNoteInput) {
+        dockNoteRedo.addEventListener('click', () => {
+            dockNoteInput.focus();
+            document.execCommand('redo');
+        });
+    }
+
+    // Ctrl+Shift+Z as alternative redo (browser handles Ctrl+Z/Y natively in contenteditable)
+    if (dockNoteInput) {
+        dockNoteInput.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey && e.key === 'Z') {
+                e.preventDefault();
+                document.execCommand('redo');
+            }
+            // Ctrl+A selects only within the notes area, not the whole page
+            if (e.ctrlKey && !e.shiftKey && e.key === 'a') {
+                e.preventDefault();
+                const range = document.createRange();
+                range.selectNodeContents(dockNoteInput);
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }
+        });
+    }
+
+    // === DOCK NOTES CONTEXT MENU ===
+    const dockNotesContextMenu = document.getElementById('dock-notes-context-menu');
+
+    // Helper to get plain text from HTML
+    function getTextFromHtml(html) {
+        const temp = document.createElement('div');
+        temp.innerHTML = html;
+        return temp.innerText || temp.textContent || '';
+    }
+
+    // Saved selection text from right-click (captured before menu steals focus)
+    let savedSelectionText = '';
+
+    if (dockNotesContextMenu && dockNoteInput) {
+        // Show context menu on right-click in dock notes area
+        dockNoteInput.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+
+            // Capture selection NOW before menu click clears it
+            const sel = window.getSelection();
+            if (sel && sel.toString().trim().length > 0 && dockNoteInput.contains(sel.anchorNode)) {
+                savedSelectionText = sel.toString();
+            } else {
+                savedSelectionText = '';
+            }
+
+            // Position the menu at mouse location
+            const x = e.clientX;
+            const y = e.clientY;
+
+            // Get viewport dimensions
+            const viewportWidth = window.innerWidth;
+            const viewportHeight = window.innerHeight;
+
+            // Show menu temporarily to get its dimensions
+            dockNotesContextMenu.style.left = '-9999px';
+            dockNotesContextMenu.classList.add('show');
+            const menuWidth = dockNotesContextMenu.offsetWidth;
+            const menuHeight = dockNotesContextMenu.offsetHeight;
+
+            // Calculate position, ensuring menu stays in viewport
+            let posX = x;
+            let posY = y;
+
+            if (x + menuWidth > viewportWidth) {
+                posX = viewportWidth - menuWidth - 10;
+            }
+            if (y + menuHeight > viewportHeight) {
+                posY = y - menuHeight;
+            }
+
+            dockNotesContextMenu.style.left = `${posX}px`;
+            dockNotesContextMenu.style.top = `${posY}px`;
+        });
+
+        // Hide context menu when clicking elsewhere
+        document.addEventListener('click', (e) => {
+            if (!dockNotesContextMenu.contains(e.target)) {
+                dockNotesContextMenu.classList.remove('show');
+            }
+        });
+
+        // Hide on scroll
+        document.addEventListener('scroll', () => {
+            dockNotesContextMenu.classList.remove('show');
+        }, true);
+
+        // Handle context menu actions
+        dockNotesContextMenu.addEventListener('click', async (e) => {
+            const menuItem = e.target.closest('.menu-item');
+            if (!menuItem) return;
+
+            const action = menuItem.dataset.action;
+            const content = dockNoteInput.innerHTML.trim();
+
+            switch (action) {
+                case 'copy':
+                    // Copy highlighted text if any was selected at right-click, otherwise copy all
+                    {
+                        const hasSelection = savedSelectionText.length > 0;
+                        const textToCopy = hasSelection ? savedSelectionText : getTextFromHtml(content);
+                        if (textToCopy) {
+                            try {
+                                await navigator.clipboard.writeText(textToCopy);
+                                showToast(hasSelection ? 'Selection copied' : 'Copied to clipboard');
+                            } catch (err) {
+                                console.error('Failed to copy:', err);
+                                showToast('Failed to copy');
+                            }
+                        } else {
+                            showToast('Nothing to copy');
+                        }
+                    }
+                    break;
+
+                case 'save':
+                    // Save to Notes clipboard (existing functionality)
+                    if (content) {
+                        addNewClipboard(content, "Quick Note " + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+
+                        // Auto-enable clipboard tab if hidden
+                        if (!userPrefs.showClipboardTab) {
+                            userPrefs.showClipboardTab = true;
+                            saveUserPrefs();
+                            if (chrome.storage && chrome.storage.sync) {
+                                chrome.storage.sync.set({ show_clipboard: true });
+                            }
+                            applyUserPrefs();
+                        }
+
+                        showToast('Saved to Notes');
+                    } else {
+                        showToast('Nothing to save');
+                    }
+                    break;
+
+                case 'download':
+                    // Download as text file
+                    if (content) {
+                        const plainText = getTextFromHtml(content);
+                        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                        const filename = `notes-${timestamp}.txt`;
+
+                        const blob = new Blob([plainText], { type: 'text/plain' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = filename;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+
+                        showToast('Downloaded');
+                    } else {
+                        showToast('Nothing to download');
+                    }
+                    break;
+
+                case 'paste-plain':
+                    // Paste clipboard contents as plain text
+                    try {
+                        const clipText = await navigator.clipboard.readText();
+                        if (clipText) {
+                            dockNoteInput.focus();
+                            document.execCommand('insertText', false, clipText);
+                            showToast('Pasted as plain text');
+                        } else {
+                            showToast('Clipboard is empty');
+                        }
+                    } catch (err) {
+                        console.error('Failed to paste:', err);
+                        showToast('Failed to read clipboard');
+                    }
+                    break;
+
+                case 'find-replace':
+                    // Show the find & replace bar
+                    {
+                        const findBar = document.getElementById('dock-notes-find-bar');
+                        if (findBar) {
+                            findBar.style.display = 'block';
+                            const findInput = document.getElementById('dock-notes-find-input');
+                            if (findInput) {
+                                // Pre-fill with selected text if any
+                                if (savedSelectionText) findInput.value = savedSelectionText;
+                                findInput.focus();
+                                findInput.select();
+                            }
+                        }
+                    }
+                    break;
+
+                case 'clear':
+                    // Clear the notes content
+                    if (content) {
+                        dockNoteInput.innerHTML = '';
+                        // Clear auto-saved note from storage
+                        const DOCK_NOTE_KEY = 'roofr_dock_note';
+                        chrome.storage.sync.remove(DOCK_NOTE_KEY);
+                        chrome.storage.local.remove(DOCK_NOTE_KEY);
+                        dockNoteInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        showToast('Notes cleared');
+                    } else {
+                        showToast('Already empty');
+                    }
+                    break;
+            }
+
+            // Hide menu after action
+            dockNotesContextMenu.classList.remove('show');
+        });
+    }
+
+    // === DOCK NOTES FIND & REPLACE ===
+    {
+        const findBar = document.getElementById('dock-notes-find-bar');
+        const findInput = document.getElementById('dock-notes-find-input');
+        const replaceInput = document.getElementById('dock-notes-replace-input');
+        const findCount = document.getElementById('dock-notes-find-count');
+        const findPrev = document.getElementById('dock-notes-find-prev');
+        const findNext = document.getElementById('dock-notes-find-next');
+        const replaceOne = document.getElementById('dock-notes-replace-one');
+        const replaceAll = document.getElementById('dock-notes-replace-all');
+        const findClose = document.getElementById('dock-notes-find-close');
+
+        let findMatches = [];
+        let findIndex = -1;
+        const HIGHLIGHT_CLASS = 'dock-note-find-highlight';
+        const ACTIVE_CLASS = 'dock-note-find-active';
+
+        function clearHighlights() {
+            if (!dockNoteInput) return;
+            // Remove highlight spans and restore original text
+            const highlights = dockNoteInput.querySelectorAll('.' + HIGHLIGHT_CLASS);
+            highlights.forEach(span => {
+                const parent = span.parentNode;
+                parent.replaceChild(document.createTextNode(span.textContent), span);
+                parent.normalize();
+            });
+            findMatches = [];
+            findIndex = -1;
+            if (findCount) findCount.textContent = '0/0';
+        }
+
+        function doFind() {
+            clearHighlights();
+            const query = findInput ? findInput.value : '';
+            if (!query || !dockNoteInput) return;
+
+            // Walk text nodes and wrap matches
+            const walker = document.createTreeWalker(dockNoteInput, NodeFilter.SHOW_TEXT, null);
+            const textNodes = [];
+            while (walker.nextNode()) textNodes.push(walker.currentNode);
+
+            const lowerQuery = query.toLowerCase();
+            textNodes.forEach(node => {
+                const text = node.textContent;
+                const lowerText = text.toLowerCase();
+                let idx = lowerText.indexOf(lowerQuery);
+                if (idx === -1) return;
+
+                const frag = document.createDocumentFragment();
+                let lastIdx = 0;
+                while (idx !== -1) {
+                    if (idx > lastIdx) frag.appendChild(document.createTextNode(text.slice(lastIdx, idx)));
+                    const span = document.createElement('span');
+                    span.className = HIGHLIGHT_CLASS;
+                    span.style.cssText = 'background: #fbbf24; color: #000; border-radius: 2px;';
+                    span.textContent = text.slice(idx, idx + query.length);
+                    frag.appendChild(span);
+                    lastIdx = idx + query.length;
+                    idx = lowerText.indexOf(lowerQuery, lastIdx);
+                }
+                if (lastIdx < text.length) frag.appendChild(document.createTextNode(text.slice(lastIdx)));
+                node.parentNode.replaceChild(frag, node);
+            });
+
+            findMatches = Array.from(dockNoteInput.querySelectorAll('.' + HIGHLIGHT_CLASS));
+            if (findMatches.length > 0) {
+                findIndex = 0;
+                activateMatch();
+            }
+            updateCount();
+        }
+
+        function activateMatch() {
+            // Remove active from all
+            findMatches.forEach(m => {
+                m.style.background = '#fbbf24';
+                m.classList.remove(ACTIVE_CLASS);
+            });
+            if (findIndex >= 0 && findIndex < findMatches.length) {
+                const active = findMatches[findIndex];
+                active.style.background = '#f97316';
+                active.classList.add(ACTIVE_CLASS);
+                active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+            updateCount();
+        }
+
+        function updateCount() {
+            if (findCount) {
+                findCount.textContent = findMatches.length > 0
+                    ? `${findIndex + 1}/${findMatches.length}`
+                    : '0/0';
+            }
+        }
+
+        if (findInput) {
+            findInput.addEventListener('input', doFind);
+            findInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (e.shiftKey) { // Shift+Enter = prev
+                        if (findMatches.length) { findIndex = (findIndex - 1 + findMatches.length) % findMatches.length; activateMatch(); }
+                    } else { // Enter = next
+                        if (findMatches.length) { findIndex = (findIndex + 1) % findMatches.length; activateMatch(); }
+                    }
+                }
+                if (e.key === 'Escape') { closeFindBar(); }
+            });
+        }
+        if (replaceInput) {
+            replaceInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') closeFindBar();
+            });
+        }
+        if (findNext) findNext.addEventListener('click', () => {
+            if (findMatches.length) { findIndex = (findIndex + 1) % findMatches.length; activateMatch(); }
+        });
+        if (findPrev) findPrev.addEventListener('click', () => {
+            if (findMatches.length) { findIndex = (findIndex - 1 + findMatches.length) % findMatches.length; activateMatch(); }
+        });
+        if (replaceOne) replaceOne.addEventListener('click', () => {
+            if (findIndex >= 0 && findIndex < findMatches.length && replaceInput) {
+                const match = findMatches[findIndex];
+                match.replaceWith(document.createTextNode(replaceInput.value));
+                dockNoteInput.dispatchEvent(new Event('input', { bubbles: true }));
+                doFind(); // Re-search
+            }
+        });
+        if (replaceAll) replaceAll.addEventListener('click', () => {
+            if (findMatches.length && replaceInput) {
+                const count = findMatches.length;
+                findMatches.forEach(match => {
+                    match.replaceWith(document.createTextNode(replaceInput.value));
+                });
+                dockNoteInput.dispatchEvent(new Event('input', { bubbles: true }));
+                clearHighlights();
+                showToast(`Replaced ${count} match${count !== 1 ? 'es' : ''}`);
+            }
+        });
+
+        function closeFindBar() {
+            clearHighlights();
+            if (findBar) findBar.style.display = 'none';
+            if (findInput) findInput.value = '';
+            if (replaceInput) replaceInput.value = '';
+            dockNoteInput.focus();
+        }
+
+        if (findClose) findClose.addEventListener('click', closeFindBar);
+
+        // Ctrl+H opens find & replace from within notes
+        if (dockNoteInput) {
+            dockNoteInput.addEventListener('keydown', (e) => {
+                if (e.ctrlKey && e.key === 'h') {
+                    e.preventDefault();
+                    if (findBar) {
+                        findBar.style.display = 'block';
+                        const sel = window.getSelection();
+                        if (sel && sel.toString().trim() && findInput) {
+                            findInput.value = sel.toString();
+                        }
+                        if (findInput) { findInput.focus(); findInput.select(); }
+                    }
+                }
+            });
+        }
+    }
+
     // === DOCK RESIZE LOGIC ===
     if (dockResizeHandle && dockNoteInput) {
         let isDragging = false;
@@ -2448,6 +3728,81 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const copyWeekBtn = document.getElementById("copyWeekBtn");
     if (copyWeekBtn) copyWeekBtn.addEventListener("click", async () => await copyToClipboard(buildCopyLinesForWeek().join("\n"), copyWeekBtn));
+
+    const copyProductionWeekBtn = document.getElementById("copyProductionWeekBtn");
+    if (copyProductionWeekBtn) {
+        copyProductionWeekBtn.addEventListener("click", async () => {
+            try {
+                // Show loading state
+                copyProductionWeekBtn.disabled = true;
+                const originalText = copyProductionWeekBtn.textContent;
+                copyProductionWeekBtn.textContent = "Scanning...";
+                addLog("Switching to production event types...");
+
+                // 1. Select production event types
+                const filterResult = await sendFindCommand({
+                    type: "SELECT_PRODUCTION_EVENT_TYPES"
+                });
+
+                if (!filterResult.ok) {
+                    throw new Error("Failed to select production event types");
+                }
+
+                addLog("Production event types selected, waiting for calendar update...");
+
+                // 2. Wait for calendar to update (500ms)
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                // 3. Re-scan events with production filters
+                addLog("Extracting production events...");
+                const scanResult = await sendFindCommand({
+                    type: "EXTRACT_ROOFR_EVENTS"
+                });
+
+                if (!scanResult.events || scanResult.events.length === 0) {
+                    addLog("No production events found", "WARN");
+                    alert("No production events found this week");
+                    return;
+                }
+
+                // 4. Store in temporary variable
+                const productionEvents = scanResult.events;
+                addLog(`Found ${productionEvents.length} production events`);
+
+                // 5. Build production format
+                const lines = buildProductionCopyLinesForWeek(productionEvents);
+
+                if (lines.length === 0 || (lines.length === 1 && lines[0] === "No production events found.")) {
+                    addLog("No production events to copy", "WARN");
+                    alert("No production events found this week");
+                    return;
+                }
+
+                // 6. Copy to clipboard
+                const text = lines.join("\n");
+
+                // Restore button text before copying so copyToClipboard can show "Copied!" properly
+                copyProductionWeekBtn.textContent = "Copy Production Week";
+                await copyToClipboard(text, copyProductionWeekBtn);
+
+                // Show success message with count
+                addLog(`Copied ${productionEvents.length} production events to clipboard`, "SUCCESS");
+
+                // Note: Keep production filter active per user preference
+
+            } catch (err) {
+                console.error("Production copy error:", err);
+                addLog(`Production copy error: ${err.message}`, "ERROR");
+                alert("Failed to copy production week. See console for details.");
+                // Restore button text on error
+                copyProductionWeekBtn.textContent = "Copy Production Week";
+            } finally {
+                // Restore button state
+                copyProductionWeekBtn.disabled = false;
+            }
+        });
+    }
+
     regionPills.forEach(t => t.addEventListener("click", () => {
         state.currentRegion = t.dataset.region || "PHX";
         debouncedSaveState();
@@ -2634,16 +3989,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 }
 
-                // If we navigated to a new week due to priority recommendation, re-run the recommendation
-                if (state.pendingWeekNav && state.addressInput) {
-                    addLog("Re-running recommendation after week navigation...");
-                    // NOTE: Keep pendingWeekNav set until runMainRecommendation checks it
-                    // This allows the loop prevention logic to work correctly
+                // If we have an active address, re-run recommendation for the new week's data
+                console.log('[RECO DEBUG] Scan complete. Checking for active address...');
+                console.log('[RECO DEBUG] state.addressInput:', state.addressInput);
+                console.log('[RECO DEBUG] state.allCandidatesForCity length:', state.allCandidatesForCity?.length);
+                if (state.addressInput) {
+                    console.log('[RECO DEBUG] Address found, will re-run recommendation in 500ms');
+                    addLog("Re-running recommendation after scan with active address...");
                     await debouncedSaveState();
                     // Small delay to ensure UI is updated
                     setTimeout(() => {
+                        console.log('[RECO DEBUG] Now calling runMainRecommendation()');
                         runMainRecommendation();
                     }, 500);
+                } else {
+                    console.log('[RECO DEBUG] No address input, skipping recommendation re-run');
                 }
 
             } else {
@@ -3214,7 +4574,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const tabName = "SRA 12/15-12/21";
             const range = "B6";
             const qTab = `'${tabName.replace(/'/g, "''")}'`;
-            const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(`${qTab}!${range}`)}?key=${encodeURIComponent(apiKey)}`;
+            const url = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(sheetId)}&range=${encodeURIComponent(`${qTab}!${range}`)}`;
 
             if (b6Result) b6Result.textContent = "Reading...";
 
@@ -3345,6 +4705,37 @@ document.addEventListener('DOMContentLoaded', async () => {
         return candidates;
     }
 
+    /**
+     * Groups all candidates by day and picks the BEST one per day.
+     * Used for day-based navigation where each day shows its single best recommendation.
+     * @param {Array} allCandidates - Array of candidate objects from findBestSlotStacking
+     * @returns {Object} Map of dateStr -> best candidate for that day
+     */
+    function computeBestPerDay(allCandidates) {
+        const bestPerDay = {};
+
+        // Group candidates by date
+        const byDate = {};
+        for (const c of allCandidates) {
+            if (!byDate[c.dateStr]) byDate[c.dateStr] = [];
+            byDate[c.dateStr].push(c);
+        }
+
+        // For each date, pick the BEST candidate
+        // Priority: stackSize (higher is better) > remaining capacity (higher is better) > earlier block
+        const keyOrder = { "B1": 0, "B2": 1, "B3": 2, "B4": 3 };
+        for (const [dateStr, candidates] of Object.entries(byDate)) {
+            candidates.sort((a, b) => {
+                if (b.stackSize !== a.stackSize) return b.stackSize - a.stackSize;
+                if ((b.remaining || 0) !== (a.remaining || 0)) return (b.remaining || 0) - (a.remaining || 0);
+                return (keyOrder[a.blockKey] || 0) - (keyOrder[b.blockKey] || 0);
+            });
+            bestPerDay[dateStr] = candidates[0];
+        }
+
+        return bestPerDay;
+    }
+
     async function runAddressRecommendation() {
         const text = (addrInput?.value || "").trim();
         if (!text) return;
@@ -3381,7 +4772,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         label.textContent = "Close Jobs:";
         label.style.fontSize = "11px";
         label.style.fontWeight = "800";
-        label.style.color = "#92400e";
+        label.style.color = "#854d0e";
         label.style.display = "flex";
         label.style.alignItems = "center";
         label.style.marginRight = "2px";
@@ -3453,6 +4844,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             addLog(`Using ${candidates.length} local stacking recommendations`);
         }
 
+        // Fallback: if no city-based candidates, find slots with highest availability
+        if (candidates.length === 0) {
+            candidates = findHighestAvailabilitySlots(state.weekDays, state.allEvents, state.availability, state.currentRegion);
+            addLog(`Using ${candidates.length} highest-availability fallback recommendations`);
+        }
+
         state.recoCandidates = candidates;
         state.recoIndex = 0;
 
@@ -3506,381 +4903,231 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    function handleNextRecommendation() {
-        if (!state.recoCandidates || state.recoCandidates.length === 0) return;
-        state.recoIndex = (state.recoIndex + 1) % state.recoCandidates.length;
-        debouncedSaveState();
-        renderUIFromState();
-    }
-
-    function handlePrevRecommendation() {
-        if (!state.recoCandidates || state.recoCandidates.length === 0) return;
-        state.recoIndex = (state.recoIndex - 1 + state.recoCandidates.length) % state.recoCandidates.length;
-        debouncedSaveState();
-        renderUIFromState();
-    }
-
-    // Main priority pills handler
-    let mainPriority = 'high'; // Default
-    mainPriorityPills.forEach(pill => {
-        pill.addEventListener('click', async () => {
-            mainPriorityPills.forEach(p => p.classList.remove('active'));
-            pill.classList.add('active');
-            mainPriority = pill.dataset.priority;
-
-            // Reset navigation state for fresh search
-            state.lastNavDirection = null;
-            state.weekNavCount = 0;
-            state.pendingWeekNav = null;
-            state.originalTargetDate = null;
-
-            // Ensure calendar is open when clicking priority
-            const targetTab = await ensureCalendarTabOpen();
-            if (targetTab) {
-                // Calendar was just opened/focused, setup and scan it
-                await setupCalendarForScan(targetTab.id);
-                window.__targetRoofrTabId = targetTab.id;
-                runScanFlow(true); // Auto-scan will trigger recommendation via state
-            }
-
-            // Auto-run recommendation if there's an address already entered
-            const hasAddress = addrInput?.value?.trim();
-            if (hasAddress) {
-                await runMainRecommendation();
-                updateGoButtonState();
-            }
-        });
-    });
-
-    // Helper to check if it's after 5pm MST
-    function isAfter5pmMST() {
-        const now = new Date();
-        const mstOffset = -7; // MST is UTC-7
-        const utcHours = now.getUTCHours();
-        const mstHours = (utcHours + mstOffset + 24) % 24;
-        return mstHours >= 17;
-    }
-
-    // Helper to check if it's after 5pm MST (used for HIGH priority adjustment)
-    // If after 5pm, we skip tomorrow for HIGH priority
-
-    // Helper to find the first available date from tomorrow onwards
-    function findFirstAvailableDate(allCandidates) {
-        const tomorrow = new Date(startOfDay(new Date()));
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        // If after 5pm MST, start from day after tomorrow
-        if (isAfter5pmMST()) {
-            tomorrow.setDate(tomorrow.getDate() + 1);
-        }
-        const tomorrowISO = toISO(tomorrow);
-
-        // Filter to candidates from tomorrow onwards and find earliest
-        const validCandidates = allCandidates.filter(c => c.dateStr >= tomorrowISO);
-        if (validCandidates.length === 0) return null;
-
-        // Find earliest date
-        return validCandidates.reduce((min, c) =>
-            c.dateStr < min ? c.dateStr : min, validCandidates[0].dateStr);
-    }
-
-    // Helper to find candidates on a specific date, with ±1 day fallback
-    function findCandidatesForDate(allCandidates, targetDateISO, allowFallback = true) {
-        // First try exact date
-        let candidates = allCandidates.filter(c => c.dateStr === targetDateISO);
-        if (candidates.length > 0) return { candidates, actualDate: targetDateISO };
-
-        if (!allowFallback) return { candidates: [], actualDate: targetDateISO };
-
-        // Try day after
-        const targetDate = new Date(targetDateISO + 'T12:00:00');
-        const dayAfter = new Date(targetDate);
-        dayAfter.setDate(targetDate.getDate() + 1);
-        const dayAfterISO = toISO(dayAfter);
-
-        candidates = allCandidates.filter(c => c.dateStr === dayAfterISO);
-        if (candidates.length > 0) return { candidates, actualDate: dayAfterISO };
-
-        // Try day before
-        const dayBefore = new Date(targetDate);
-        dayBefore.setDate(targetDate.getDate() - 1);
-        const dayBeforeISO = toISO(dayBefore);
-
-        candidates = allCandidates.filter(c => c.dateStr === dayBeforeISO);
-        if (candidates.length > 0) return { candidates, actualDate: dayBeforeISO };
-
-        return { candidates: [], actualDate: targetDateISO };
-    }
-
-    // Helper to add days to a date string
-    function addDaysToDateStr(dateStr, days) {
-        const date = new Date(dateStr + 'T12:00:00');
-        date.setDate(date.getDate() + days);
-        return toISO(date);
-    }
-
-    // Helper to find cached week data containing a specific date
-    function getCachedWeekContainingDate(targetDate) {
-        const targetISO = typeof targetDate === 'string' ? targetDate : toISO(targetDate);
-        for (const [weekKey, data] of Object.entries(state.weekDataCache || {})) {
-            const weekDays = data.weekDays || [];
-            if (weekDays.length > 0) {
-                const firstDay = weekDays[0];
-                const lastDay = weekDays[weekDays.length - 1];
-                if (targetISO >= firstDay && targetISO <= lastDay) {
-                    return { weekKey, data };
-                }
-            }
-        }
-        return null;
-    }
-
-    // Helper to calculate first available date from cached data
-    function getFirstAvailableFromCache(cachedData, city, region) {
-        if (!cachedData || !cachedData.events || !cachedData.weekDays) return null;
-
-        const today = startOfDay(new Date());
-        const tomorrowISO = toISO(new Date(today.getTime() + 86400000));
-
-        // Use cached data to find candidates
-        const candidates = findBestSlotStackingWithData(
-            city, cachedData.weekDays, cachedData.events, cachedData.availability, region
-        );
-
-        // Find first available from tomorrow onwards
-        const validCandidates = candidates.filter(c => c.dateStr >= tomorrowISO);
-        if (validCandidates.length === 0) return null;
-
-        return validCandidates.reduce((min, c) => c.dateStr < min ? c.dateStr : min, validCandidates[0].dateStr);
-    }
-
-    // Helper to get availability for a specific date from provided data
-    function getAvailabilityForDate(dateStr, allEvents, availability, region) {
-        const dailyEvents = allEvents.filter(e => localDayKey(e.start) === dateStr);
-        const totals = CONFIG.computeDailyTotals(dateStr, dailyEvents, availability, region);
-        const hasAnyBlockAvailable = Object.values(totals.perBlockRemaining || {}).some(v => v !== null && v > 0);
-        return {
-            netAvailable: totals.netAvailable,
-            hasAnyBlockAvailable,
-            perBlockRemaining: totals.perBlockRemaining
-        };
-    }
-
-    // Variant of findBestSlotStacking that uses provided data instead of state
-    function findBestSlotStackingWithData(city, weekDays, allEvents, availability, region) {
+    // Find the slot with highest availability for each day (fallback when no city matches)
+    function findHighestAvailabilitySlots(weekDays, allEvents, availability, currentRegion) {
+        const candidates = [];
         const today = startOfDay(new Date());
         const tomorrow = new Date(today);
-        tomorrow.setDate(today.getDate() + 1);
+        tomorrow.setDate(tomorrow.getDate() + 1);
         const tomorrowISO = toISO(tomorrow);
 
-        const cityUpper = city.toUpperCase();
-        const candidates = [];
-
         for (const dateStr of weekDays) {
+            // Only recommend tomorrow or later
             if (dateStr < tomorrowISO) continue;
 
-            const dayAvail = getAvailabilityForDate(dateStr, allEvents, availability, region);
-            if (!dayAvail || dayAvail.netAvailable <= 0 || !dayAvail.hasAnyBlockAvailable) continue;
+            const dailyEvents = allEvents.filter(e => localDayKey(e.start) === dateStr);
+            const totals = CONFIG.computeDailyTotals(dateStr, dailyEvents, availability, currentRegion);
 
-            // Find existing jobs in this city on this date
-            const cityJobsOnDate = allEvents.filter(ev => {
-                const evCity = CONFIG.getCityFromEvent(ev);
-                return evCity && evCity.toUpperCase() === cityUpper && ev.dateStr === dateStr;
+            // Find the block with highest remaining capacity
+            const blocks = CONFIG.blockWindowForDate(new Date(dateStr + "T00:00"));
+            let bestBlock = null;
+            let bestRemaining = -Infinity;
+
+            blocks.forEach(b => {
+                const remaining = totals.perBlockRemaining[b.key] ?? 0;
+                if (remaining > bestRemaining) {
+                    bestRemaining = remaining;
+                    bestBlock = b.key;
+                }
             });
 
-            const stackSize = cityJobsOnDate.length;
-            for (const [block, remaining] of Object.entries(dayAvail.perBlockRemaining || {})) {
-                if (remaining > 0) {
-                    candidates.push({
-                        dateStr,
-                        block,
-                        remaining,
-                        stackSize,
-                        dayAvail
-                    });
-                }
+            if (bestBlock && bestRemaining > 0) {
+                candidates.push({
+                    dateStr,
+                    blockKey: bestBlock,
+                    stackSize: 0,
+                    reason: `Highest availability: ${bestRemaining} spots open`,
+                    remaining: bestRemaining
+                });
             }
         }
+
+        // Sort by remaining capacity (highest first), then by date
+        candidates.sort((a, b) => {
+            if (b.remaining !== a.remaining) return b.remaining - a.remaining;
+            return new Date(a.dateStr) - new Date(b.dateStr);
+        });
 
         return candidates;
     }
 
-    // Helper to filter candidates by priority
-    // Logic: HIGH = first available day (not today)
-    //        MED = HIGH + 2 days (with ±1 day fallback)
-    //        LOW = HIGH + 4 days (with ±1 day fallback)
-    // IMPORTANT: Priorities are ALWAYS calculated from the first available date after today,
-    // regardless of which week the calendar is currently showing.
-    function filterCandidatesByPriority(allCandidates, priority, city) {
+    function handleNextRecommendation() {
+        console.log('[RECO DEBUG] handleNextRecommendation (day-based) called');
+        // Day-based navigation: cycle through days, not all candidates
+        if (!state.recoAvailableDays || state.recoAvailableDays.length <= 1) {
+            console.log('[RECO DEBUG] No multiple days available, returning');
+            return;
+        }
+
+        // Collapse current day's card
+        const currentDay = state.recoAvailableDays[state.recoDayIndex];
+        const currentCard = document.querySelector(`.day-card[data-date="${currentDay}"]`);
+        if (currentCard) {
+            setCardCollapsed(currentCard, true);
+            clearAllSuggested();
+        }
+
+        // Move to next day
+        state.recoDayIndex = ((state.recoDayIndex || 0) + 1) % state.recoAvailableDays.length;
+        const nextDay = state.recoAvailableDays[state.recoDayIndex];
+        console.log('[RECO DEBUG] Moving to day:', nextDay, 'index:', state.recoDayIndex);
+
+        // Get the best candidate for this day
+        const reco = state.recoBestPerDay[nextDay];
+        if (reco) {
+            state.recoCandidates = [reco];
+            state.recoIndex = 0;
+        }
+
+        // Set flag to prevent full re-render during navigation
+        // Timeout must be longer than debounce (250ms) to ensure flag is still set when save executes
+        isNavigatingDays = true;
+        debouncedSaveState();
+        setTimeout(() => { isNavigatingDays = false; }, 300);
+
+        // Expand and highlight the new day's card
+        const nextCard = document.querySelector(`.day-card[data-date="${nextDay}"]`);
+        if (nextCard) {
+            setCardCollapsed(nextCard, false);
+            if (reco) {
+                highlightSuggested(nextCard, reco.blockKey, reco.reason);
+            }
+            // Use instant scroll to prevent flash of unhighlighted content during smooth scroll
+            nextCard.scrollIntoView({ behavior: 'instant', block: 'center' });
+        }
+    }
+
+    function handlePrevRecommendation() {
+        console.log('[RECO DEBUG] handlePrevRecommendation (day-based) called');
+        // Day-based navigation: cycle through days, not all candidates
+        if (!state.recoAvailableDays || state.recoAvailableDays.length <= 1) {
+            console.log('[RECO DEBUG] No multiple days available, returning');
+            return;
+        }
+
+        // Collapse current day's card
+        const currentDay = state.recoAvailableDays[state.recoDayIndex];
+        const currentCard = document.querySelector(`.day-card[data-date="${currentDay}"]`);
+        if (currentCard) {
+            setCardCollapsed(currentCard, true);
+            clearAllSuggested();
+        }
+
+        // Move to previous day
+        state.recoDayIndex = ((state.recoDayIndex || 0) - 1 + state.recoAvailableDays.length) % state.recoAvailableDays.length;
+        const prevDay = state.recoAvailableDays[state.recoDayIndex];
+        console.log('[RECO DEBUG] Moving to day:', prevDay, 'index:', state.recoDayIndex);
+
+        // Get the best candidate for this day
+        const reco = state.recoBestPerDay[prevDay];
+        if (reco) {
+            state.recoCandidates = [reco];
+            state.recoIndex = 0;
+        }
+
+        // Set flag to prevent full re-render during navigation
+        // Timeout must be longer than debounce (250ms) to ensure flag is still set when save executes
+        isNavigatingDays = true;
+        debouncedSaveState();
+        setTimeout(() => { isNavigatingDays = false; }, 300);
+
+        // Expand and highlight the new day's card
+        const prevCard = document.querySelector(`.day-card[data-date="${prevDay}"]`);
+        if (prevCard) {
+            setCardCollapsed(prevCard, false);
+            if (reco) {
+                highlightSuggested(prevCard, reco.blockKey, reco.reason);
+            }
+            // Use instant scroll to prevent flash of unhighlighted content during smooth scroll
+            prevCard.scrollIntoView({ behavior: 'instant', block: 'center' });
+        }
+    }
+
+    function scrollToRecommendation(reco) {
+        console.log('[RECO DEBUG] scrollToRecommendation called with:', reco);
+        if (!reco) {
+            console.log('[RECO DEBUG] No reco, returning');
+            return;
+        }
+        const card = document.querySelector(`.day-card[data-date="${reco.dateStr}"]`);
+        console.log('[RECO DEBUG] Looking for card with date:', reco.dateStr);
+        console.log('[RECO DEBUG] Found card:', card);
+        if (card) {
+            setCardCollapsed(card, false);
+            highlightSuggested(card, reco.blockKey, reco.reason);
+            // Smooth scroll for programmatic recommendation navigation
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+            console.log('[RECO DEBUG] Card not found for date:', reco.dateStr);
+        }
+    }
+
+    // Day navigation functions
+    function handleNextDay() {
+        if (!state.recoAvailableDays || state.recoAvailableDays.length <= 1) return;
+        state.recoDayIndex = (state.recoDayIndex + 1) % state.recoAvailableDays.length;
+
+        // Set flag to prevent full re-render during navigation
+        isNavigatingDays = true;
+        updateRecommendationsForSelectedDay();
+        setTimeout(() => { isNavigatingDays = false; }, 300);
+    }
+
+    function handlePrevDay() {
+        if (!state.recoAvailableDays || state.recoAvailableDays.length <= 1) return;
+        state.recoDayIndex = (state.recoDayIndex - 1 + state.recoAvailableDays.length) % state.recoAvailableDays.length;
+
+        // Set flag to prevent full re-render during navigation
+        isNavigatingDays = true;
+        updateRecommendationsForSelectedDay();
+        setTimeout(() => { isNavigatingDays = false; }, 300);
+    }
+
+    function updateRecommendationsForSelectedDay() {
+        if (!state.recoAvailableDays || state.recoAvailableDays.length === 0) return;
+        const selectedDay = state.recoAvailableDays[state.recoDayIndex];
+        // Filter candidates to only include selected day
+        state.recoCandidates = state.allCandidatesForCity.filter(c => c.dateStr === selectedDay);
+        state.recoIndex = 0;
+        debouncedSaveState();
+        renderUIFromState();
+
+        // Scroll to and highlight the selected day's first recommendation
+        const firstReco = state.recoCandidates[0];
+        if (firstReco) {
+            const card = document.querySelector(`.day-card[data-date="${firstReco.dateStr}"]`);
+            if (card) {
+                setCardCollapsed(card, false);
+                highlightSuggested(card, firstReco.blockKey, firstReco.reason);
+                // Use instant scroll to prevent flash during navigation
+                card.scrollIntoView({ behavior: 'instant', block: 'center' });
+            }
+        }
+    }
+
+    function formatDayLabel(dateStr) {
+        // Format date string like "2026-01-21" to "Wed, Jan 21"
+        const date = new Date(dateStr + 'T12:00:00');
+        const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        return `${days[date.getDay()]}, ${months[date.getMonth()]} ${date.getDate()}`;
+    }
+
+    /**
+     * Returns all candidates for the currently viewed week, sorted by stacking priority.
+     * No auto-navigation - just shows what's available on the current calendar.
+     */
+    function filterCandidatesForCurrentWeek(allCandidates) {
         const today = startOfDay(new Date());
         const todayISO = toISO(today);
-        const tomorrow = new Date(today);
-        tomorrow.setDate(today.getDate() + 1);
-        const tomorrowISO = toISO(tomorrow);
 
-        // Check if we should skip navigation to prevent loops
-        const justNavigated = state.lastNavDirection !== null;
-
-        // Get calendar date range
-        const calendarDates = state.weekDays || [];
-        const firstCalDate = calendarDates[0];
-        const lastCalDate = calendarDates[calendarDates.length - 1];
-
-        // Check if we're viewing a future week
-        const isViewingFutureWeek = firstCalDate > tomorrowISO;
-
-        // OPTIMIZATION: If on a future week, try to use cached data for current week
-        // This avoids navigating back just to calculate the first available date
-        if (isViewingFutureWeek && !justNavigated) {
-            const cachedCurrentWeek = getCachedWeekContainingDate(tomorrowISO);
-            if (cachedCurrentWeek) {
-                addLog(`Using cached data for current week (${cachedCurrentWeek.weekKey}) to calculate priorities`);
-                const cachedHighDate = getFirstAvailableFromCache(cachedCurrentWeek.data, city, state.currentRegion);
-
-                if (cachedHighDate) {
-                    // Calculate priority dates from cached HIGH
-                    const medDateISO = addDaysToDateStr(cachedHighDate, 2);
-                    const lowDateISO = addDaysToDateStr(cachedHighDate, 4);
-
-                    let targetDateISO;
-                    if (priority === 'high') targetDateISO = cachedHighDate;
-                    else if (priority === 'med') targetDateISO = medDateISO;
-                    else targetDateISO = lowDateISO;
-
-                    addLog(`Calculated from cache - HIGH: ${cachedHighDate}, MED: ${medDateISO}, LOW: ${lowDateISO}`);
-                    addLog(`Target for ${priority}: ${targetDateISO}`);
-
-                    // Store for use after navigation
-                    state.originalTargetDate = targetDateISO;
-
-                    // Check if target is on current (future) calendar - no navigation needed!
-                    if (targetDateISO >= firstCalDate && targetDateISO <= lastCalDate) {
-                        addLog(`Target date ${targetDateISO} is on current calendar, no navigation needed`);
-                        const allowFallback = (priority !== 'high');
-                        const result = findCandidatesForDate(allCandidates, targetDateISO, allowFallback);
-                        if (result.candidates.length > 0) {
-                            result.candidates.sort((a, b) => {
-                                if (a.stackSize > 0 && b.stackSize === 0) return -1;
-                                if (b.stackSize > 0 && a.stackSize === 0) return 1;
-                                return (b.remaining || 0) - (a.remaining || 0);
-                            });
-                            return { candidates: result.candidates, targetDate: result.actualDate, needsWeekChange: null, baselineDate: todayISO };
-                        }
-                        // Target on calendar but no candidates - return empty without navigating
-                        addLog(`Target on calendar but no candidates found for ${priority}`);
-                        return { candidates: [], targetDate: targetDateISO, needsWeekChange: null, baselineDate: todayISO };
-                    }
-
-                    // Target is not on this calendar, need to navigate
-                    if (targetDateISO < firstCalDate) {
-                        return { candidates: [], targetDate: targetDateISO, needsWeekChange: 'prev', baselineDate: todayISO };
-                    }
-                    if (targetDateISO > lastCalDate) {
-                        return { candidates: [], targetDate: targetDateISO, needsWeekChange: 'next', baselineDate: todayISO };
-                    }
-                } else {
-                    // Cache exists but no available dates found in cache
-                    addLog(`Cache found but no available dates for ${city} - navigating back to recalculate`);
-                }
-            }
-
-            // No cache available or no dates in cache, need to navigate back
-            addLog(`Calendar showing future week (${firstCalDate}), navigating back to calculate priorities`);
-            state.originalTargetDate = null;
-            return { candidates: [], targetDate: tomorrowISO, needsWeekChange: 'prev', baselineDate: todayISO };
-        }
-
-        // After navigating backward, if STILL on a future week (was multiple weeks ahead), keep going back
-        // IMPORTANT: Keep originalTargetDate preserved during multi-week navigation
-        if (isViewingFutureWeek && state.lastNavDirection === 'prev') {
-            addLog(`Still on future week (${firstCalDate}) after prev navigation, continuing back`);
-            // Don't clear originalTargetDate - we still need it after we reach the right week
-            return { candidates: [], targetDate: state.originalTargetDate || tomorrowISO, needsWeekChange: 'prev', baselineDate: todayISO };
-        }
-
-        // If no candidates at all, recommend scanning next week
+        // If no candidates on this week, just return empty
         if (allCandidates.length === 0) {
-            if (justNavigated) {
-                addLog(`No candidates after ${state.lastNavDirection} navigation - stopping to prevent loop`);
-                return { candidates: [], targetDate: state.originalTargetDate || tomorrowISO, needsWeekChange: null, baselineDate: todayISO };
-            }
-            return { candidates: [], targetDate: state.originalTargetDate || tomorrowISO, needsWeekChange: 'next', baselineDate: todayISO };
-        }
-
-        // If we have a stored target date from before navigation, use it directly
-        // This prevents recalculating priorities after navigating to a new week
-        let targetDateISO;
-        if (justNavigated && state.originalTargetDate) {
-            targetDateISO = state.originalTargetDate;
-            addLog(`Using stored target date after navigation: ${targetDateISO}`);
-        } else {
-            // Fresh search OR just navigated back to current week - calculate priorities normally
-            // Step 1: Find HIGH (first available date from tomorrow onwards)
-            const highDateISO = findFirstAvailableDate(allCandidates);
-
-            if (!highDateISO) {
-                // No availability from tomorrow onwards on this calendar
-                if (justNavigated) {
-                    addLog(`No HIGH priority candidates after ${state.lastNavDirection} navigation - stopping to prevent loop`);
-                    return { candidates: [], targetDate: state.originalTargetDate || tomorrowISO, needsWeekChange: null, baselineDate: todayISO };
-                }
-                return { candidates: [], targetDate: tomorrowISO, needsWeekChange: 'next', baselineDate: todayISO };
-            }
-
-            addLog(`First available date (HIGH): ${highDateISO}`);
-
-            // Step 2: Calculate MED and LOW based on HIGH
-            const medDateISO = addDaysToDateStr(highDateISO, 2);  // HIGH + 2 days
-            const lowDateISO = addDaysToDateStr(highDateISO, 4);  // HIGH + 4 days
-
-            addLog(`Priority dates - HIGH: ${highDateISO}, MED: ${medDateISO}, LOW: ${lowDateISO}`);
-
-            // Step 3: Get target date based on selected priority
-            if (priority === 'high') {
-                targetDateISO = highDateISO;
-            } else if (priority === 'med') {
-                targetDateISO = medDateISO;
-            } else {
-                targetDateISO = lowDateISO;
-            }
-
-            // Store the target date for use after navigation
-            state.originalTargetDate = targetDateISO;
-            addLog(`Stored target date for ${priority} priority: ${targetDateISO}`);
-        }
-
-        // Step 4: Check if target date is on current calendar
-        // Only stop if we already tried navigating in the SAME direction (prevents loops)
-        // But allow: back (to calculate priorities) → forward (to reach target)
-        if (targetDateISO < firstCalDate) {
-            // Need to go back - only stop if we already went back
-            if (state.lastNavDirection === 'prev') {
-                addLog(`Target date ${targetDateISO} before calendar after prev navigation - stopping`);
-                return { candidates: [], targetDate: targetDateISO, needsWeekChange: null, baselineDate: todayISO };
-            }
-            return { candidates: [], targetDate: targetDateISO, needsWeekChange: 'prev', baselineDate: todayISO };
-        }
-
-        if (targetDateISO > lastCalDate) {
-            // Need to go forward - only stop if we already went forward
-            if (state.lastNavDirection === 'next') {
-                addLog(`Target date ${targetDateISO} after calendar after next navigation - stopping`);
-                return { candidates: [], targetDate: targetDateISO, needsWeekChange: null, baselineDate: todayISO };
-            }
-            return { candidates: [], targetDate: targetDateISO, needsWeekChange: 'next', baselineDate: todayISO };
-        }
-
-        // Step 5: Find candidates for the target date (with ±1 fallback for MED/LOW)
-        const allowFallback = (priority !== 'high'); // HIGH is exact, MED/LOW can fallback
-        const result = findCandidatesForDate(allCandidates, targetDateISO, allowFallback);
-
-        if (result.candidates.length === 0) {
-            // No candidates found even with fallback
-            addLog(`No candidates for ${priority} priority on ${targetDateISO} (or adjacent days)`);
-            return { candidates: [], targetDate: targetDateISO, needsWeekChange: null, baselineDate: todayISO };
+            return { candidates: [], needsWeekChange: null };
         }
 
         // Sort candidates: prioritize stacking, then by remaining capacity
-        result.candidates.sort((a, b) => {
+        const sorted = [...allCandidates].sort((a, b) => {
             // Prioritize stacking
             if (a.stackSize > 0 && b.stackSize === 0) return -1;
             if (b.stackSize > 0 && a.stackSize === 0) return 1;
@@ -3888,25 +5135,32 @@ document.addEventListener('DOMContentLoaded', async () => {
             return (b.remaining || 0) - (a.remaining || 0);
         });
 
-        return { candidates: result.candidates, targetDate: result.actualDate, needsWeekChange: null, baselineDate: todayISO };
+        return { candidates: sorted, needsWeekChange: null };
     }
 
     // Run recommendation directly with selected priority
+    let _recoRunning = false;
+    let _recoQueued = false;
     async function runMainRecommendation() {
-        const text = addrInput?.value?.trim();
-        if (!text) {
-            showToast("Enter an address or city");
+        console.log('[RECO DEBUG] runMainRecommendation() called');
+
+        // Prevent duplicate runs - if already running, queue one re-run at the end
+        if (_recoRunning) {
+            console.log('[RECO DEBUG] Already running, queuing re-run');
+            _recoQueued = true;
             return;
         }
+        _recoRunning = true;
+        _recoQueued = false;
 
-        // Guard: If we're navigating and this isn't the follow-up scan callback, skip
-        // This prevents multiple calls from triggering duplicate navigations
-        if (state.pendingWeekNav && state.lastWeekDaysHash) {
-            const currentHash = (state.weekDays || []).join(',');
-            if (currentHash === state.lastWeekDaysHash) {
-                addLog(`Skipping recommendation - navigation in progress, waiting for scan`);
-                return;
-            }
+        try {
+        const text = addrInput?.value?.trim();
+        console.log('[RECO DEBUG] addrInput value:', text);
+        console.log('[RECO DEBUG] state.addressInput:', state.addressInput);
+        if (!text) {
+            console.log('[RECO DEBUG] No text in addrInput, exiting');
+            showToast("Enter an address or city");
+            return;
         }
 
         const cityList = CONFIG.resolveCityCandidatesFromInput(text);
@@ -3958,35 +5212,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         state.highlightedCity = primaryCity;
         state.addressInput = text; // Save address to state so it persists
 
-        // Check if this is a follow-up after week navigation
-        const isFollowUpAfterNavigation = state.pendingWeekNav !== null;
-
-        // If this is a fresh user-initiated search (not after week navigation), clear the nav tracking
-        // This prevents the loop detection from triggering on fresh searches
-        if (!isFollowUpAfterNavigation) {
-            state.lastNavDirection = null;
-            state.weekNavCount = 0; // Reset navigation count for fresh searches
-            state.originalTargetDate = null; // Clear stored target date for fresh search
-            state.lastWeekDaysHash = null; // Clear navigation guard
-        }
-
-        // Clear pendingWeekNav now that we've checked it
-        if (state.pendingWeekNav) {
-            state.pendingWeekNav = null;
-            state.lastWeekDaysHash = null; // Navigation complete, clear guard
-        }
-
-        // Hard limit: prevent more than 5 week navigations per search
-        // Increased from 2 to handle being multiple weeks ahead (need to nav back to current week)
-        const MAX_WEEK_NAVS = 5;
-        if (state.weekNavCount >= MAX_WEEK_NAVS) {
-            addLog(`Max week navigations (${MAX_WEEK_NAVS}) reached - stopping to prevent loop`);
-            state.weekNavCount = 0;
-            state.lastNavDirection = null;
-            showToast("No slots found in nearby weeks");
-            return;
-        }
-
         // Save to recent addresses for quick access
         saveRecentAddress(text);
 
@@ -4016,82 +5241,58 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
-        // Filter candidates based on priority (today-relative with stack flexibility)
-        const result = filterCandidatesByPriority(allCandidates, mainPriority, primaryCity);
-
-        // Handle week navigation needed
-        if (result.needsWeekChange) {
-            const newNavCount = (state.weekNavCount || 0) + 1;
-
-            // Prevent infinite loops - max 4 week navigations
-            if (newNavCount > 4) {
-                addLog(`Max navigation count (4) reached - stopping to prevent loop`);
-                state.lastNavDirection = null;
-                state.weekNavCount = 0;
-                state.pendingWeekNav = null;
-                showToast("Could not find slots - please try a different date");
-                return;
-            }
-
-            state.recoCandidates = [];
-            state.recoIndex = 0;
-            state.pendingWeekNav = result.needsWeekChange; // Store for UI indicator
-            state.lastNavDirection = result.needsWeekChange; // Track navigation to prevent loops
-            state.weekNavCount = newNavCount; // Increment navigation count
-            state.lastWeekDaysHash = (state.weekDays || []).join(','); // Store hash to detect when scan completes
-            addLog(`Week navigation #${state.weekNavCount}: ${result.needsWeekChange}`);
-            debouncedSaveState();
-            renderUIFromState();
-
-            // Format target date for display
-            const targetDate = new Date(result.targetDate + 'T12:00:00');
-            const dayName = targetDate.toLocaleDateString('en-US', { weekday: 'short' });
-            const monthDay = targetDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-
-            const direction = result.needsWeekChange === 'next' ? 'next' : 'previous';
-            showToast(`Target: ${dayName} ${monthDay} - Navigating to ${direction} week...`);
-
-            // Automatically click the week navigation button
-            await sendFindCommand({
-                type: 'CLICK_WEEK_NAV',
-                direction: result.needsWeekChange
-            });
-
-            // Wait for page to update then trigger a scan
-            // The scan completion will detect pendingWeekNav and re-run the recommendation
-            setTimeout(() => {
-                addLog("Scanning new week after navigation...");
-                runScanFlow(true); // Auto-scan the new week
-            }, 1500);
-
-            return;
-        }
+        // Get sorted candidates for the current week (no auto-navigation)
+        const result = filterCandidatesForCurrentWeek(allCandidates);
 
         if (result.candidates.length === 0) {
-            // Clear the nav direction since we're done (no candidates found after any navigation)
-            state.lastNavDirection = null;
-            state.weekNavCount = 0;
-            showToast("No slots available for " + primaryCity);
+            showToast("No slots available for " + primaryCity + " this week");
             return;
         }
 
-        state.recoCandidates = result.candidates;
+        // Store all candidates for navigation - include city matches + high availability fallbacks
+        const cityMatchCandidates = result.candidates;
+
+        // Get all high-availability slots to allow cycling through other days
+        const allAvailabilitySlots = findHighestAvailabilitySlots(
+            state.weekDays, state.allEvents, state.availability, state.currentRegion
+        );
+
+        // Combine: city matches first, then add availability slots that aren't already covered
+        const coveredKeys = new Set(cityMatchCandidates.map(c => `${c.dateStr}-${c.blockKey}`));
+        const additionalSlots = allAvailabilitySlots.filter(s => !coveredKeys.has(`${s.dateStr}-${s.blockKey}`));
+
+        // Mark additional slots as non-city-match for display purposes
+        additionalSlots.forEach(s => { s.isFallback = true; });
+
+        state.allCandidatesForCity = [...cityMatchCandidates, ...additionalSlots];
+
+        // Extract unique days and sort them chronologically
+        state.recoAvailableDays = [...new Set(state.allCandidatesForCity.map(c => c.dateStr))].sort();
+        state.recoDayIndex = 0; // Start with first available day
+
+        // Compute the best recommendation for each day (for day-based navigation)
+        state.recoBestPerDay = computeBestPerDay(state.allCandidatesForCity);
+
+        // Start with the best candidate from the first available day
+        const firstDay = state.recoAvailableDays[0];
+        state.recoCandidates = firstDay && state.recoBestPerDay[firstDay] ? [state.recoBestPerDay[firstDay]] : [];
         state.recoIndex = 0;
-        state.pendingWeekNav = null; // Clear any pending nav
-        state.lastNavDirection = null; // Clear navigation tracking since we found candidates
-        state.weekNavCount = 0; // Reset navigation count on success
+        state.recoGlobalIndex = 0; // Track position across all candidates
 
         debouncedSaveState();
         renderUIFromState();
 
         // Show helpful message about the recommendation
-        const firstReco = result.candidates[0];
+        const firstReco = state.recoCandidates[0];
         const recoDate = new Date(firstReco.dateStr + 'T12:00:00');
         const dayName = recoDate.toLocaleDateString('en-US', { weekday: 'short' });
         const monthDay = recoDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
         const hasStack = firstReco.stackSize > 0;
         const stackMsg = hasStack ? ' 📍' : '';
-        showToast(`${dayName} ${monthDay}: ${result.candidates.length} slot(s)${stackMsg}`);
+        const totalSlots = state.allCandidatesForCity.length;
+        const cityMatchCount = cityMatchCandidates.length;
+        const slotMsg = cityMatchCount > 0 ? `${cityMatchCount} match` : 'No match';
+        showToast(`${dayName} ${monthDay}: ${slotMsg}, ${totalSlots} total slots`);
 
         // Expand and scroll to the recommended day
         if (firstReco) {
@@ -4100,6 +5301,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 setCardCollapsed(card, false);
                 highlightSuggested(card, firstReco.blockKey, firstReco.reason);
                 card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+        } finally {
+            _recoRunning = false;
+            // If another call was queued while running, execute it now
+            if (_recoQueued) {
+                console.log('[RECO DEBUG] Running queued recommendation');
+                _recoQueued = false;
+                setTimeout(() => runMainRecommendation(), 100);
             }
         }
     }
@@ -4118,6 +5328,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         state.highlightedCity = null;
         state.recoCandidates = [];
         state.recoIndex = 0;
+        state.recoDayIndex = 0; // Clear day navigation
+        state.recoAvailableDays = []; // Clear available days
+        state.allCandidatesForCity = []; // Clear all candidates
+        state.recoBestPerDay = {}; // Clear per-day recommendations
         state.earliestAvailableByCity = {}; // Clear stored earliest dates when clearing address
         if (addrInput) addrInput.value = "";
         updateAddressClearButton();
@@ -4138,13 +5352,47 @@ document.addEventListener('DOMContentLoaded', async () => {
             addrGoBtn.disabled = true;
 
             try {
+            // If user selected a known job from DB suggestion, open it directly
+            if (window.__selectedRoofrJobLink && window.__selectedRoofrJob) {
+                const url = window.__selectedRoofrJobLink;
+                const jobInfo = window.__selectedRoofrJob;
+                addLog(`Go: opening known job directly — ${jobInfo.Customer || ''}`);
+                const createOpts = { url, active: false };
+                if (window.__targetWindowId) createOpts.windowId = window.__targetWindowId;
+                await chrome.tabs.create(createOpts);
+                window.__selectedRoofrJobLink = null;
+                window.__selectedRoofrJob = null;
+                window.__selectedRoofrJobInputValue = null;
+                return;
+            }
+
             // Check if input is a phone number
             const phoneDigits = detectPhoneNumber(inputValue);
             if (phoneDigits) {
-                // It's a phone number - open contacts page like an incoming call
                 const formattedPhone = formatPhoneForDisplay(phoneDigits);
-                showToast(`Searching for ${formattedPhone}...`);
+                const qPhone = _normalizePhone(phoneDigits);
 
+                // Check local catalog — opens job card directly (same as dropdown click)
+                if (_roofrDataCache && qPhone.length >= 7) {
+                    const match = _roofrDataCache.find(job => {
+                        if (!job._nPhone || !job.Link) return false;
+                        return job._nPhone === qPhone ||
+                               job._nPhone.endsWith(qPhone) ||
+                               qPhone.endsWith(job._nPhone) ||
+                               job._nPhone.includes(qPhone) ||
+                               qPhone.includes(job._nPhone);
+                    });
+                    if (match) {
+                        console.log('[Popup] Phone catalog match:', match.Customer, match.Link);
+                        showToast(`Opening ${match.Customer || formattedPhone}...`);
+                        await openJobCard(match);
+                        return;
+                    }
+                    console.log('[Popup] No catalog match for phone:', qPhone);
+                }
+
+                // Fallback: contacts page search if no local match
+                showToast(`Searching for ${formattedPhone}...`);
                 try {
                     await chrome.runtime.sendMessage({
                         type: 'OPEN_CONTACTS_FOR_PHONE',
@@ -4161,7 +5409,29 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return; // Don't continue with address flow
             }
 
-            // Not a phone number - treat as address
+            // Check if input is a person's name
+            const personName = detectName(inputValue);
+            if (personName) {
+                // It's a name - search Roofr contacts
+                showToast(`Searching Roofr for "${personName}"...`);
+
+                try {
+                    await chrome.runtime.sendMessage({
+                        type: 'OPEN_CONTACTS_FOR_PHONE',
+                        phoneNumber: personName, // Reuse field - content script just injects into search
+                        formattedPhone: personName,
+                        callerName: '', // No caller name for manual search
+                        windowId: window.__targetWindowId // Pass target window for window isolation
+                    });
+                    addLog(`Opened contacts search for name: ${personName}`);
+                } catch (err) {
+                    console.error('[Popup] Error opening contacts for name:', err);
+                    showToast('Error opening contacts');
+                }
+                return; // Don't continue with address flow
+            }
+
+            // Not a phone or name - treat as address
             const hasAddress = inputValue;
             if (hasAddress) {
                 // Go mode - always run recommendation
@@ -4190,7 +5460,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                             apnResult = await CONFIG.lookupAPN(verifiedAddress, cityMatch.city);
                             if (apnResult.success) {
                                 const ownerInfo = apnResult.owner ? `, Owner: ${apnResult.owner}` : '';
-                                addLog(`Found APN: ${apnResult.apn}${ownerInfo} (${apnResult.county})`);
+                                const pd = apnResult.propertyData || {};
+                                const extras = [];
+                                if (pd.yearBuilt) extras.push(`Built ${pd.yearBuilt}`);
+                                if (pd.sqftFormatted) extras.push(`${pd.sqftFormatted} sqft`);
+                                if (pd.stories) extras.push(`${pd.stories}s`);
+                                const extraInfo = extras.length > 0 ? ` | ${extras.join(', ')}` : '';
+                                addLog(`Found APN: ${apnResult.apn}${ownerInfo} (${apnResult.county})${extraInfo}`);
                             } else {
                                 addLog(`APN lookup: ${apnResult.error || 'not found'}`);
                             }
@@ -4198,12 +5474,32 @@ document.addEventListener('DOMContentLoaded', async () => {
                             addLog('Could not determine city for APN lookup');
                         }
 
-                        // Build the message to send to Gemini (address + APN + owner if found)
+                        // Build the message to send to Gemini (address + APN + owner + property data)
                         let geminiMessage = verifiedAddress;
                         if (apnResult && apnResult.success) {
                             geminiMessage = `${verifiedAddress}\nAPN: ${apnResult.apn}`;
                             if (apnResult.owner) {
-                                geminiMessage += `\nOwner: ${apnResult.owner}`;
+                                geminiMessage += `\nLegal Owner: ${apnResult.owner}`;
+                            }
+                            // Include verified property data so Gemini doesn't hallucinate
+                            const pd = apnResult.propertyData || {};
+                            if (pd.yearBuilt) geminiMessage += `\nYear Built: ${pd.yearBuilt}`;
+                            if (pd.roofAge != null) geminiMessage += `\nRoof Age: ${pd.roofAge}yrs`;
+                            if (pd.sqftFormatted) geminiMessage += `\nSq Ft: ${pd.sqftFormatted}`;
+                            if (pd.stories) geminiMessage += `\nStories: ${pd.stories}`;
+                            if (pd.subdivision) geminiMessage += `\nSubdivision: ${pd.subdivision}`;
+                            if (pd.propertyValueFormatted) geminiMessage += `\nProperty Value: ${pd.propertyValueFormatted}`;
+                            if (pd.salePriceFormatted) geminiMessage += `\nLast Sale: ${pd.salePriceFormatted}`;
+                            if (pd.saleDate) geminiMessage += ` (${pd.saleDate})`;
+
+                            // Append active call phone number
+                            const geminiPhones = window.__activeCallPhones || [];
+                            if (geminiPhones.length > 0) {
+                                const gDigits = geminiPhones[0].replace(/\D/g, '');
+                                const gPhone10 = gDigits.length === 11 && gDigits.startsWith('1') ? gDigits.substring(1) : gDigits;
+                                if (gPhone10.length === 10) {
+                                    geminiMessage += `\nCaller: ${gPhone10.substring(0,3)}-${gPhone10.substring(3,6)}-${gPhone10.substring(6)}`;
+                                }
                             }
                         }
 
@@ -4229,6 +5525,38 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 } else if (apnResult.detailUrl) {
                                     // For counties without owner data (like Pima), show link to view info
                                     propertyInfo += `<div>Owner: <a href="${apnResult.detailUrl}" target="_blank" style="color:#1a73e8;text-decoration:underline;">View on ${apnResult.county} site</a></div>`;
+                                }
+
+                                // Property details from county assessor (real data, not AI-generated)
+                                const pd = apnResult.propertyData || {};
+                                const detailLines = [];
+                                if (pd.yearBuilt) detailLines.push(`Built: ${pd.yearBuilt} (${pd.roofAge}yrs)`);
+                                if (pd.sqftFormatted) detailLines.push(`Sq Ft: ${pd.sqftFormatted}`);
+                                if (pd.stories) detailLines.push(`Stories: ${pd.stories}`);
+                                if (pd.subdivision) detailLines.push(`Subdiv: ${pd.subdivision}`);
+                                if (pd.propertyValueFormatted) detailLines.push(`Value: ${pd.propertyValueFormatted}`);
+                                if (pd.salePriceFormatted) {
+                                    let saleLine = `Last Sale: ${pd.salePriceFormatted}`;
+                                    if (pd.saleDate) saleLine += ` (${pd.saleDate})`;
+                                    detailLines.push(saleLine);
+                                }
+
+                                if (detailLines.length > 0) {
+                                    propertyInfo += detailLines.map(l => `<div>${l}</div>`).join('');
+                                }
+
+                                // Add active call phone number with CTM link
+                                const activePhones = window.__activeCallPhones || [];
+                                if (activePhones.length > 0) {
+                                    const phone = activePhones[0];
+                                    let phoneFormatted = phone;
+                                    const digits = phone.replace(/\D/g, '');
+                                    const phone10 = digits.length === 11 && digits.startsWith('1') ? digits.substring(1) : digits;
+                                    if (phone10.length === 10) {
+                                        phoneFormatted = `${phone10.substring(0,3)}-${phone10.substring(3,6)}-${phone10.substring(6)}`;
+                                    }
+                                    const ctmLink = `https://app.calltrackingmetrics.com/calls#filter=${phone10}`;
+                                    propertyInfo += `<div><a href="${ctmLink}" target="_blank" style="color:#1a73e8;text-decoration:underline;">${phoneFormatted}</a></div>`;
                                 }
 
                                 propertyInfo += `<div>---</div>`;
@@ -4328,6 +5656,100 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 target: { tabId: tabId },
                                 func: (address) => {
                                     console.log('[Roofr Extension] Starting paste operation for:', address);
+
+                                    // Function to switch Gemini to Pro mode (from Fast/Flash)
+                                    // Returns a Promise that resolves when switch is complete (or skipped)
+                                    const switchToProMode = () => {
+                                        return new Promise((resolve) => {
+                                            console.log('[Roofr Extension] Attempting to switch to Pro mode...');
+
+                                            // STEP 1: Find the mode picker button using stable data-test-id
+                                            let modeButton = document.querySelector('button[data-test-id="bard-mode-menu-button"]');
+
+                                            // Fallback: aria-label
+                                            if (!modeButton) {
+                                                modeButton = document.querySelector('button[aria-label="Open mode picker"]');
+                                            }
+
+                                            // Fallback: text-based search
+                                            if (!modeButton) {
+                                                const allButtons = document.querySelectorAll('button');
+                                                for (const btn of allButtons) {
+                                                    const text = btn.textContent?.trim() || '';
+                                                    if (/^(fast|pro|thinking)$/i.test(text)) {
+                                                        console.log('[Roofr Extension] Found mode button by text:', text);
+                                                        modeButton = btn;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+
+                                            if (!modeButton) {
+                                                console.log('[Roofr Extension] Could not find mode picker button');
+                                                resolve(false);
+                                                return;
+                                            }
+
+                                            // Check if already on Pro — skip if so
+                                            const currentMode = modeButton.textContent?.trim().toLowerCase() || '';
+                                            if (currentMode === 'pro') {
+                                                console.log('[Roofr Extension] Already on Pro mode, skipping switch');
+                                                resolve(true);
+                                                return;
+                                            }
+
+                                            console.log('[Roofr Extension] Current mode:', currentMode, '— clicking to open menu...');
+                                            modeButton.click();
+
+                                            // STEP 2: Poll for the Pro option to appear in the menu (menu items are dynamic)
+                                            let attempts = 0;
+                                            const maxAttempts = 40; // 40 x 100ms = 4 seconds max
+                                            const pollForPro = () => {
+                                                attempts++;
+
+                                                // Primary: stable data-test-id
+                                                let proOption = document.querySelector('[data-test-id="bard-mode-option-pro"]');
+
+                                                // Fallback: menuitemradio with Pro text
+                                                if (!proOption) {
+                                                    const menuItems = document.querySelectorAll('[role="menuitemradio"]');
+                                                    for (const item of menuItems) {
+                                                        if (item.textContent?.includes('Pro')) {
+                                                            proOption = item;
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+
+                                                if (proOption) {
+                                                    console.log('[Roofr Extension] Found Pro option after', attempts, 'polls, clicking...');
+                                                    proOption.click();
+
+                                                    // Verify the switch took effect
+                                                    setTimeout(() => {
+                                                        const newMode = modeButton.textContent?.trim().toLowerCase() || '';
+                                                        console.log('[Roofr Extension] Mode after switch:', newMode);
+                                                        resolve(true);
+                                                    }, 300);
+                                                    return;
+                                                }
+
+                                                if (attempts >= maxAttempts) {
+                                                    console.log('[Roofr Extension] Pro option not found after', maxAttempts, 'attempts');
+                                                    // Close the menu so it doesn't block input
+                                                    document.body.click();
+                                                    resolve(false);
+                                                    return;
+                                                }
+
+                                                setTimeout(pollForPro, 100);
+                                            };
+
+                                            // Start polling after a brief initial delay for the menu to begin rendering
+                                            setTimeout(pollForPro, 100);
+                                        });
+                                    };
+
                                     // Try to find and fill the input field
                                     const findAndFillInput = () => {
                                         // Look for contenteditable div or textarea/input - Gemini specific selectors first
@@ -4428,13 +5850,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                                         return false;
                                     };
 
-                                    if (!fillAndSend()) {
+                                    // FIRST: Switch to Pro mode, THEN fill and send
+                                    console.log('[Roofr Extension] Switching to Pro mode before sending...');
+                                    switchToProMode().then((switched) => {
+                                        console.log('[Roofr Extension] Pro mode switch result:', switched, '— now filling...');
+                                        // Brief delay after switch for UI to stabilize
                                         setTimeout(() => {
                                             if (!fillAndSend()) {
-                                                setTimeout(fillAndSend, 2000);
+                                                setTimeout(() => {
+                                                    if (!fillAndSend()) {
+                                                        setTimeout(fillAndSend, 2000);
+                                                    }
+                                                }, 1000);
                                             }
-                                        }, 1000);
-                                    }
+                                        }, 500);
+                                    });
                                 },
                                 args: [geminiMessage]
                             }).then(result => {
@@ -4466,12 +5896,28 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const currentWindowId = currentWindow.id;
                         addLog(`Current window ID: ${currentWindowId}`);
 
-                        // Roofr job search
-                        if (settings.search_roofr !== false) {
+                        // Roofr job search — shortcut if user selected a known job from database
+                        if (window.__selectedRoofrJobLink) {
+                            const directUrl = window.__selectedRoofrJobLink;
+                            const jobInfo = window.__selectedRoofrJob;
+                            addLog(`Opening known job directly: ${jobInfo?.Customer || ''} — ${directUrl}`);
+
+                            // Open the job link in a new tab
+                            const jobTab = await chrome.tabs.create({ url: directUrl, active: false, windowId: currentWindowId });
+                            addLog(`Opened Roofr job tab (ID: ${jobTab.id})`);
+
+                            // Clear the selection
+                            window.__selectedRoofrJobLink = null;
+                            window.__selectedRoofrJob = null;
+                            window.__selectedRoofrJobInputValue = null;
+
+                        // Fall back to DOM search if no known job selected
+                        } else if (settings.search_roofr !== false) {
                         // Extract street address for search (e.g., "1310 N Lesueur" from "1310 N Lesueur, Mesa, Az, 85203")
                         const streetAddress = verifiedAddress.split(',')[0].trim();
-                        // Expand abbreviations for search: N -> North, S -> South, E -> East, W -> West
+                        // Expand abbreviations for search: N -> North, Ln -> Lane, etc.
                         const expandedStreetAddress = streetAddress
+                            // Directional prefixes
                             .replace(/\bN\.?\s+/gi, 'North ')
                             .replace(/\bS\.?\s+/gi, 'South ')
                             .replace(/\bE\.?\s+/gi, 'East ')
@@ -4479,10 +5925,29 @@ document.addEventListener('DOMContentLoaded', async () => {
                             .replace(/\bNE\.?\s+/gi, 'Northeast ')
                             .replace(/\bNW\.?\s+/gi, 'Northwest ')
                             .replace(/\bSE\.?\s+/gi, 'Southeast ')
-                            .replace(/\bSW\.?\s+/gi, 'Southwest ');
+                            .replace(/\bSW\.?\s+/gi, 'Southwest ')
+                            // Street types (at end of street name)
+                            .replace(/\bLn\.?$/gi, 'Lane')
+                            .replace(/\bRd\.?$/gi, 'Road')
+                            .replace(/\bSt\.?$/gi, 'Street')
+                            .replace(/\bAve\.?$/gi, 'Avenue')
+                            .replace(/\bBlvd\.?$/gi, 'Boulevard')
+                            .replace(/\bDr\.?$/gi, 'Drive')
+                            .replace(/\bCt\.?$/gi, 'Court')
+                            .replace(/\bCir\.?$/gi, 'Circle')
+                            .replace(/\bPl\.?$/gi, 'Place')
+                            .replace(/\bPkwy\.?$/gi, 'Parkway')
+                            .replace(/\bHwy\.?$/gi, 'Highway')
+                            .replace(/\bWay\.?$/gi, 'Way')
+                            .replace(/\bTrl\.?$/gi, 'Trail')
+                            .replace(/\bTer\.?$/gi, 'Terrace')
+                            .replace(/\bLoop\.?$/gi, 'Loop')
+                            .replace(/\bPass\.?$/gi, 'Pass')
+                            .replace(/\bAlley\.?$/gi, 'Alley')
+                            .replace(/\bAly\.?$/gi, 'Alley');
 
-                        // Build search URL - search for the address first before creating a new job
-                        const roofrSearchUrl = `https://app.roofr.com/dashboard/team/239329/jobs/list-view?page=1&filter%5Bq%5D=${encodeURIComponent(expandedStreetAddress)}`;
+                        // Build search URL - navigate to base list view (will inject search via content script)
+                        const roofrSearchUrl = 'https://app.roofr.com/dashboard/team/239329/jobs/list-view';
                         const roofrJobsUrl = 'https://app.roofr.com/dashboard/team/239329/jobs';
                         addLog(`Searching Roofr for: ${expandedStreetAddress}`);
 
@@ -4496,6 +5961,47 @@ document.addEventListener('DOMContentLoaded', async () => {
                         // Store the original address for job creation fallback
                         const originalAddress = verifiedAddress;
 
+                        // Wait for page to load, then inject search into the search bar
+                        if (jobsNeedsPageLoad) {
+                            chrome.tabs.onUpdated.addListener(function jobsListener(tabId, info) {
+                                if (tabId === jobsTab.id && info.status === 'complete') {
+                                    chrome.tabs.onUpdated.removeListener(jobsListener);
+
+                                    // Add extra delay to ensure React has fully rendered
+                                    setTimeout(() => {
+                                        // Inject the address into the search bar with retry logic
+                                        addLog(`Injecting job search: ${expandedStreetAddress}`);
+
+                                        const attemptInjection = (attemptNum) => {
+                                            if (attemptNum > 3) {
+                                                addLog(`Failed to inject search after 3 attempts`, 'ERROR');
+                                                return;
+                                            }
+
+                                            chrome.tabs.sendMessage(jobsTab.id, {
+                                                type: 'INJECT_JOB_SEARCH',
+                                                address: expandedStreetAddress
+                                            }).then(result => {
+                                                if (result && result.ok) {
+                                                    addLog(`Job search injected successfully (attempt ${attemptNum})`);
+                                                    // Wait for search results to load, then check results
+                                                    setTimeout(() => handleSearchResults(jobsTab.id, originalAddress, roofrJobsUrl), 4000);
+                                                } else {
+                                                    addLog(`Injection attempt ${attemptNum} failed: ${result?.error || 'unknown'}, retrying...`);
+                                                    setTimeout(() => attemptInjection(attemptNum + 1), 1000);
+                                                }
+                                            }).catch(err => {
+                                                addLog(`Error on attempt ${attemptNum}: ${err.message}, retrying...`);
+                                                setTimeout(() => attemptInjection(attemptNum + 1), 1000);
+                                            });
+                                        };
+
+                                        attemptInjection(1);
+                                    }, 1000); // Wait 1 extra second after page complete
+                                }
+                            });
+                        }
+
                         // Function to check search results and either click the first result or create new job
                         const handleSearchResults = (tabId, address, jobsUrl) => {
                             addLog(`Checking search results on tab ${tabId}`);
@@ -4506,25 +6012,25 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                                     // Function to count job rows in the list view
                                     const countJobRows = () => {
-                                        // Primary: Look for table rows in list view
+                                        // Primary: AG Grid data rows (current Roofr UI)
+                                        const agRows = document.querySelectorAll('.ag-row:not(.ag-header-row)');
+                                        if (agRows.length > 0) {
+                                            console.log('[Roofr Extension] Found', agRows.length, 'AG Grid data rows');
+                                            return agRows.length;
+                                        }
+
+                                        // Fallback: Look for table rows (legacy)
                                         const tableRows = document.querySelectorAll('table tbody tr');
                                         if (tableRows.length > 0) {
                                             console.log('[Roofr Extension] Found', tableRows.length, 'table rows');
                                             return tableRows.length;
                                         }
 
-                                        // Alternative: Look for job card links
-                                        const jobLinks = document.querySelectorAll('a[href*="/jobs/details/"]');
-                                        if (jobLinks.length > 0) {
-                                            console.log('[Roofr Extension] Found', jobLinks.length, 'job links');
-                                            return jobLinks.length;
-                                        }
-
-                                        // Check for any rows with data-testid
-                                        const testIdRows = document.querySelectorAll('[data-testid*="row"], [data-testid*="job"]');
-                                        if (testIdRows.length > 0) {
-                                            console.log('[Roofr Extension] Found', testIdRows.length, 'testid rows');
-                                            return testIdRows.length;
+                                        // Fallback: Count View buttons as proxy for job rows
+                                        const viewBtns = Array.from(document.querySelectorAll('button, a')).filter(b => b.textContent?.trim() === 'View');
+                                        if (viewBtns.length > 0) {
+                                            console.log('[Roofr Extension] Found', viewBtns.length, 'View buttons');
+                                            return viewBtns.length;
                                         }
 
                                         return 0;
@@ -4532,36 +6038,38 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                                     // Function to click the View button on the first job row
                                     const clickFirstJobRow = () => {
-                                        // Priority 1: Find the "View" button in the first row
-                                        const firstRow = document.querySelector('table tbody tr:first-child, [role="row"]:first-of-type');
-                                        if (firstRow) {
-                                            // Look for View button/link in the row
-                                            const viewButton = firstRow.querySelector('button, a, [role="button"]');
-                                            if (viewButton) {
-                                                // Check if it contains "View" text
-                                                const buttons = firstRow.querySelectorAll('button, a, [role="button"], .d-flex');
-                                                for (const btn of buttons) {
-                                                    const text = btn.textContent?.trim();
-                                                    if (text === 'View' || text?.includes('View')) {
-                                                        console.log('[Roofr Extension] Clicking View button:', text);
-                                                        btn.click();
-                                                        return true;
-                                                    }
+                                        // Priority 1: Find View button in the first AG Grid data row
+                                        const firstAgRow = document.querySelector('.ag-row:not(.ag-header-row)');
+                                        if (firstAgRow) {
+                                            const buttons = firstAgRow.querySelectorAll('button, a, [role="button"]');
+                                            for (const btn of buttons) {
+                                                const text = btn.textContent?.trim();
+                                                if (text === 'View' || text?.includes('View')) {
+                                                    console.log('[Roofr Extension] Clicking View button in AG Grid row:', text);
+                                                    btn.click();
+                                                    return true;
                                                 }
                                             }
+                                            // If no View button, try clicking the row itself
+                                            console.log('[Roofr Extension] No View button in AG row, clicking row');
+                                            firstAgRow.click();
+                                            return true;
+                                        }
 
-                                            // Look for any clickable element with "View" text in the row
-                                            const allElements = firstRow.querySelectorAll('*');
-                                            for (const el of allElements) {
-                                                if (el.textContent?.trim() === 'View' && el.children.length === 0) {
-                                                    console.log('[Roofr Extension] Clicking View element');
-                                                    el.click();
+                                        // Priority 2: Find View button in a table row (legacy)
+                                        const firstTableRow = document.querySelector('table tbody tr:first-child');
+                                        if (firstTableRow) {
+                                            const buttons = firstTableRow.querySelectorAll('button, a, [role="button"]');
+                                            for (const btn of buttons) {
+                                                if (btn.textContent?.trim() === 'View') {
+                                                    console.log('[Roofr Extension] Clicking View button in table row');
+                                                    btn.click();
                                                     return true;
                                                 }
                                             }
                                         }
 
-                                        // Priority 2: Find View button anywhere in the results
+                                        // Priority 3: Find any View button on the page
                                         const allViewButtons = document.querySelectorAll('button, a, [role="button"]');
                                         for (const btn of allViewButtons) {
                                             if (btn.textContent?.trim() === 'View') {
@@ -4571,26 +6079,25 @@ document.addEventListener('DOMContentLoaded', async () => {
                                             }
                                         }
 
-                                        // Priority 3: Fall back to clicking job details link
-                                        const selectors = [
-                                            'table tbody tr:first-child a[href*="/jobs/details/"]',
-                                            'a[href*="/jobs/details/"]:first-of-type'
-                                        ];
-
-                                        for (const selector of selectors) {
-                                            const element = document.querySelector(selector);
-                                            if (element) {
-                                                console.log('[Roofr Extension] Clicking job link:', selector);
-                                                element.click();
-                                                return true;
-                                            }
-                                        }
-
                                         return false;
                                     };
 
                                     // Function to check for "no results" state
                                     const hasNoResults = () => {
+                                        // Check for AG Grid overlay (no rows)
+                                        const agOverlay = document.querySelector('.ag-overlay-no-rows-wrapper, .ag-overlay');
+                                        if (agOverlay && agOverlay.offsetParent !== null) {
+                                            console.log('[Roofr Extension] Found AG Grid no-rows overlay');
+                                            return true;
+                                        }
+
+                                        // Check for zero AG Grid data rows (most reliable)
+                                        const agRows = document.querySelectorAll('.ag-row:not(.ag-header-row)');
+                                        if (agRows.length === 0) {
+                                            console.log('[Roofr Extension] Zero AG Grid data rows');
+                                            return true;
+                                        }
+
                                         // Check for specific Roofr "no results" elements
                                         const noSearchResults = document.querySelector('.no-search-results, [class*="no-search-results"]');
                                         if (noSearchResults) {
@@ -4613,12 +6120,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                                             }
                                         }
 
-                                        // Check for "No results matched your search" or similar text
+                                        // Check for "No jobs found" or similar text
                                         const pageText = document.body.innerText.toLowerCase();
                                         if (pageText.includes('no results matched') ||
                                             pageText.includes('0 results') ||
                                             pageText.includes('no jobs found') ||
-                                            pageText.includes('no results found')) {
+                                            pageText.includes('no results found') ||
+                                            pageText.includes('try adjusting your search')) {
                                             console.log('[Roofr Extension] Found "no results" text');
                                             return true;
                                         }
@@ -5038,21 +6546,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                             });
                         };
 
-                        if (jobsNeedsPageLoad) {
-                            // Wait for search results page to load
-                            chrome.tabs.onUpdated.addListener(function jobsListener(tabId, info) {
-                                if (tabId === jobsTab.id && info.status === 'complete') {
-                                    chrome.tabs.onUpdated.removeListener(jobsListener);
-                                    // Wait for React to render the search results
-                                    addLog(`Roofr search page loaded, checking for results...`);
-                                    setTimeout(() => handleSearchResults(jobsTab.id, originalAddress, roofrJobsUrl), 3000);
-                                }
-                            });
-                        } else {
-                            // Existing tab - run script with a delay
-                            addLog(`Checking existing search results...`);
-                            setTimeout(() => handleSearchResults(jobsTab.id, originalAddress, roofrJobsUrl), 2000);
-                        }
+                        // NOTE: Tab listener and handleSearchResults call is now handled above in the injection flow (lines 4900-4937)
+                        // The old duplicate listener has been removed to prevent double-clicking
+
                         } // end search_roofr check
 
                         // Group all tabs together, reorder, and move to the far left (only if multiple tabs are open)
@@ -5100,12 +6596,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 });
                                 addLog(`Tab group: "${shortAddress}"`);
 
-                                // Move the group to the far left (index 0)
-                                await chrome.tabGroups.move(groupId, { index: 0 });
+                                // Move the group to the left, after any pinned tabs
+                                const queryOpts = { pinned: true };
+                                if (window.__targetWindowId) queryOpts.windowId = window.__targetWindowId;
+                                const pinnedTabs = await chrome.tabs.query(queryOpts);
+                                const pinnedCount = pinnedTabs.length;
+                                await chrome.tabGroups.move(groupId, { index: pinnedCount });
 
-                                // Reorder tabs within the group
+                                // Reorder tabs within the group (relative to the group's starting position)
                                 for (let i = 0; i < tabIdsInOrder.length; i++) {
-                                    await chrome.tabs.move(tabIdsInOrder[i], { index: i });
+                                    await chrome.tabs.move(tabIdsInOrder[i], { index: pinnedCount + i });
                                 }
                             }
 
@@ -5168,6 +6668,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         addrInput.addEventListener("input", (e) => {
             const value = e.target.value.trim();
 
+            // Clear Roofr job selection if user manually edits the input
+            if (window.__selectedRoofrJobLink && value !== window.__selectedRoofrJobInputValue) {
+                window.__selectedRoofrJobLink = null;
+                window.__selectedRoofrJob = null;
+                window.__selectedRoofrJobInputValue = null;
+            }
+
             // Always save input value to state so it persists through rescans
             state.addressInput = e.target.value; // Save raw value (not trimmed) to preserve spaces while typing
             debouncedSaveState();
@@ -5175,8 +6682,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             updateAddressClearButton();
             updateGoButtonState();
 
-            // Fetch address suggestions from API as user types
-            if (value.length >= 3) {
+            // Fetch address suggestions (sheet data + API) as user types
+            if (value.length >= 2) {
                 debouncedFetchAddressSuggestions(value);
             }
 
@@ -5198,6 +6705,37 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
 
         addrInput.addEventListener("keydown", async (e) => {
+            // Keyboard navigation for suggestion dropdown
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                if (verifiedAddressesList && !verifiedAddressesList.classList.contains('hidden') && _suggestionItems.length > 0) {
+                    e.preventDefault();
+                    if (e.key === "ArrowDown") {
+                        _activeSuggestionIndex = Math.min(_activeSuggestionIndex + 1, _suggestionItems.length - 1);
+                    } else {
+                        _activeSuggestionIndex = Math.max(_activeSuggestionIndex - 1, -1);
+                    }
+                    _suggestionItems.forEach((el, i) => el.classList.toggle('keyboard-active', i === _activeSuggestionIndex));
+                    if (_activeSuggestionIndex >= 0) {
+                        _suggestionItems[_activeSuggestionIndex].scrollIntoView({ block: 'nearest' });
+                    }
+                }
+                return;
+            }
+            if (e.key === "Escape") {
+                if (verifiedAddressesList && !verifiedAddressesList.classList.contains('hidden')) {
+                    verifiedAddressesList.classList.add('hidden');
+                    _activeSuggestionIndex = -1;
+                }
+                return;
+            }
+            // Enter with highlighted suggestion → select it
+            if (e.key === "Enter" && _activeSuggestionIndex >= 0 && _suggestionItems[_activeSuggestionIndex]) {
+                e.preventDefault();
+                _suggestionItems[_activeSuggestionIndex].click();
+                _activeSuggestionIndex = -1;
+                return;
+            }
+
             if (e.key === "Enter") {
                 const inputValue = addrInput?.value?.trim();
                 if (!inputValue) return;
@@ -5205,8 +6743,28 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Check if input is a phone number
                 const phoneDigits = detectPhoneNumber(inputValue);
                 if (phoneDigits) {
-                    // It's a phone number - open contacts page
                     const formattedPhone = formatPhoneForDisplay(phoneDigits);
+                    const qPhone = _normalizePhone(phoneDigits);
+
+                    // Check local catalog — opens job card directly (same as dropdown click)
+                    if (_roofrDataCache && qPhone.length >= 7) {
+                        const match = _roofrDataCache.find(job => {
+                            if (!job._nPhone || !job.Link) return false;
+                            return job._nPhone === qPhone ||
+                                   job._nPhone.endsWith(qPhone) ||
+                                   qPhone.endsWith(job._nPhone) ||
+                                   job._nPhone.includes(qPhone) ||
+                                   qPhone.includes(job._nPhone);
+                        });
+                        if (match) {
+                            console.log('[Popup] Phone catalog match:', match.Customer, match.Link);
+                            showToast(`Opening ${match.Customer || formattedPhone}...`);
+                            await openJobCard(match);
+                            return;
+                        }
+                    }
+
+                    // Fallback: contacts page search
                     showToast(`Searching for ${formattedPhone}...`);
                     try {
                         await chrome.runtime.sendMessage({
@@ -5219,11 +6777,30 @@ document.addEventListener('DOMContentLoaded', async () => {
                         console.error('[Popup] Error opening contacts for phone:', err);
                         showToast('Error opening contacts');
                     }
-                } else {
-                    // It's an address - run recommendation
-                    await runMainRecommendation();
-                    updateGoButtonState();
+                    return;
                 }
+
+                // Check if input is a person's name
+                const personName = detectName(inputValue);
+                if (personName) {
+                    showToast(`Searching Roofr for "${personName}"...`);
+                    try {
+                        await chrome.runtime.sendMessage({
+                            type: 'OPEN_CONTACTS_FOR_PHONE',
+                            phoneNumber: personName,
+                            formattedPhone: personName,
+                            callerName: ''
+                        });
+                    } catch (err) {
+                        console.error('[Popup] Error opening contacts for name:', err);
+                        showToast('Error opening contacts');
+                    }
+                    return;
+                }
+
+                // It's an address - run recommendation
+                await runMainRecommendation();
+                updateGoButtonState();
             }
         });
     }
@@ -5519,7 +7096,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // Fetch the entire sheet to find rep sections (use UNFORMATTED_VALUE to get boolean values for checkboxes)
             const qTab = `'${tabName.replace(/'/g, "''")}'`;
-            const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(qTab)}?key=${encodeURIComponent(apiKey)}&valueRenderOption=UNFORMATTED_VALUE`;
+            const url = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(sheetId)}&range=${encodeURIComponent(qTab)}&valueRenderOption=UNFORMATTED_VALUE`;
 
             const res = await fetch(url, { cache: "no-store" });
             if (!res.ok) throw new Error(`API error: ${res.statusText}`);
@@ -5605,7 +7182,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // Fetch the entire sheet
             const qTab = `'${tabName.replace(/'/g, "''")}'`;
-            const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}/values/${encodeURIComponent(qTab)}?key=${encodeURIComponent(apiKey)}&valueRenderOption=UNFORMATTED_VALUE`;
+            const url = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(sheetId)}&range=${encodeURIComponent(qTab)}&valueRenderOption=UNFORMATTED_VALUE`;
 
             const res = await fetch(url, { cache: "no-store" });
             if (!res.ok) return [];
@@ -5818,7 +7395,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             const settings = await chrome.storage.sync.get(keys);
 
             // Check if stored data contains old removed reps or is missing new people and clear if so
-            const removedReps = ["Brandon Cook", "Brian Griggs", "Phil Merrell", "Ted Pear", "Kyle Ludewig", "William Yost"];
+            const removedReps = ["Ashkan Etemadi", "Brandon Cook", "Brian Griggs", "Oliver Johnson", "Phil Merrell", "Ted Pear", "Kyle Ludewig", "William Ludewig", "William Yost"];
+            const newReps = ["Josh Jewett", "Stephen Chaidez"];
             const removedCSRs = ["Layla Fairfield"];
             const newMgmt = ["Andrew Clark"]; // New management members to check for
             let needsClear = false;
@@ -5826,6 +7404,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (settings.PEOPLE_REPS) {
                 const storedReps = settings.PEOPLE_REPS.split(',').map(s => s.trim());
                 if (removedReps.some(removed => storedReps.includes(removed))) {
+                    needsClear = true;
+                }
+                if (newReps.some(newPerson => !storedReps.includes(newPerson))) {
                     needsClear = true;
                 }
             }
@@ -6325,6 +7906,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         else document.body.classList.remove('compact-mode');
         if (settingCompact) settingCompact.checked = userPrefs.compactView;
 
+        // Color Indicators
+        if (userPrefs.showColorIndicators === false) document.body.classList.add('hide-color-indicators');
+        else document.body.classList.remove('hide-color-indicators');
+
+        // Icons
+        if (userPrefs.showIcons === false) document.body.classList.add('hide-icons');
+        else document.body.classList.remove('hide-icons');
+
+        // Animations
+        if (userPrefs.animateTransitions === false) document.body.classList.add('no-animations');
+        else document.body.classList.remove('no-animations');
+
         // Global Panel
         if (settingGlobalPanel) settingGlobalPanel.checked = userPrefs.globalPanel;
         const desc = document.getElementById('mode-desc');
@@ -6364,7 +7957,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Interface
             'global_panel_mode', 'auto_expand_days',
             // Scanner
-            'auto_scan_on_load', 'show_uncategorized_alerts'
+            'auto_scan_on_load', 'show_uncategorized_alerts',
+            // Footer tools
+            'footer_show_find', 'footer_show_notes', 'footer_show_formatting',
+            'footer_show_popup_btn', 'footer_show_links'
         ], (result) => {
             // Appearance settings
             if (result.theme !== undefined) {
@@ -6380,6 +7976,28 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (result.compact_mode) document.body.classList.add('compact-mode');
                 else document.body.classList.remove('compact-mode');
                 if (settingCompact) settingCompact.checked = result.compact_mode;
+            }
+            // Color Indicators
+            if (result.show_color_indicators !== undefined) {
+                userPrefs.showColorIndicators = result.show_color_indicators;
+                if (result.show_color_indicators === false) document.body.classList.add('hide-color-indicators');
+                else document.body.classList.remove('hide-color-indicators');
+            }
+            // Icons
+            if (result.show_icons !== undefined) {
+                userPrefs.showIcons = result.show_icons;
+                if (result.show_icons === false) document.body.classList.add('hide-icons');
+                else document.body.classList.remove('hide-icons');
+            }
+            // Animations
+            if (result.animate_transitions !== undefined) {
+                userPrefs.animateTransitions = result.animate_transitions;
+                if (result.animate_transitions === false) document.body.classList.add('no-animations');
+                else document.body.classList.remove('no-animations');
+            }
+            // Auto expand days
+            if (result.auto_expand_days !== undefined) {
+                userPrefs.autoExpandDays = result.auto_expand_days;
             }
             if (result.global_panel_mode !== undefined) {
                 userPrefs.globalPanel = result.global_panel_mode;
@@ -6401,6 +8019,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result.show_clipboard !== undefined) userPrefs.showClipboardTab = result.show_clipboard;
             if (result.show_reports !== undefined) userPrefs.showReportsTab = result.show_reports;
 
+            // Footer tools - sync from options page
+            if (result.footer_show_find !== undefined) userPrefs.showFindBar = result.footer_show_find;
+            if (result.footer_show_notes !== undefined) userPrefs.showQuickNotes = result.footer_show_notes;
+            if (result.footer_show_formatting !== undefined) userPrefs.footerShowFormatting = result.footer_show_formatting;
+            if (result.footer_show_popup_btn !== undefined) userPrefs.footerShowPopupBtn = result.footer_show_popup_btn;
+            if (result.footer_show_links !== undefined) userPrefs.footerShowLinks = result.footer_show_links;
+
             // Update checkboxes
             if (settingShowJobSorting) settingShowJobSorting.checked = userPrefs.showJobSortingTab;
             if (settingShowPeople) settingShowPeople.checked = userPrefs.showPeopleTab;
@@ -6419,26 +8044,53 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const reportsTabBtn = document.querySelector('.nav-tab[data-target="sec-reports"]');
             if (reportsTabBtn) reportsTabBtn.style.display = userPrefs.showReportsTab === false ? 'none' : '';
+
+            // Dock Toggles (inside callback for reactive updates)
+            const dockFind = document.getElementById('dock-find-container');
+            if (dockFind) dockFind.style.display = userPrefs.showFindBar ? '' : 'none';
+            if (settingShowFind) settingShowFind.checked = userPrefs.showFindBar;
+
+            const dockNotes = document.getElementById('dock-notes-container');
+            if (dockNotes) dockNotes.style.display = userPrefs.showQuickNotes ? '' : 'none';
+            if (settingShowNotes) settingShowNotes.checked = userPrefs.showQuickNotes;
+
+            // Footer tools visibility
+            const dockNotesToolbar = document.querySelector('.dock-notes-toolbar');
+            if (dockNotesToolbar) {
+                // Formatting tools (T, A-, A+)
+                const formatToggle = document.getElementById('dock-note-toggle-format');
+                const sizeDown = document.getElementById('dock-note-size-down');
+                const sizeDisplay = document.getElementById('dock-note-size-display');
+                const sizeUp = document.getElementById('dock-note-size-up');
+                if (formatToggle) formatToggle.style.display = userPrefs.footerShowFormatting ? '' : 'none';
+                if (sizeDown) sizeDown.style.display = userPrefs.footerShowFormatting ? '' : 'none';
+                if (sizeDisplay) sizeDisplay.style.display = userPrefs.footerShowFormatting ? '' : 'none';
+                if (sizeUp) sizeUp.style.display = userPrefs.footerShowFormatting ? '' : 'none';
+
+                // Popup button
+                const popoutBtn = document.getElementById('popout-btn');
+                if (popoutBtn) popoutBtn.style.display = userPrefs.footerShowPopupBtn ? '' : 'none';
+
+                // Links dropdown
+                const linksDropdown = document.querySelector('.links-dropdown');
+                if (linksDropdown) linksDropdown.style.display = userPrefs.footerShowLinks ? '' : 'none';
+
+                // Sync settings checkboxes for footer tools
+                if (settingShowFormatting) settingShowFormatting.checked = userPrefs.footerShowFormatting;
+                if (settingShowPopupBtn) settingShowPopupBtn.checked = userPrefs.footerShowPopupBtn;
+                if (settingShowLinks) settingShowLinks.checked = userPrefs.footerShowLinks;
+            }
+
+            const dock = document.getElementById('bottom-dock');
+            const app = document.getElementById('app-container');
+            if (!userPrefs.showFindBar && !userPrefs.showQuickNotes) {
+                if (dock) dock.classList.add('hidden');
+                if (app) app.classList.add('no-dock');
+            } else {
+                if (dock) dock.classList.remove('hidden');
+                if (app) app.classList.remove('no-dock');
+            }
         });
-
-        // Dock Toggles
-        const dockFind = document.getElementById('dock-find-container');
-        if (dockFind) dockFind.style.display = userPrefs.showFindBar ? '' : 'none';
-        if (settingShowFind) settingShowFind.checked = userPrefs.showFindBar;
-
-        const dockNotes = document.getElementById('dock-notes-container');
-        if (dockNotes) dockNotes.style.display = userPrefs.showQuickNotes ? '' : 'none';
-        if (settingShowNotes) settingShowNotes.checked = userPrefs.showQuickNotes;
-
-        const dock = document.getElementById('bottom-dock');
-        const app = document.getElementById('app-container');
-        if (!userPrefs.showFindBar && !userPrefs.showQuickNotes) {
-            if (dock) dock.classList.add('hidden');
-            if (app) app.classList.add('no-dock');
-        } else {
-            if (dock) dock.classList.remove('hidden');
-            if (app) app.classList.remove('no-dock');
-        }
     }
 
     // --- Settings Listeners ---
@@ -6537,27 +8189,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         userPrefs.showFindBar = e.target.checked;
         saveUserPrefs(); applyUserPrefs();
     });
+    if (settingShowFormatting) settingShowFormatting.addEventListener('change', (e) => {
+        userPrefs.footerShowFormatting = e.target.checked;
+        saveUserPrefs(); applyUserPrefs();
+    });
+    if (settingShowPopupBtn) settingShowPopupBtn.addEventListener('change', (e) => {
+        userPrefs.footerShowPopupBtn = e.target.checked;
+        saveUserPrefs(); applyUserPrefs();
+    });
+    if (settingShowLinks) settingShowLinks.addEventListener('change', (e) => {
+        userPrefs.footerShowLinks = e.target.checked;
+        saveUserPrefs(); applyUserPrefs();
+    });
 
-
-    /* ========= Idle Recommendation Timer ========= */
-    let idleTimer;
-    let currentIdlePriority = 'high'; // Default priority
-
-    function getIdleTimeout() {
-        return userPrefs.idleTimeout || 60000; // Default 1 minute
-    }
-
-    // Idle timer functionality disabled - recommendation is now inline
-    function resetIdleTimer() {
-        // No-op: idle popup removed, functionality is now inline
-    }
-
-    // Priority descriptions used by inline recommendation
-    const priorityDescriptions = {
-        high: 'Next available day, best slot',
-        med: '2+ days after next available',
-        low: '4+ days after next available'
-    };
 
     /* ========= Load Settings ========= */
     async function loadSettings() {
@@ -7035,6 +8679,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // ========================================
 
     const batchScheduleInput = document.getElementById('batch-schedule-input');
+    const batchScheduleBody = document.getElementById('batch-schedule-body');
+    const batchScheduleSummary = document.getElementById('batch-schedule-summary');
+    const toggleBatchScheduleBtn = document.getElementById('toggle-batch-schedule');
     const parseBatchBtn = document.getElementById('parse-batch-schedule');
     const batchParsedJobs = document.getElementById('batch-parsed-jobs');
     const batchJobsList = document.getElementById('batch-jobs-list');
@@ -7051,6 +8698,103 @@ document.addEventListener('DOMContentLoaded', async () => {
     let batchIsPaused = false;
     let batchIsCancelled = false;
     let batchIsRunning = false;
+    let batchBackgroundMode = false;
+    let reviewBatchStart = 0;
+    const REVIEW_BATCH_SIZE = 8;
+    let reviewTabIds = [];
+    let reviewTabMap = {}; // Maps appointment index → review tab ID
+    let reviewIsRunning = false;
+    let reviewIsCancelled = false;
+    let executionOpenedTabIds = []; // Track tabs opened during execution to avoid reuse
+    let batchPhase = 'idle'; // idle, review, phase1, phase2, phase3, done, cancelled
+    let batchLogHistory = [];
+
+    function setBatchScheduleCollapsed(collapsed) {
+        if (!batchScheduleBody || !batchScheduleSummary || !toggleBatchScheduleBtn) return;
+        if (!collapsed || parsedAppointments.length === 0) {
+            batchScheduleBody.style.display = 'block';
+            batchScheduleSummary.style.display = 'none';
+            toggleBatchScheduleBtn.style.display = parsedAppointments.length ? 'inline-flex' : 'none';
+            toggleBatchScheduleBtn.textContent = 'Hide';
+            return;
+        }
+
+        const approvedCount = parsedAppointments.filter(a => a.approved).length;
+        const reps = [...new Set(parsedAppointments.map(a => a.rep).filter(Boolean))];
+        batchScheduleSummary.textContent = `${parsedAppointments.length} appointments parsed (${approvedCount} selected)${reps.length ? ` • ${reps.join(', ')}` : ''}`;
+        batchScheduleBody.style.display = 'none';
+        batchScheduleSummary.style.display = 'block';
+        toggleBatchScheduleBtn.style.display = 'inline-flex';
+        toggleBatchScheduleBtn.textContent = 'Edit';
+    }
+
+    if (toggleBatchScheduleBtn) {
+        toggleBatchScheduleBtn.addEventListener('click', () => {
+            const isCollapsed = batchScheduleBody?.style.display === 'none';
+            setBatchScheduleCollapsed(!isCollapsed);
+        });
+    }
+
+    // --- Dashboard BroadcastChannel ---
+    const batchChannel = new BroadcastChannel('roofr-batch-dashboard');
+
+    function broadcastState() {
+        try {
+            batchChannel.postMessage({
+                type: 'BATCH_FULL_STATE',
+                data: {
+                    appointments: parsedAppointments.map(a => ({...a})),
+                    phase: batchPhase,
+                    progress: { current: 0, total: parsedAppointments.filter(a => a.approved).length },
+                    reviewBatchStart,
+                    reviewBatchSize: REVIEW_BATCH_SIZE,
+                    isRunning: batchIsRunning,
+                    isPaused: batchIsPaused
+                }
+            });
+        } catch (e) {}
+    }
+
+    batchChannel.onmessage = (e) => {
+        const msg = e.data;
+        if (msg.type === 'DASHBOARD_CONNECTED') {
+            broadcastState();
+            // Send log history
+            try {
+                batchChannel.postMessage({ type: 'BATCH_LOG_HISTORY', logs: batchLogHistory });
+            } catch (e) {}
+        } else if (msg.type === 'BATCH_TOGGLE_APPROVED') {
+            if (parsedAppointments[msg.index]) {
+                parsedAppointments[msg.index].approved = msg.approved;
+                renderParsedAppointments();
+            }
+        }
+    };
+
+    // Open dashboard button
+    const dashboardBtn = document.getElementById('open-batch-dashboard');
+    if (dashboardBtn) {
+        dashboardBtn.addEventListener('click', () => {
+            chrome.tabs.create({ url: chrome.runtime.getURL('batch-dashboard.html') });
+        });
+    }
+
+    // Load background mode preference
+    chrome.storage.sync.get({ batch_background_mode: false }, (result) => {
+        batchBackgroundMode = result.batch_background_mode;
+        const toggle = document.getElementById('batch-background-mode');
+        if (toggle) toggle.checked = batchBackgroundMode;
+    });
+
+    // Background mode toggle handler
+    const bgModeToggle = document.getElementById('batch-background-mode');
+    if (bgModeToggle) {
+        bgModeToggle.addEventListener('change', async (e) => {
+            batchBackgroundMode = e.target.checked;
+            await chrome.storage.sync.set({ batch_background_mode: batchBackgroundMode });
+            addBatchLog(batchBackgroundMode ? 'Background mode enabled' : 'Background mode disabled', 'info');
+        });
+    }
 
     // Parse schedule text into appointments
     function parseScheduleReport(text) {
@@ -7096,7 +8840,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     fullLine: trimmedLine,
                     status: 'pending',
                     calendarAdded: false,
-                    jobCardAdded: false
+                    jobCardAdded: false,
+                    approved: true
                 });
             }
         }
@@ -7142,6 +8887,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             modalContent.innerHTML += logEntry;
             modalContent.scrollTop = modalContent.scrollHeight;
         }
+
+        // Broadcast to dashboard
+        batchLogHistory.push({ message, logType: type, timestamp });
+        try {
+            batchChannel.postMessage({ type: 'BATCH_LOG', message, logType: type, timestamp });
+        } catch (e) {}
     }
 
     // Clear batch log
@@ -7158,6 +8909,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (modalContent) {
             modalContent.innerHTML = '';
         }
+        batchLogHistory = [];
     }
 
     // Update progress display
@@ -7173,14 +8925,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     function renderParsedAppointments() {
         if (!batchJobsList || !batchParsedJobs) return;
 
+        const reviewControls = document.getElementById('batch-review-controls');
+
         if (parsedAppointments.length === 0) {
             batchParsedJobs.style.display = 'none';
             runBatchBtn.style.display = 'none';
+            if (reviewControls) reviewControls.style.display = 'none';
             return;
         }
 
         batchParsedJobs.style.display = 'block';
         runBatchBtn.style.display = 'block';
+        if (reviewControls) reviewControls.style.display = 'block';
+
+        // Update review batch label and button states
+        updateReviewBatchUI();
+
+        const escapeHtml = (value) => String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+        const statusChip = (label, color, bg) => `
+            <span style="display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px; font-size: 0.68rem; font-weight: 700; color: ${color}; background: ${bg}; white-space: nowrap;">${label}</span>
+        `;
 
         let html = '';
         let currentRep = null;
@@ -7190,27 +8959,64 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (apt.rep !== currentRep) {
                 if (currentRep !== null) html += '</div>';
                 currentRep = apt.rep;
-                html += `<div style="margin-bottom: 8px;"><strong style="color: var(--primary);">${apt.rep}</strong>`;
+                const repAppointments = parsedAppointments.filter(a => a.rep === currentRep);
+                const repApproved = repAppointments.filter(a => a.approved).length;
+                html += `<div style="margin-bottom: 8px;">
+                    <div style="position: sticky; top: -8px; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 6px 4px; background: var(--surface); border-bottom: 1px solid var(--border);">
+                        <strong style="color: var(--primary); font-size: 0.83rem;">${escapeHtml(apt.rep)}</strong>
+                        <span style="font-size: 0.72rem; color: var(--text-muted);">${repApproved}/${repAppointments.length} selected</span>
+                    </div>`;
             }
-            const statusIcon = apt.status === 'done' ? '✓' : apt.status === 'error' ? '✗' : '○';
-            const statusColor = apt.status === 'done' ? 'var(--success)' : apt.status === 'error' ? 'var(--danger)' : 'var(--text-muted)';
 
-            // Checkbox icons for calendar and job card status
-            const calIcon = apt.calendarAdded ? '☑' : '☐';
-            const calColor = apt.calendarAdded ? 'var(--success)' : 'var(--text-muted)';
-            const jobIcon = apt.jobCardAdded ? '☑' : '☐';
-            const jobColor = apt.jobCardAdded ? 'var(--success)' : 'var(--text-muted)';
+            const isSkipped = apt.status === 'skipped';
+            const rowOpacity = !apt.approved ? '0.54' : '1';
+            const rowBg = !apt.approved ? 'transparent' : 'rgba(59, 130, 246, 0.06)';
+            const rowBorder = apt.status === 'error' ? 'var(--danger)' : apt.approved ? 'var(--primary)' : 'var(--border)';
+            const checkedAttr = apt.approved ? 'checked' : '';
+            const chips = [
+                statusChip(apt.calendarAdded ? 'Calendar added' : 'Calendar pending', apt.calendarAdded ? 'var(--success)' : 'var(--text-muted)', apt.calendarAdded ? 'rgba(34,197,94,0.12)' : 'var(--surface-hover)'),
+                statusChip(apt.reportOrdered ? 'Report ordered' : apt.reportPending ? 'Report review' : 'Report pending', apt.reportOrdered ? 'var(--success)' : apt.reportPending ? 'var(--primary)' : 'var(--text-muted)', apt.reportOrdered ? 'rgba(34,197,94,0.12)' : apt.reportPending ? 'rgba(59,130,246,0.12)' : 'var(--surface-hover)')
+            ];
+            if (apt.hasLotUnit) chips.push(statusChip('Lot/unit check', 'var(--danger)', 'rgba(239,68,68,0.12)'));
+            if (apt.hasAppointmentTimeMismatch) chips.push(statusChip('Time mismatch', 'var(--danger)', 'rgba(239,68,68,0.12)'));
+            if (apt.status === 'done') chips.push(statusChip('Done', 'var(--success)', 'rgba(34,197,94,0.12)'));
+            if (apt.status === 'error') chips.push(statusChip('Error', 'var(--danger)', 'rgba(239,68,68,0.12)'));
+            if (isSkipped) chips.push(statusChip('Skipped', 'var(--text-muted)', 'var(--surface-hover)'));
 
-            html += `<div style="margin-left: 12px; display: flex; align-items: center; gap: 8px;" id="batch-apt-${i}">
-                <span style="color: ${statusColor};">${statusIcon}</span>
-                <span style="color: ${calColor}; font-size: 12px;" title="Calendar Event">📅${calIcon}</span>
-                <span style="color: ${jobColor}; font-size: 12px;" title="Job Card">📋${jobIcon}</span>
-                <span style="color: ${statusColor};">${apt.startTime}: ${apt.address}</span>
+            html += `<div style="display: grid; grid-template-columns: 22px minmax(68px, 82px) minmax(0, 1fr); gap: 8px; align-items: start; margin: 6px 0; padding: 8px; border: 1px solid var(--border); border-left: 3px solid ${rowBorder}; border-radius: 6px; background: ${rowBg}; opacity: ${rowOpacity};" id="batch-apt-${i}">
+                <input type="checkbox" ${checkedAttr} data-apt-idx="${i}" class="review-checkbox" style="margin-top: 2px; cursor: pointer; accent-color: var(--primary);">
+                <div style="font-size: 0.75rem; font-weight: 800; color: var(--text-main); line-height: 1.25;">${escapeHtml(apt.startTime)}<br><span style="color: var(--text-muted); font-weight: 700;">${escapeHtml(apt.endTime)}</span></div>
+                <div style="min-width: 0;">
+                    <div style="font-size: 0.82rem; font-weight: 650; color: var(--text-main); line-height: 1.25; overflow-wrap: anywhere;">${escapeHtml(apt.address)}</div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px;">${chips.join('')}</div>
+                </div>
             </div>`;
         }
         if (currentRep !== null) html += '</div>';
 
         batchJobsList.innerHTML = html;
+
+        // Wire up checkbox handlers
+        batchJobsList.querySelectorAll('.review-checkbox').forEach(cb => {
+            cb.addEventListener('change', (e) => {
+                const idx = parseInt(e.target.dataset.aptIdx);
+                parsedAppointments[idx].approved = e.target.checked;
+                setBatchScheduleCollapsed(batchScheduleBody?.style.display === 'none');
+                // Re-render to update styling
+                renderParsedAppointments();
+            });
+        });
+
+        broadcastState();
+    }
+
+    // Update review batch UI (label, button states)
+    function updateReviewBatchUI() {
+        const openBtn = document.getElementById('open-review-batch');
+        if (openBtn) {
+            const total = parsedAppointments.length;
+            openBtn.textContent = `Open All for Review (${total} jobs)`;
+        }
     }
 
     // Parse button click handler
@@ -7229,10 +9035,373 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
 
+            reviewBatchStart = 0;
+            reviewTabIds = [];
+            reviewTabMap = {};
             renderParsedAppointments();
+            setBatchScheduleCollapsed(true);
             addBatchLog(`Parsed ${parsedAppointments.length} appointments`);
         });
     }
+
+    // --- Review Batch Functions ---
+
+    async function openReviewBatch() {
+        const openBtn = document.getElementById('open-review-batch');
+        if (openBtn) {
+            openBtn.disabled = true;
+            openBtn.textContent = 'Opening tabs...';
+        }
+
+        reviewIsRunning = true;
+        reviewIsCancelled = false;
+        batchPhase = 'review';
+        broadcastState();
+
+        try {
+            // Get the calendar tab
+            const calQueryOpts = { url: "*://app.roofr.com/*/calendar*" };
+            if (window.__targetWindowId) calQueryOpts.windowId = window.__targetWindowId;
+            const calendarTabs = await chrome.tabs.query(calQueryOpts);
+            if (calendarTabs.length === 0) {
+                addBatchLog('ERROR: Please open the Roofr calendar first', 'error');
+                return;
+            }
+
+            const calendarTab = calendarTabs[0];
+
+            // Create/get "Review" tab group
+            let reviewGroupId = null;
+            try {
+                reviewGroupId = await chrome.tabs.group({ tabIds: [calendarTab.id] });
+                await chrome.tabGroups.update(reviewGroupId, {
+                    title: 'Review',
+                    color: 'green',
+                    collapsed: false
+                });
+            } catch (groupError) {
+                // Calendar may already be in a group
+                const calTabInfo = await chrome.tabs.get(calendarTab.id);
+                if (calTabInfo.groupId && calTabInfo.groupId !== -1) {
+                    reviewGroupId = calTabInfo.groupId;
+                    await chrome.tabGroups.update(reviewGroupId, {
+                        title: 'Review',
+                        color: 'green',
+                        collapsed: false
+                    });
+                }
+            }
+
+            let needsReviewGroupId = null;
+            async function moveJobTabToNeedsReviewGroup(tabId) {
+                try {
+                    if (needsReviewGroupId) {
+                        try {
+                            await chrome.tabs.group({ tabIds: [tabId], groupId: needsReviewGroupId });
+                        } catch (e) {
+                            needsReviewGroupId = await chrome.tabs.group({ tabIds: [tabId] });
+                        }
+                    } else {
+                        needsReviewGroupId = await chrome.tabs.group({ tabIds: [tabId] });
+                    }
+                    await chrome.tabGroups.update(needsReviewGroupId, {
+                        title: 'Needs Review',
+                        color: 'red',
+                        collapsed: false
+                    });
+                    addBatchLog(`Moved job tab ${tabId} to "Needs Review" group`, 'info');
+                } catch (e) {
+                    addBatchLog(`Could not move job tab ${tabId} to "Needs Review" group: ${e.message}`, 'error');
+                }
+            }
+
+            const totalJobs = parsedAppointments.length;
+            let reviewStagger = 3000; // Start at 3s, increases on 429
+            addBatchLog(`Opening all ${totalJobs} jobs for review (staggered ${reviewStagger / 1000}s apart)`);
+
+            for (let i = 0; i < totalJobs; i++) {
+                if (reviewIsCancelled) {
+                    addBatchLog('Review cancelled', 'info');
+                    break;
+                }
+                const apt = parsedAppointments[i];
+                addBatchLog(`Review ${i + 1}: Finding ${apt.address}...`);
+
+                // Stagger tab opens to avoid overwhelming Roofr
+                await new Promise(r => setTimeout(r, reviewStagger));
+                if (reviewIsCancelled) break;
+
+                // Find and click the calendar event
+                const findResult = await sendMessageToTab(calendarTab.id, {
+                    type: 'BATCH_FIND_EVENT',
+                    address: apt.address,
+                    time: apt.startTime
+                });
+
+                if (reviewIsCancelled) break;
+                if (!findResult || !findResult.ok) {
+                    addBatchLog(`Could not find event for ${apt.address}`, 'error');
+                    continue;
+                }
+
+                // Wait for popup to load
+                const popupWait = i === 0 ? 6000 : 4000;
+                await new Promise(r => setTimeout(r, popupWait));
+                if (reviewIsCancelled) break;
+
+                // Open job — use backgroundMode to get URL without opening a tab
+                const openResult = await sendMessageToTab(calendarTab.id, {
+                    type: 'BATCH_OPEN_JOB',
+                    address: apt.address,
+                    backgroundMode: true
+                });
+
+                if (!openResult || !openResult.ok) {
+                    addBatchLog(`Could not open job for ${apt.address}`, 'error');
+                    continue;
+                }
+
+                // Track job URL for dashboard
+                if (openResult.url) apt.jobUrl = openResult.url;
+
+                let jobTabId = null;
+
+                if (openResult.urlOnly && openResult.url) {
+                    // Create the tab ourselves in the background (no focus steal)
+                    const newTab = await chrome.tabs.create({
+                        url: openResult.url,
+                        active: false
+                    });
+                    jobTabId = newTab.id;
+                } else if (openResult.tabId) {
+                    jobTabId = openResult.tabId;
+                } else {
+                    // Fallback: tab was opened by content script, find it
+                    await new Promise(r => setTimeout(r, 2000));
+                    const jobQueryOpts = { url: "*://app.roofr.com/*/jobs*" };
+                    if (window.__targetWindowId) jobQueryOpts.windowId = window.__targetWindowId;
+                    const jobTabs = await chrome.tabs.query(jobQueryOpts);
+                    const newJobTab = jobTabs.find(t => t.id !== calendarTab.id && !reviewTabIds.includes(t.id));
+                    if (newJobTab) {
+                        jobTabId = newJobTab.id;
+                    }
+                }
+
+                if (jobTabId) {
+                    // Wait for tab to load, detect 429 rate limiting, and retry
+                    let tabReady = false;
+                    for (let retryAttempt = 0; retryAttempt < 3; retryAttempt++) {
+                        // Wait for tab to finish loading
+                        await new Promise((resolve) => {
+                            const onUpdated = (updatedId, info) => {
+                                if (updatedId === jobTabId && info.status === 'complete') {
+                                    chrome.tabs.onUpdated.removeListener(onUpdated);
+                                    resolve();
+                                }
+                            };
+                            chrome.tabs.onUpdated.addListener(onUpdated);
+                            setTimeout(() => { chrome.tabs.onUpdated.removeListener(onUpdated); resolve(); }, 15000);
+                        });
+
+                        // Check if rate-limited
+                        try {
+                            const tabInfo = await chrome.tabs.get(jobTabId);
+                            if (tabInfo.title && tabInfo.title.includes('Too Many Requests')) {
+                                const backoffMs = (retryAttempt + 1) * 8000; // 8s, 16s, 24s
+                                addBatchLog(`Rate limited (429) on tab ${jobTabId}, waiting ${backoffMs / 1000}s before retry...`, 'error');
+                                reviewStagger = Math.min(reviewStagger + 2000, 8000); // Slow down future opens
+                                await new Promise(r => setTimeout(r, backoffMs));
+                                await chrome.tabs.reload(jobTabId);
+                                continue;
+                            }
+                        } catch (e) { /* tab may have been closed */ }
+                        tabReady = true;
+                        break;
+                    }
+
+                    if (!tabReady) {
+                        addBatchLog(`Tab ${jobTabId} still rate-limited after retries, keeping anyway`, 'error');
+                    }
+
+                    reviewTabIds.push(jobTabId);
+                    reviewTabMap[i] = jobTabId;
+                    addBatchLog(`Opened job tab ${jobTabId} for review`, 'success');
+
+                    // Add to Review group
+                    if (reviewGroupId) {
+                        try {
+                            await chrome.tabs.group({ tabIds: [jobTabId], groupId: reviewGroupId });
+                        } catch (e) { /* ignore */ }
+                    }
+
+                    // --- Scan job card for paint job, lot/unit, time mismatch, report status ---
+                    try {
+                        const scanResult = await sendMessageToTab(jobTabId, {
+                            type: 'SCAN_JOB_CARD',
+                            scheduledStartTime: apt.startTime,
+                            scheduledEndTime: apt.endTime
+                        });
+
+                        if (scanResult && !scanResult.error) {
+                            const warningMessages = [];
+                            const hasTentativeRep = Boolean(apt.rep);
+                            const injectTentativeRepBanner = async () => {
+                                if (warningMessages.length || !hasTentativeRep) return;
+                                try {
+                                    await sendMessageToTab(jobTabId, {
+                                        type: 'INJECT_WARNING_BANNER',
+                                        message: `TENTATIVE REP — ${apt.rep} is planned for this job.`,
+                                        color: '#2563eb',
+                                        emoji: '👤'
+                                    });
+                                } catch (e) { /* ignore */ }
+                            };
+
+                            // Paint job — no Roofr report needed
+                            if (scanResult.isPaintJob) {
+                                addBatchLog(`[${i + 1}] 🎨 PAINT JOB — no Roofr report needed`, 'info');
+                                apt.isPaintJob = true;
+                            }
+
+                            // Lot/unit warning — inject visual banner on the tab
+                            if (scanResult.hasLotUnit) {
+                                addBatchLog(`[${i + 1}] ⚠ LOT/UNIT ADDRESS — Roofr may pin the wrong building. Verify the pin is on the correct structure before ordering. Context: "${scanResult.lotUnitContext}"`, 'error');
+                                apt.hasLotUnit = true;
+                                apt.lotUnitContext = scanResult.lotUnitContext;
+                                warningMessages.push('LOT/UNIT ADDRESS — Roofr may pin the wrong building. Verify the pin is on the correct structure before ordering.');
+                                await moveJobTabToNeedsReviewGroup(jobTabId);
+                            }
+
+                            // Time mismatch warning — notes arrival window differs from scheduled calendar time
+                            if (scanResult.hasAppointmentTimeMismatch) {
+                                addBatchLog(`[${i + 1}] ⚠ APPOINTMENT TIME DIFFERENT — Notes say ${scanResult.notesArrivalWindow}, but calendar is scheduled ${scanResult.scheduledWindow}. Context: "${scanResult.timeMismatchContext || 'Arrival Window'}"`, 'error');
+                                apt.hasAppointmentTimeMismatch = true;
+                                apt.notesArrivalWindow = scanResult.notesArrivalWindow;
+                                apt.scheduledWindow = scanResult.scheduledWindow;
+                                warningMessages.unshift(`APPOINTMENT TIME DIFFERENT — Notes say ${scanResult.notesArrivalWindow}, but calendar is scheduled ${scanResult.scheduledWindow}.`);
+                                await moveJobTabToNeedsReviewGroup(jobTabId);
+                            }
+
+                            // Inject one red warning banner on the job card page for all warnings found.
+                            if (warningMessages.length) {
+                                try {
+                                    await sendMessageToTab(jobTabId, {
+                                        type: 'INJECT_WARNING_BANNER',
+                                        message: warningMessages.join('  |  '),
+                                        color: '#dc2626',
+                                        emoji: '🚨'
+                                    });
+                                } catch (e) { /* ignore */ }
+                            }
+
+                            // Report status
+                            if (scanResult.reportStatus === 'processing') {
+                                addBatchLog(`[${i + 1}] Report already ordered (Processing)`, 'success');
+                                apt.reportOrdered = true;
+                                await injectTentativeRepBanner();
+                            } else if (scanResult.reportStatus === 'complete') {
+                                addBatchLog(`[${i + 1}] Report already complete`, 'success');
+                                apt.reportOrdered = true;
+                                await injectTentativeRepBanner();
+                            } else if (!scanResult.isPaintJob) {
+                                // Report needed — click "Roofr report" to navigate to confirm pin page
+                                addBatchLog(`[${i + 1}] Opening Roofr report ordering...`);
+                                const clickResult = await sendMessageToTab(jobTabId, { type: 'CLICK_ROOFR_REPORT_BUTTON' });
+                                if (clickResult?.ok) {
+                                    addBatchLog(`[${i + 1}] → Confirm pin page (waiting for you to order)`, 'info');
+                                    apt.reportPending = true;
+                                    await injectTentativeRepBanner();
+                                } else {
+                                    addBatchLog(`[${i + 1}] Could not find Roofr report button: ${clickResult?.error || 'unknown'}`, 'error');
+                                    await injectTentativeRepBanner();
+                                }
+                            } else {
+                                await injectTentativeRepBanner();
+                            }
+                        } else {
+                            addBatchLog(`[${i + 1}] Scan failed: ${scanResult?.error || 'no response'}`, 'error');
+                        }
+                    } catch (scanErr) {
+                        addBatchLog(`[${i + 1}] Scan error: ${scanErr.message}`, 'error');
+                    }
+                }
+
+                // Close calendar popup
+                try {
+                    await sendMessageToTab(calendarTab.id, { type: 'BATCH_CLOSE_POPUP' });
+                } catch (e) { /* ignore */ }
+
+                await new Promise(r => setTimeout(r, 1500));
+            }
+
+            // Summary
+            const paintCount = parsedAppointments.filter(a => a.isPaintJob).length;
+            const lotUnitCount = parsedAppointments.filter(a => a.hasLotUnit).length;
+            const timeMismatchCount = parsedAppointments.filter(a => a.hasAppointmentTimeMismatch).length;
+            const reportPending = parsedAppointments.filter(a => a.reportPending).length;
+            const reportDone = parsedAppointments.filter(a => a.reportOrdered).length;
+            addBatchLog(`Review batch opened: ${reviewTabIds.length} tabs`, 'success');
+            if (paintCount) addBatchLog(`  🎨 ${paintCount} paint job(s) — no report needed`, 'info');
+            if (reportDone) addBatchLog(`  ✓ ${reportDone} report(s) already ordered`, 'success');
+            if (reportPending) addBatchLog(`  📋 ${reportPending} report(s) waiting for you to order`, 'info');
+            if (lotUnitCount) addBatchLog(`  ⚠ ${lotUnitCount} job(s) with LOT/UNIT — verify pin carefully!`, 'error');
+            if (timeMismatchCount) addBatchLog(`  ⚠ ${timeMismatchCount} job(s) with notes/calendar time mismatch — verify appointment window!`, 'error');
+        } catch (err) {
+            addBatchLog(`Review error: ${err.message}`, 'error');
+        } finally {
+            reviewIsRunning = false;
+            batchPhase = 'idle';
+            broadcastState();
+            if (openBtn) {
+                openBtn.disabled = false;
+                updateReviewBatchUI();
+            }
+        }
+    }
+
+    async function closeReviewTabs() {
+        for (const tabId of reviewTabIds) {
+            try {
+                await chrome.tabs.remove(tabId);
+            } catch (e) { /* tab may already be closed */ }
+        }
+        if (reviewTabIds.length > 0) {
+            addBatchLog(`Closed ${reviewTabIds.length} review tabs`);
+        }
+        reviewTabIds = [];
+        reviewTabMap = {};
+    }
+
+    // Wire up review controls
+    const openReviewBtn = document.getElementById('open-review-batch');
+    if (openReviewBtn) {
+        openReviewBtn.addEventListener('click', () => openReviewBatch());
+    }
+
+    // Prev/next batch buttons removed — we now open all jobs at once
+
+    const reviewCloseBtn = document.getElementById('review-close-tabs');
+    if (reviewCloseBtn) {
+        reviewCloseBtn.addEventListener('click', () => closeReviewTabs());
+    }
+
+    const reviewSelectAllBtn = document.getElementById('review-select-all');
+    if (reviewSelectAllBtn) {
+        reviewSelectAllBtn.addEventListener('click', () => {
+            for (const apt of parsedAppointments) apt.approved = true;
+            renderParsedAppointments();
+        });
+    }
+
+    const reviewDeselectAllBtn = document.getElementById('review-deselect-all');
+    if (reviewDeselectAllBtn) {
+        reviewDeselectAllBtn.addEventListener('click', () => {
+            for (const apt of parsedAppointments) apt.approved = false;
+            renderParsedAppointments();
+        });
+    }
+
+    // --- End Review Batch Functions ---
 
     // Run batch automation
     if (runBatchBtn) {
@@ -7269,13 +9438,28 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
 
+            // Cancel any running review batch and wait for it to stop
+            if (reviewIsRunning) {
+                reviewIsCancelled = true;
+                addBatchLog('Waiting for review batch to stop...');
+                while (reviewIsRunning) {
+                    await new Promise(r => setTimeout(r, 200));
+                }
+            }
+
+            // Don't close review tabs — we'll reuse them during execution
+            executionOpenedTabIds = [];
+
             // Reset state
             batchIsPaused = false;
             batchIsCancelled = false;
             batchIsRunning = true;
 
             clearBatchLog();
-            addBatchLog('Starting batch automation...');
+
+            const approvedCount = parsedAppointments.filter(a => a.approved).length;
+            const skippedCount = parsedAppointments.length - approvedCount;
+            addBatchLog(`Starting batch automation... (${approvedCount} approved, ${skippedCount} will be skipped)`);
             runBatchBtn.textContent = 'Pause Automation';
             runBatchBtn.style.background = 'var(--warning, #f59e0b)';
 
@@ -7292,7 +9476,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 addBatchLog('ERROR: Please open the Roofr calendar first', 'error');
                 // Reset button state on error
                 batchIsRunning = false;
-                runBatchBtn.textContent = 'Run Batch Automation';
+                runBatchBtn.textContent = 'Execute Approved';
                 runBatchBtn.style.background = '';
                 runBatchBtn.disabled = false;
                 if (batchControlButtons) batchControlButtons.style.display = 'none';
@@ -7331,330 +9515,765 @@ document.addEventListener('DOMContentLoaded', async () => {
                 addBatchLog('Note: Could not create tab group', 'info');
             }
 
-            for (let i = 0; i < parsedAppointments.length; i++) {
-                // Check if cancelled
-                if (batchIsCancelled) {
-                    addBatchLog('Automation cancelled by user', 'error');
-                    break;
+            // --- Load CSR list from settings (auto-updates when reps change) ---
+            let csrList = [];
+            try {
+                const csrSettings = await chrome.storage.sync.get(['PEOPLE_CSRS']);
+                console.log('[Batch] Raw PEOPLE_CSRS from storage:', JSON.stringify(csrSettings));
+                if (csrSettings.PEOPLE_CSRS) {
+                    csrList = csrSettings.PEOPLE_CSRS.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
                 }
-
-                // Check if paused - wait until resumed
-                while (batchIsPaused && !batchIsCancelled) {
-                    await new Promise(r => setTimeout(r, 500));
-                }
-                if (batchIsCancelled) {
-                    addBatchLog('Automation cancelled by user', 'error');
-                    break;
-                }
-
-                const apt = parsedAppointments[i];
-                updateBatchProgress(i + 1, parsedAppointments.length, `Processing: ${apt.address}`);
-                addBatchLog(`\n--- Processing appointment ${i + 1}/${parsedAppointments.length} ---`);
-                addBatchLog(`Rep: ${apt.rep}, Time: ${apt.startTime}, Address: ${apt.address}`);
-
+            } catch (e) {
+                console.warn('[Batch] Could not load CSR list:', e);
+            }
+            // Fallback if storage is empty — use known CSR list
+            // Also try PEOPLE_CSRS with different casing/keys
+            if (csrList.length === 0) {
                 try {
-                    // Step 1: Find and click the calendar event
-                    addBatchLog('Step 1: Finding calendar event...');
+                    const allSettings = await chrome.storage.sync.get(null);
+                    console.log('[Batch] All sync storage keys:', Object.keys(allSettings));
+                    // Try to find any key containing CSRS
+                    for (const key of Object.keys(allSettings)) {
+                        if (key.toUpperCase().includes('CSR') && typeof allSettings[key] === 'string' && allSettings[key].includes(',')) {
+                            csrList = allSettings[key].split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+                            addBatchLog(`CSR list found via key "${key}" (${csrList.length} names)`);
+                            break;
+                        }
+                    }
+                } catch (e) {}
+            }
+            if (csrList.length === 0) {
+                csrList = [
+                    'alex tillotson', 'bronté pisz', 'bronte pisz', 'diva shahpur',
+                    'khamilah valles', 'madison meyers', 'nica javier',
+                    'raven pelfrey', 'travis jones'
+                ];
+                addBatchLog(`CSR list: using hardcoded fallback (${csrList.length} names)`, 'info');
+            } else {
+                addBatchLog(`CSR list loaded (${csrList.length}): ${csrList.map(c => c.split(' ')[0]).join(', ')}`);
+            }
 
-                    // Activate calendar tab to ensure DOM operations work properly
+            // --- Address matching helpers ---
+            const normalizeAddress = (addr) => {
+                if (!addr) return '';
+                return addr.toLowerCase().replace(/[,.\-#]/g, ' ').replace(/\s+/g, ' ').trim();
+            };
+            const getAddressParts = (addr) => {
+                const normalized = normalizeAddress(addr);
+                const parts = normalized.split(' ');
+                const streetNum = parts.find(p => /^\d+$/.test(p)) || '';
+                const streetWords = parts.filter(p =>
+                    p.length > 2 && !/^\d+$/.test(p) &&
+                    !['az', 'st', 'rd', 'ln', 'dr', 'ave', 'blvd', 'ct', 'cir', 'pl', 'way', 'n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].includes(p)
+                );
+                return { streetNum, streetWords };
+            };
+
+            // --- Shared helper: set job owner on a tab ---
+            async function doSetOwner(tabId, apt, prefix) {
+                const maxAttempts = 3;
+                let jobOwnerSet = false;
+                let addressVerified = false;
+
+                for (let attempt = 1; attempt <= maxAttempts && !jobOwnerSet; attempt++) {
                     try {
-                        await chrome.tabs.update(calendarTab.id, { active: true });
-                        addBatchLog('Activated calendar tab');
-                    } catch (activateErr) {
-                        addBatchLog(`Note: Could not activate calendar tab - ${activateErr.message}`);
-                    }
+                        const jobInfo = await sendMessageToTab(tabId, { type: 'GET_JOB_INFO' });
+                        const currentOwner = jobInfo?.info?.jobOwner || '';
+                        const jobAddress = jobInfo?.info?.address || '';
 
-                    // On first appointment, give extra time for page and scripts to be ready
-                    if (i === 0) {
-                        await new Promise(r => setTimeout(r, 2000));
-                    } else {
-                        await new Promise(r => setTimeout(r, 500));
-                    }
-
-                    // Send message to find and click the event
-                    const findResult = await sendMessageToTab(calendarTab.id, {
-                        type: 'BATCH_FIND_EVENT',
-                        address: apt.address,
-                        time: apt.startTime
-                    });
-
-                    if (!findResult || !findResult.ok) {
-                        throw new Error(findResult?.error || 'Could not find calendar event');
-                    }
-                    addBatchLog('Found event, opening popup...');
-
-                    // Wait for popup to fully load - extra time on first appointment
-                    const popupWait = i === 0 ? 6000 : 4000;
-                    await new Promise(r => setTimeout(r, popupWait));
-
-                    // Step 2: Click the address to open job in new tab (runs in background)
-                    addBatchLog('Step 2: Opening job in new tab...');
-                    const openResult = await sendMessageToTab(calendarTab.id, {
-                        type: 'BATCH_OPEN_JOB',
-                        address: apt.address
-                    });
-
-                    if (!openResult || !openResult.ok) {
-                        throw new Error(openResult?.error || 'Could not open job');
-                    }
-
-                    // Find the job tab - either we got the ID directly, or we need to look it up
-                    let jobTabId = openResult.tabId;
-
-                    if (!jobTabId || openResult.needsTabLookup) {
-                        // Wait for tab to open and find it
-                        await new Promise(r => setTimeout(r, 2000));
-
-                        // Look for newly opened Roofr job tab in target window
-                        const jobQueryOpts = { url: "*://app.roofr.com/*/jobs*" };
-                        if (window.__targetWindowId) jobQueryOpts.windowId = window.__targetWindowId;
-                        const jobTabs = await chrome.tabs.query(jobQueryOpts);
-                        const recentJobTab = jobTabs.find(t => t.id !== calendarTab.id);
-
-                        if (recentJobTab) {
-                            jobTabId = recentJobTab.id;
-                            addBatchLog(`Found job tab: ${jobTabId}`);
-                        } else {
-                            throw new Error('Could not find the opened job tab');
-                        }
-                    } else {
-                        addBatchLog(`Job opened in tab ${jobTabId}`);
-                    }
-
-                    // Job tab opened in background (no focus stealing)
-                    addBatchLog('Step 3: Job opened in new tab (running in background)');
-
-                    // Add job tab to the Reports tab group (with retry for race conditions)
-                    if (reportsGroupId) {
-                        let groupRetries = 3;
-                        while (groupRetries > 0) {
-                            try {
-                                await chrome.tabs.group({ tabIds: [jobTabId], groupId: reportsGroupId });
-                                addBatchLog('Added job tab to Reports group');
-                                break;
-                            } catch (groupErr) {
-                                groupRetries--;
-                                if (groupErr.message?.includes('cannot be edited right now') && groupRetries > 0) {
-                                    // User may be dragging a tab - wait and retry
-                                    await new Promise(r => setTimeout(r, 500));
-                                } else if (groupRetries === 0) {
-                                    console.warn('[Batch] Could not add job tab to group after retries:', groupErr);
-                                }
-                            }
-                        }
-                    }
-
-                    // Brief wait before next step
-                    await new Promise(r => setTimeout(r, 1000));
-
-                    // Step 4: Set job owner on the job tab (runs in background)
-                    addBatchLog('Step 4: Setting job owner...');
-
-                    // Wait for job page to fully load before attempting to set owner
-                    await new Promise(r => setTimeout(r, 3000));
-
-                    const maxJobOwnerAttempts = 3;
-                    let jobOwnerSet = false;
-                    let addressVerified = false;
-
-                    // Helper function to normalize address for comparison
-                    const normalizeAddress = (addr) => {
-                        if (!addr) return '';
-                        return addr.toLowerCase()
-                            .replace(/[,.\-#]/g, ' ')
-                            .replace(/\s+/g, ' ')
-                            .trim();
-                    };
-
-                    // Extract key address parts for matching
-                    const getAddressParts = (addr) => {
-                        const normalized = normalizeAddress(addr);
-                        const parts = normalized.split(' ');
-                        // Get street number (first numeric part)
-                        const streetNum = parts.find(p => /^\d+$/.test(p)) || '';
-                        // Get street name words (non-numeric, non-directional, longer than 2 chars)
-                        const streetWords = parts.filter(p =>
-                            p.length > 2 &&
-                            !/^\d+$/.test(p) &&
-                            !['az', 'st', 'rd', 'ln', 'dr', 'ave', 'blvd', 'ct', 'cir', 'pl', 'way', 'n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].includes(p)
-                        );
-                        return { streetNum, streetWords };
-                    };
-
-                    for (let attempt = 1; attempt <= maxJobOwnerAttempts && !jobOwnerSet; attempt++) {
-                        try {
-                            // First get job info including address
-                            const jobInfoBefore = await sendMessageToTab(jobTabId, { type: 'GET_JOB_INFO' });
-                            const currentOwner = jobInfoBefore?.info?.jobOwner || '';
-                            const jobAddress = jobInfoBefore?.info?.address || '';
-
-                            // Verify address matches before proceeding
-                            if (!addressVerified) {
-                                const expectedParts = getAddressParts(apt.address);
-                                const actualParts = getAddressParts(jobAddress);
-
-                                // Check if street number matches
-                                const numMatch = expectedParts.streetNum === actualParts.streetNum;
-
-                                // Check if at least one street word matches
-                                const wordMatch = expectedParts.streetWords.some(w =>
-                                    actualParts.streetWords.some(aw => aw.includes(w) || w.includes(aw))
-                                );
-
-                                if (numMatch && wordMatch) {
-                                    addressVerified = true;
-                                    addBatchLog(`Address verified: "${jobAddress}"`, 'success');
-                                } else {
-                                    addBatchLog(`Address mismatch! Expected: "${apt.address}", Got: "${jobAddress}"`, 'error');
-                                    addBatchLog('Skipping job owner assignment - wrong job card', 'error');
-                                    break;
-                                }
-                            }
-
-                            // Check if the current owner matches the rep (case-insensitive, handle partial matches)
-                            const repNameLower = apt.rep.toLowerCase();
-                            const currentOwnerLower = currentOwner.toLowerCase();
-
-                            if (currentOwnerLower === repNameLower || currentOwnerLower.includes(repNameLower) || repNameLower.includes(currentOwnerLower)) {
-                                addBatchLog(`Job owner already set to ${currentOwner}`, 'success');
-                                jobOwnerSet = true;
-                                apt.jobCardAdded = true;
-                                break;
-                            }
-
-                            addBatchLog(`Attempt ${attempt}: Current owner "${currentOwner}", setting to "${apt.rep}"...`);
-
-                            // Set the job owner
-                            const jobOwnerResult = await sendMessageToTab(jobTabId, {
-                                type: 'SELECT_JOB_OWNER',
-                                repName: apt.rep
-                            });
-
-                            if (!jobOwnerResult || !jobOwnerResult.ok) {
-                                addBatchLog(`Attempt ${attempt}: Could not set job owner - ${jobOwnerResult?.error || 'unknown'}`, 'error');
-                                if (attempt < maxJobOwnerAttempts) {
-                                    await new Promise(r => setTimeout(r, 2000));
-                                }
-                                continue;
-                            }
-
-                            // Wait for the change to be saved
-                            await new Promise(r => setTimeout(r, 1500));
-
-                            // Verify the job owner was set correctly
-                            const jobInfoAfter = await sendMessageToTab(jobTabId, { type: 'GET_JOB_INFO' });
-                            const newOwner = jobInfoAfter?.info?.jobOwner || '';
-                            const newOwnerLower = newOwner.toLowerCase();
-
-                            if (newOwnerLower === repNameLower || newOwnerLower.includes(repNameLower) || repNameLower.includes(newOwnerLower)) {
-                                addBatchLog(`Job owner confirmed: ${newOwner}`, 'success');
-                                jobOwnerSet = true;
-                                apt.jobCardAdded = true;
+                        if (!addressVerified) {
+                            const expected = getAddressParts(apt.address);
+                            const actual = getAddressParts(jobAddress);
+                            const numMatch = expected.streetNum === actual.streetNum;
+                            const wordMatch = expected.streetWords.some(w =>
+                                actual.streetWords.some(aw => aw.includes(w) || w.includes(aw))
+                            );
+                            if (numMatch && wordMatch) {
+                                addressVerified = true;
+                                addBatchLog(`${prefix} Address verified: "${jobAddress}"`, 'success');
                             } else {
-                                addBatchLog(`Attempt ${attempt}: Verification failed - owner is "${newOwner}", expected "${apt.rep}"`, 'error');
-                                if (attempt < maxJobOwnerAttempts) {
-                                    await new Promise(r => setTimeout(r, 2000));
-                                }
-                            }
-                        } catch (jobOwnerErr) {
-                            addBatchLog(`Attempt ${attempt}: Job owner step failed - ${jobOwnerErr.message}`, 'error');
-                            if (attempt < maxJobOwnerAttempts) {
-                                await new Promise(r => setTimeout(r, 2000));
+                                addBatchLog(`${prefix} Address mismatch! Expected: "${apt.address}", Got: "${jobAddress}"`, 'error');
+                                break;
                             }
                         }
-                    }
 
-                    if (!jobOwnerSet) {
-                        addBatchLog(`Warning: Could not confirm job owner after ${maxJobOwnerAttempts} attempts`, 'error');
-                    }
+                        const repLower = apt.rep.toLowerCase();
+                        const ownerLower = currentOwner.toLowerCase();
+                        if (ownerLower === repLower || ownerLower.includes(repLower) || repLower.includes(ownerLower)) {
+                            addBatchLog(`${prefix} Owner already set to ${currentOwner}`, 'success');
+                            jobOwnerSet = true;
+                            apt.jobCardAdded = true;
+                            break;
+                        }
 
-                    // Check report status and close job tab if conditions are met
-                    try {
-                        const finalJobInfo = await sendMessageToTab(jobTabId, { type: 'GET_JOB_INFO' });
-                        const reportStatus = finalJobInfo?.info?.reportStatus || '';
+                        // Check if current owner is a non-CSR — don't overwrite
+                        if (currentOwner) {
+                            // Normalize accents for comparison (Bronté → bronte)
+                            const stripAccents = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                            const ownerNorm = stripAccents(ownerLower);
+                            const isCsr = csrList.some(csr => {
+                                const csrNorm = stripAccents(csr);
+                                return ownerNorm.includes(csrNorm) || csrNorm.includes(ownerNorm);
+                            });
+                            if (!isCsr) {
+                                addBatchLog(`${prefix} ⚠ STOP: Owner "${currentOwner}" is NOT a CSR — skipping (manual review needed)`, 'error');
+                                apt.ownerSkipped = true;
+                                apt.ownerSkipReason = `Non-CSR owner: ${currentOwner}`;
+                                break;
+                            }
+                        }
 
-                        addBatchLog(`Report status: ${reportStatus || 'unknown'}`);
+                        addBatchLog(`${prefix} Attempt ${attempt}: "${currentOwner}" → "${apt.rep}"...`);
+                        const result = await sendMessageToTab(tabId, { type: 'SELECT_JOB_OWNER', repName: apt.rep });
+                        if (!result?.ok) {
+                            addBatchLog(`${prefix} Attempt ${attempt} failed: ${result?.error || 'unknown'}`, 'error');
+                            if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 2000));
+                            continue;
+                        }
 
-                        // Close the job tab if rep was assigned AND report is pending, complete, or processing
-                        const closeStatuses = ['pending', 'complete', 'processing'];
-                        if (jobOwnerSet && closeStatuses.includes(reportStatus)) {
-                            addBatchLog('Closing job tab (report is ready)...');
-                            await chrome.tabs.remove(jobTabId);
-                            addBatchLog('Job tab closed', 'success');
-                        } else if (!jobOwnerSet) {
-                            addBatchLog('Keeping job tab open (rep not confirmed)');
+                        await new Promise(r => setTimeout(r, 1500));
+
+                        const afterInfo = await sendMessageToTab(tabId, { type: 'GET_JOB_INFO' });
+                        const newOwner = afterInfo?.info?.jobOwner || '';
+                        const newLower = newOwner.toLowerCase();
+                        if (newLower === repLower || newLower.includes(repLower) || repLower.includes(newLower)) {
+                            addBatchLog(`${prefix} Owner confirmed: ${newOwner}`, 'success');
+                            jobOwnerSet = true;
+                            apt.jobCardAdded = true;
                         } else {
-                            addBatchLog(`Keeping job tab open (report status: ${reportStatus || 'not ready'})`);
+                            addBatchLog(`${prefix} Verify failed: "${newOwner}" ≠ "${apt.rep}"`, 'error');
+                            if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 2000));
                         }
-                    } catch (closeErr) {
-                        addBatchLog(`Note: Could not check/close job tab - ${closeErr.message}`);
+                    } catch (err) {
+                        addBatchLog(`${prefix} Attempt ${attempt} error: ${err.message}`, 'error');
+                        if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 2000));
                     }
+                }
+                if (!jobOwnerSet) {
+                    addBatchLog(`${prefix} Warning: Owner not confirmed after ${maxAttempts} attempts`, 'error');
+                }
+                return jobOwnerSet;
+            }
 
-                    // Brief wait after job owner step
+            // --- Shared helper: check report + close tab ---
+            async function doReportCheckAndClose(tabId, apt, jobOwnerSet, prefix) {
+                try {
+                    const finalInfo = await sendMessageToTab(tabId, { type: 'GET_JOB_INFO' });
+                    const reportStatus = finalInfo?.info?.reportStatus || '';
+                    addBatchLog(`${prefix} Report: ${reportStatus || 'unknown'}`);
+
+                    const closeStatuses = ['pending', 'complete', 'processing'];
+                    if (jobOwnerSet && closeStatuses.includes(reportStatus)) {
+                        chrome.tabs.remove(tabId).catch(() => {}); // Fire and forget
+                        addBatchLog(`${prefix} Tab closed`, 'success');
+                    } else if (!jobOwnerSet) {
+                        addBatchLog(`${prefix} Keeping tab open (owner not set)`);
+                    } else {
+                        addBatchLog(`${prefix} Keeping tab open (report: ${reportStatus})`);
+                    }
+                } catch (e) {
+                    addBatchLog(`${prefix} Could not check/close tab: ${e.message}`);
+                }
+            }
+
+            // --- Active calendar tab (can be swapped if one gets flagged) ---
+            let activeCalendarTabId = calendarTab.id;
+
+            // --- Helper: create a fresh calendar tab and wait for events ---
+            async function createFreshCalendarTab(reason) {
+                let calUrl;
+                try {
+                    const origInfo = await chrome.tabs.get(calendarTab.id);
+                    calUrl = origInfo.url || `https://app.roofr.com/dashboard/team/239329/calendar`;
+                } catch (e) {
+                    calUrl = `https://app.roofr.com/dashboard/team/239329/calendar`;
+                }
+                addBatchLog(`Creating fresh calendar tab (${reason})...`);
+                const newTab = await chrome.tabs.create({ url: calUrl, active: false });
+                if (reportsGroupId) {
+                    try { await chrome.tabs.group({ tabIds: [newTab.id], groupId: reportsGroupId }); } catch (e) {}
+                }
+                // Wait for events to load
+                let ready = false;
+                for (let attempt = 0; attempt < 20; attempt++) {
                     await new Promise(r => setTimeout(r, 1000));
-
-                    // Step 5: Edit the calendar event
-                    addBatchLog('Step 5: Adding rep to calendar event...');
-
-                    // Re-activate calendar tab before editing event (may have lost focus)
                     try {
-                        await chrome.tabs.update(calendarTab.id, { active: true });
-                        addBatchLog('Re-activated calendar tab');
-                    } catch (activateErr) {
-                        addBatchLog(`Note: Could not activate calendar tab - ${activateErr.message}`);
+                        const checkResult = await chrome.scripting.executeScript({
+                            target: { tabId: newTab.id },
+                            func: () => document.querySelectorAll('.rbc-event-content, .rbc-event').length
+                        });
+                        if ((checkResult?.[0]?.result || 0) > 0) { ready = true; break; }
+                    } catch (e) {}
+                }
+                addBatchLog(`Fresh calendar tab ${newTab.id} ${ready ? 'ready' : 'may not have loaded'}`, ready ? 'success' : 'error');
+                activeCalendarTabId = newTab.id;
+                return newTab.id;
+            }
+
+            async function reloadCalendarTabForNextEdit(tabId, prefix) {
+                try {
+                    addBatchLog(`${prefix} Reloading calendar before next edit...`);
+                    await chrome.tabs.reload(tabId);
+
+                    await new Promise((resolve) => {
+                        const onUpdated = (updatedId, info) => {
+                            if (updatedId === tabId && info.status === 'complete') {
+                                chrome.tabs.onUpdated.removeListener(onUpdated);
+                                resolve();
+                            }
+                        };
+                        chrome.tabs.onUpdated.addListener(onUpdated);
+                        setTimeout(() => {
+                            chrome.tabs.onUpdated.removeListener(onUpdated);
+                            resolve();
+                        }, 20000);
+                    });
+
+                    try {
+                        const teamResult = await sendMessageToTab(tabId, { type: 'SELECT_ALL_TEAM_MEMBERS' });
+                        if (teamResult?.clicked) {
+                            addBatchLog(`${prefix} Selected all team members`);
+                            await new Promise(r => setTimeout(r, 2500));
+                        } else if (teamResult?.ok) {
+                            addBatchLog(`${prefix} Team members already selected`);
+                        }
+                    } catch (e) {
+                        addBatchLog(`${prefix} Could not confirm team filter: ${e.message}`, 'error');
                     }
 
-                    await new Promise(r => setTimeout(r, 500));
+                    let eventCount = 0;
+                    for (let attempt = 0; attempt < 30; attempt++) {
+                        await new Promise(r => setTimeout(r, 500));
+                        try {
+                            const result = await chrome.scripting.executeScript({
+                                target: { tabId },
+                                func: () => document.querySelectorAll('.rbc-event-content, .rbc-event button, button.rbc-event, .rbc-event').length
+                            });
+                            eventCount = result?.[0]?.result || 0;
+                            if (eventCount > 0) break;
+                        } catch (e) {}
+                    }
 
-                    // Find the event again and click Edit
-                    const editResult = await sendMessageToTab(calendarTab.id, {
+                    if (eventCount > 0) {
+                        addBatchLog(`${prefix} Calendar ready (${eventCount} event(s) visible)`, 'success');
+                        return true;
+                    }
+
+                    addBatchLog(`${prefix} Calendar reload did not show events yet`, 'error');
+                    return false;
+                } catch (e) {
+                    addBatchLog(`${prefix} Calendar reload failed: ${e.message}`, 'error');
+                    return false;
+                }
+            }
+
+            // --- Helper: move a calendar tab to "Needs Attention" group ---
+            async function moveToNeedsAttention(tabId, label) {
+                try {
+                    const attentionGroupId = await chrome.tabs.group({ tabIds: [tabId] });
+                    await chrome.tabGroups.update(attentionGroupId, {
+                        title: `⚠ ${label}`,
+                        color: 'red',
+                        collapsed: false
+                    });
+                    addBatchLog(`Moved calendar tab to "⚠ ${label}" group`, 'info');
+                } catch (e) {
+                    addBatchLog(`Could not move tab to attention group: ${e.message}`, 'error');
+                }
+            }
+
+            // --- Shared helper: edit calendar event ---
+            async function doCalendarEdit(apt, prefix, calTabId) {
+                const useTabId = calTabId || activeCalendarTabId;
+                try {
+                    if (!batchBackgroundMode) {
+                        try { await chrome.tabs.update(useTabId, { active: true }); } catch (e) {}
+                    }
+                    // Close any lingering popup from previous edit before searching
+                    try {
+                        await sendMessageToTab(useTabId, { type: 'BATCH_CLOSE_POPUP' });
+                    } catch (e) {}
+                    await new Promise(r => setTimeout(r, 800));
+
+                    const editResult = await sendMessageToTab(useTabId, {
                         type: 'BATCH_EDIT_EVENT',
                         address: apt.address,
                         time: apt.startTime,
                         repName: apt.rep
                     });
 
-                    if (!editResult || !editResult.ok) {
-                        addBatchLog(`Warning: Could not edit event - ${editResult?.error || 'unknown'}`, 'error');
+                    // Non-CSR invitee — move this calendar tab to Needs Attention, create fresh one
+                    if (editResult?.stopAll) {
+                        const flagLabel = editResult.inviteeName || 'Review needed';
+                        addBatchLog(`${prefix} ⚠ FLAGGED: ${editResult.reason}`, 'error');
+                        apt.calendarFlagged = true;
+
+                        // Move the problem calendar tab to Needs Attention
+                        await moveToNeedsAttention(useTabId, 'Needs Review');
+
+                        // Create a fresh calendar tab to continue
+                        if (useTabId === activeCalendarTabId) {
+                            await createFreshCalendarTab(`replacing flagged tab for ${flagLabel}`);
+                        }
+                        return;
+                    }
+
+                    if (!editResult?.ok) {
+                        addBatchLog(`${prefix} Calendar edit failed: ${editResult?.error || 'unknown'}`, 'error');
+                        await reloadCalendarTabForNextEdit(useTabId, prefix);
                     } else {
-                        // Show CSR removal details if any
-                        if (editResult.csrsRemoved > 0) {
-                            addBatchLog(`Removed ${editResult.csrsRemoved} CSR(s) from event`, 'success');
-                        }
-                        if (editResult.details) {
-                            addBatchLog(`Details: ${editResult.details}`, 'info');
-                        }
+                        if (editResult.csrsRemoved > 0) addBatchLog(`${prefix} Removed ${editResult.csrsRemoved} CSR(s)`, 'success');
+                        if (editResult.details) addBatchLog(`${prefix} ${editResult.details}`, 'info');
                         if (editResult.skipped) {
-                            addBatchLog(`Skipped: ${editResult.reason}`, 'info');
+                            addBatchLog(`${prefix} Skipped: ${editResult.reason}`, 'info');
                         } else {
-                            addBatchLog('Rep added to calendar event', 'success');
+                            addBatchLog(`${prefix} Calendar updated`, 'success');
                         }
                         apt.calendarAdded = true;
+                        await reloadCalendarTabForNextEdit(useTabId, prefix);
                     }
-
-                    apt.status = 'done';
-                    addBatchLog(`✓ Appointment ${i + 1} completed`, 'success');
-
-                } catch (error) {
-                    addBatchLog(`ERROR: ${error.message}`, 'error');
-                    apt.status = 'error';
-
-                    // Close any open popup/modal before moving to next appointment
-                    try {
-                        await sendMessageToTab(calendarTab.id, { type: 'BATCH_CLOSE_POPUP' });
-                    } catch (e) {
-                        // Ignore errors closing popup
-                    }
-                }
-
-                renderParsedAppointments();
-
-                // Wait between appointments
-                if (i < parsedAppointments.length - 1) {
-                    addBatchLog('Waiting before next appointment...');
-                    await new Promise(r => setTimeout(r, 2000));
+                } catch (e) {
+                    addBatchLog(`${prefix} Calendar error: ${e.message}`, 'error');
+                    await reloadCalendarTabForNextEdit(useTabId, prefix);
                 }
             }
+
+            // === AUTO-DETECT: Scan open Roofr job tabs and match to appointments ===
+            addBatchLog(`Scanning for already-open job tabs...`);
+            try {
+                const jobQueryOpts = { url: "*://app.roofr.com/*/jobs*" };
+                if (window.__targetWindowId) jobQueryOpts.windowId = window.__targetWindowId;
+                const openJobTabs = await chrome.tabs.query(jobQueryOpts);
+                // Only match tabs in the same tab group as the calendar tab (the batch group)
+                const calTabInfo = await chrome.tabs.get(calendarTab.id);
+                const batchGroupId = calTabInfo.groupId || -1;
+                const unmatchedTabs = openJobTabs.filter(t => {
+                    if (t.id === calendarTab.id) return false;
+                    // If calendar is in a group, only match tabs in that same group
+                    if (batchGroupId !== -1) return t.groupId === batchGroupId;
+                    // If no group, match all job tabs
+                    return true;
+                });
+                addBatchLog(`Found ${unmatchedTabs.length} open job tab(s), matching to appointments...`);
+
+                for (const tab of unmatchedTabs) {
+                    // Skip tabs that are rate-limited or on report queue
+                    if (tab.title?.includes('Too Many Requests')) continue;
+                    if (tab.url?.includes('/report/queue')) continue;
+
+                    try {
+                        const jobInfo = await sendMessageToTab(tab.id, { type: 'GET_JOB_INFO' });
+                        const tabAddress = jobInfo?.info?.address || '';
+                        if (!tabAddress) continue;
+
+                        const tabParts = getAddressParts(tabAddress);
+
+                        // Try to match against each unmatched appointment
+                        for (let i = 0; i < parsedAppointments.length; i++) {
+                            if (reviewTabMap[i]) continue; // Already matched
+                            const apt = parsedAppointments[i];
+                            const aptParts = getAddressParts(apt.address);
+
+                            const numMatch = aptParts.streetNum && aptParts.streetNum === tabParts.streetNum;
+                            const wordMatch = aptParts.streetWords.some(w =>
+                                tabParts.streetWords.some(tw => tw.includes(w) || w.includes(tw))
+                            );
+
+                            if (numMatch && wordMatch) {
+                                reviewTabMap[i] = tab.id;
+                                addBatchLog(`  Matched tab ${tab.id} → [${i + 1}] ${tabAddress}`, 'success');
+                                break;
+                            }
+                        }
+                    } catch (e) {
+                        // Content script not loaded — try injecting and retry once
+                        try {
+                            await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+                            await new Promise(r => setTimeout(r, 1500));
+                            const jobInfo = await sendMessageToTab(tab.id, { type: 'GET_JOB_INFO' });
+                            const tabAddress = jobInfo?.info?.address || '';
+                            if (!tabAddress) continue;
+
+                            const tabParts = getAddressParts(tabAddress);
+                            for (let i = 0; i < parsedAppointments.length; i++) {
+                                if (reviewTabMap[i]) continue;
+                                const apt = parsedAppointments[i];
+                                const aptParts = getAddressParts(apt.address);
+                                const numMatch = aptParts.streetNum && aptParts.streetNum === tabParts.streetNum;
+                                const wordMatch = aptParts.streetWords.some(w =>
+                                    tabParts.streetWords.some(tw => tw.includes(w) || w.includes(tw))
+                                );
+                                if (numMatch && wordMatch) {
+                                    reviewTabMap[i] = tab.id;
+                                    addBatchLog(`  Matched tab ${tab.id} → [${i + 1}] ${tabAddress}`, 'success');
+                                    break;
+                                }
+                            }
+                        } catch (e2) { /* skip this tab */ }
+                    }
+                }
+
+                const matchedCount = Object.keys(reviewTabMap).length;
+                addBatchLog(`Auto-detected ${matchedCount} open job tab(s) matched to appointments`);
+            } catch (e) {
+                addBatchLog(`Tab scan error: ${e.message}`, 'error');
+            }
+
+            // === CATEGORIZE APPOINTMENTS ===
+            const reviewJobs = [];   // Have review tabs open — run in parallel
+            const sequentialJobs = []; // Need full sequential flow
+
+            for (let i = 0; i < parsedAppointments.length; i++) {
+                const apt = parsedAppointments[i];
+                if (!apt.approved) {
+                    addBatchLog(`Skipping ${apt.address} (not approved)`, 'info');
+                    apt.status = 'skipped';
+                    renderParsedAppointments();
+                    continue;
+                }
+
+                let hasReviewTab = false;
+                if (reviewTabMap[i]) {
+                    try {
+                        await chrome.tabs.get(reviewTabMap[i]);
+                        hasReviewTab = true;
+                    } catch (e) { /* tab closed */ }
+                }
+
+                if (hasReviewTab) {
+                    reviewJobs.push({ i, apt, tabId: reviewTabMap[i] });
+                } else {
+                    sequentialJobs.push({ i, apt });
+                }
+            }
+
+            addBatchLog(`${reviewJobs.length} reviewed (parallel) + ${sequentialJobs.length} remaining (sequential)`);
+
+            // === PHASE 1: Parallel owner assignments on review tabs (5s stagger) ===
+            if (reviewJobs.length > 0 && !batchIsCancelled) {
+                batchPhase = 'phase1';
+                broadcastState();
+                addBatchLog(`\n=== Phase 1: Setting owners in parallel (5s stagger) ===`);
+
+                const ownerPromises = reviewJobs.map((job, batchIdx) => (async () => {
+                    // Stagger start by 5s per job
+                    if (batchIdx > 0) {
+                        await new Promise(r => setTimeout(r, batchIdx * 5000));
+                    }
+                    if (batchIsCancelled) return;
+
+                    const { i, apt, tabId } = job;
+                    const prefix = `[${i + 1}]`;
+
+                    // Grab job URL from the open tab
+                    try { const ti = await chrome.tabs.get(tabId); if (ti.url) apt.jobUrl = ti.url; } catch(e) {}
+
+                    updateBatchProgress(i + 1, parsedAppointments.length, `Owner: ${apt.address}`);
+                    addBatchLog(`${prefix} ${apt.rep} → ${apt.address}`);
+
+                    // Brief wait for page readiness
+                    await new Promise(r => setTimeout(r, 1000));
+
+                    const ownerSet = await doSetOwner(tabId, apt, prefix);
+                    job.ownerSet = ownerSet;
+
+                    // Check report + close tab (fire-and-forget close)
+                    await doReportCheckAndClose(tabId, apt, ownerSet, prefix);
+
+                    renderParsedAppointments();
+                })());
+
+                await Promise.all(ownerPromises);
+                addBatchLog(`Phase 1 complete — all owners processed`, 'success');
+            }
+
+            // === PHASE 2: Sequential calendar edits on 1 tab (skip failures, retry at end) ===
+            if (reviewJobs.length > 0 && !batchIsCancelled) {
+                batchPhase = 'phase2';
+                broadcastState();
+                addBatchLog(`\n=== Phase 2: Updating calendar (${reviewJobs.length} events, 1 tab) ===`);
+
+                const failedCalendarEdits = []; // { job, error } — retry queue
+
+                // --- First pass: process each event sequentially ---
+                for (let jobIdx = 0; jobIdx < reviewJobs.length; jobIdx++) {
+                    if (batchIsCancelled) break;
+                    while (batchIsPaused && !batchIsCancelled) {
+                        await new Promise(r => setTimeout(r, 500));
+                    }
+                    if (batchIsCancelled) break;
+
+                    const job = reviewJobs[jobIdx];
+                    const { i, apt } = job;
+                    const prefix = `[${i + 1}]`;
+
+                    try {
+                        await doCalendarEdit(apt, prefix, activeCalendarTabId);
+
+                        if (apt.calendarFlagged) {
+                            apt.status = 'error';
+                            addBatchLog(`${prefix} ⚠ Flagged for review`, 'error');
+                        } else if (apt.calendarAdded) {
+                            apt.status = 'done';
+                            addBatchLog(`${prefix} ✓ Done`, 'success');
+                        } else {
+                            // Edit returned without setting calendarAdded — treat as failure
+                            addBatchLog(`${prefix} Calendar edit did not confirm — queued for retry`, 'error');
+                            failedCalendarEdits.push({ job, error: 'Edit did not confirm' });
+                        }
+                        renderParsedAppointments();
+                    } catch (e) {
+                        addBatchLog(`${prefix} Calendar error: ${e.message} — queued for retry`, 'error');
+                        failedCalendarEdits.push({ job, error: e.message });
+                        renderParsedAppointments();
+                    }
+                }
+
+                // --- Retry pass: try failed edits once more ---
+                if (failedCalendarEdits.length > 0 && !batchIsCancelled) {
+                    addBatchLog(`\n--- Retrying ${failedCalendarEdits.length} failed calendar edit(s) ---`);
+
+                    // Brief pause before retries to let calendar settle
+                    await new Promise(r => setTimeout(r, 2000));
+
+                    const stillFailed = [];
+
+                    for (const { job, error: prevError } of failedCalendarEdits) {
+                        if (batchIsCancelled) break;
+                        while (batchIsPaused && !batchIsCancelled) {
+                            await new Promise(r => setTimeout(r, 500));
+                        }
+                        if (batchIsCancelled) break;
+
+                        const { i, apt } = job;
+                        const prefix = `[${i + 1}][retry]`;
+
+                        try {
+                            // Reset calendar state on the apt so doCalendarEdit runs fresh
+                            apt.calendarAdded = false;
+                            apt.calendarFlagged = false;
+
+                            await doCalendarEdit(apt, prefix, activeCalendarTabId);
+
+                            if (apt.calendarFlagged) {
+                                apt.status = 'error';
+                                stillFailed.push({ job, error: 'Flagged on retry' });
+                            } else if (apt.calendarAdded) {
+                                apt.status = 'done';
+                                addBatchLog(`${prefix} ✓ Retry succeeded`, 'success');
+                            } else {
+                                stillFailed.push({ job, error: 'Edit did not confirm on retry' });
+                            }
+                            renderParsedAppointments();
+                        } catch (e) {
+                            addBatchLog(`${prefix} Retry failed: ${e.message}`, 'error');
+                            stillFailed.push({ job, error: e.message });
+                            renderParsedAppointments();
+                        }
+                    }
+
+                    // --- Final report of anything that still failed ---
+                    if (stillFailed.length > 0) {
+                        addBatchLog(`\n⚠ ${stillFailed.length} calendar edit(s) FAILED after retry:`, 'error');
+                        for (const { job, error } of stillFailed) {
+                            const { i, apt } = job;
+                            addBatchLog(`  [${i + 1}] ${apt.rep} → ${apt.address} — ${error}`, 'error');
+                        }
+                    }
+                }
+
+                const flaggedCount = reviewJobs.filter(j => j.apt.calendarFlagged).length;
+                const failedCount = reviewJobs.filter(j => !j.apt.calendarAdded && !j.apt.calendarFlagged && j.apt.approved).length;
+                if (flaggedCount > 0) {
+                    addBatchLog(`Phase 2 complete — ${flaggedCount} event(s) flagged for review (in red tab groups)`, 'error');
+                } else if (failedCount > 0) {
+                    addBatchLog(`Phase 2 complete — ${failedCount} event(s) could not be updated`, 'error');
+                } else {
+                    addBatchLog(`Phase 2 complete — all calendar events updated`, 'success');
+                }
+            }
+
+            // === PHASE 3: Sequential full flow for non-review items ===
+            if (sequentialJobs.length > 0 && !batchIsCancelled) {
+                batchPhase = 'phase3';
+                broadcastState();
+                addBatchLog(`\n=== Phase 3: Processing ${sequentialJobs.length} remaining jobs ===`);
+
+                let pendingCalendarEdit = null;
+
+                for (const job of sequentialJobs) {
+                    if (batchIsCancelled) {
+                        addBatchLog('Automation cancelled by user', 'error');
+                        break;
+                    }
+                    while (batchIsPaused && !batchIsCancelled) {
+                        await new Promise(r => setTimeout(r, 500));
+                    }
+                    if (batchIsCancelled) break;
+
+                    const { i, apt } = job;
+                    const prefix = `[${i + 1}]`;
+
+                    updateBatchProgress(i + 1, parsedAppointments.length, `Processing: ${apt.address}`);
+                    addBatchLog(`\n${prefix} ${apt.rep} → ${apt.address}`);
+
+                    try {
+                        // Wait for any pending calendar edit (calendar tab is shared)
+                        if (pendingCalendarEdit) {
+                            addBatchLog('Waiting for previous calendar edit...');
+                            try { await pendingCalendarEdit; } catch (e) {}
+                            pendingCalendarEdit = null;
+                        }
+
+                        // Find event on calendar (use active calendar tab — may have been swapped)
+                        if (!batchBackgroundMode) {
+                            try { await chrome.tabs.update(activeCalendarTabId, { active: true }); } catch (e) {}
+                        }
+                        await new Promise(r => setTimeout(r, 500));
+
+                        let findResult = await sendMessageToTab(activeCalendarTabId, {
+                            type: 'BATCH_FIND_EVENT',
+                            address: apt.address,
+                            time: apt.startTime
+                        });
+
+                        if (!findResult?.ok) {
+                            addBatchLog(`${prefix} Event not ready yet, reloading calendar and retrying...`, 'error');
+                            await reloadCalendarTabForNextEdit(activeCalendarTabId, prefix);
+                            await new Promise(r => setTimeout(r, 2000));
+                            findResult = await sendMessageToTab(activeCalendarTabId, {
+                                type: 'BATCH_FIND_EVENT',
+                                address: apt.address,
+                                time: apt.startTime
+                            });
+                        }
+
+                        if (!findResult?.ok) throw new Error(findResult?.error || 'Could not find calendar event');
+                        addBatchLog(`${prefix} Found event, opening popup...`);
+
+                        await new Promise(r => setTimeout(r, 4000));
+
+                        // Open job tab
+                        const openResult = await sendMessageToTab(activeCalendarTabId, {
+                            type: 'BATCH_OPEN_JOB',
+                            address: apt.address
+                        });
+                        if (!openResult?.ok) throw new Error(openResult?.error || 'Could not open job');
+                        if (openResult?.url) apt.jobUrl = openResult.url;
+
+                        let jobTabId = openResult.tabId;
+                        if (!jobTabId || openResult.needsTabLookup) {
+                            await new Promise(r => setTimeout(r, 2000));
+                            const jobQueryOpts = { url: "*://app.roofr.com/*/jobs*" };
+                            if (window.__targetWindowId) jobQueryOpts.windowId = window.__targetWindowId;
+                            const jobTabs = await chrome.tabs.query(jobQueryOpts);
+                            const knownTabIds = new Set([calendarTab.id, activeCalendarTabId, ...reviewTabIds, ...executionOpenedTabIds]);
+                            const recentJobTab = jobTabs.find(t => !knownTabIds.has(t.id));
+                            if (recentJobTab) {
+                                jobTabId = recentJobTab.id;
+                            } else {
+                                throw new Error('Could not find the opened job tab');
+                            }
+                        }
+
+                        executionOpenedTabIds.push(jobTabId);
+                        if (reportsGroupId) {
+                            try { await chrome.tabs.group({ tabIds: [jobTabId], groupId: reportsGroupId }); } catch (e) {}
+                        }
+
+                        // Wait for page load + check for 429 + wait for job data to render
+                        for (let retryAttempt = 0; retryAttempt < 3; retryAttempt++) {
+                            await new Promise((resolve) => {
+                                const onUpdated = (updatedId, info) => {
+                                    if (updatedId === jobTabId && info.status === 'complete') {
+                                        chrome.tabs.onUpdated.removeListener(onUpdated);
+                                        resolve();
+                                    }
+                                };
+                                chrome.tabs.onUpdated.addListener(onUpdated);
+                                setTimeout(() => { chrome.tabs.onUpdated.removeListener(onUpdated); resolve(); }, 15000);
+                            });
+                            try {
+                                const tabInfo = await chrome.tabs.get(jobTabId);
+                                if (tabInfo.title && tabInfo.title.includes('Too Many Requests')) {
+                                    const backoffMs = (retryAttempt + 1) * 8000;
+                                    addBatchLog(`${prefix} Rate limited (429), waiting ${backoffMs / 1000}s...`, 'error');
+                                    await new Promise(r => setTimeout(r, backoffMs));
+                                    await chrome.tabs.reload(jobTabId);
+                                    continue;
+                                }
+                            } catch (e) { /* tab may have closed */ }
+                            break;
+                        }
+
+                        // Wait for job data to actually render (React loads data async after page shell)
+                        let jobDataReady = false;
+                        for (let dataAttempt = 0; dataAttempt < 15; dataAttempt++) {
+                            await new Promise(r => setTimeout(r, 1000));
+                            try {
+                                const probe = await sendMessageToTab(jobTabId, { type: 'GET_JOB_INFO' });
+                                if (probe?.info?.address) {
+                                    jobDataReady = true;
+                                    addBatchLog(`${prefix} Job data loaded (${dataAttempt + 1}s)`);
+                                    break;
+                                }
+                            } catch (e) { /* content script may not be ready yet */ }
+                        }
+                        if (!jobDataReady) {
+                            addBatchLog(`${prefix} Job data may not have loaded — proceeding anyway`, 'error');
+                        }
+
+                        // Set owner
+                        const ownerSet = await doSetOwner(jobTabId, apt, prefix);
+
+                        // Check report
+                        let shouldClose = false;
+                        try {
+                            const finalInfo = await sendMessageToTab(jobTabId, { type: 'GET_JOB_INFO' });
+                            const reportStatus = finalInfo?.info?.reportStatus || '';
+                            addBatchLog(`${prefix} Report: ${reportStatus || 'unknown'}`);
+                            const closeStatuses = ['pending', 'complete', 'processing'];
+                            shouldClose = ownerSet && closeStatuses.includes(reportStatus);
+                            if (!ownerSet) addBatchLog(`${prefix} Keeping tab open (owner not set)`);
+                            else if (!shouldClose) addBatchLog(`${prefix} Keeping tab open (report: ${reportStatus})`);
+                        } catch (e) {}
+
+                        // Fire calendar edit in background, close tab in parallel
+                        const capturedApt = apt;
+                        const capturedTabId = jobTabId;
+                        const capturedShouldClose = shouldClose;
+                        const capturedPrefix = prefix;
+
+                        pendingCalendarEdit = doCalendarEdit(capturedApt, capturedPrefix);
+
+                        // Close tab simultaneously (fire and forget)
+                        if (capturedShouldClose) {
+                            chrome.tabs.remove(capturedTabId).then(() => {
+                                addBatchLog(`${capturedPrefix} Tab closed`, 'success');
+                            }).catch(() => {});
+                        }
+
+                        apt.status = 'done';
+                        addBatchLog(`${prefix} ✓ Owner set, calendar updating in background`, 'success');
+
+                    } catch (error) {
+                        addBatchLog(`${prefix} ERROR: ${error.message}`, 'error');
+                        apt.status = 'error';
+                        try { await sendMessageToTab(activeCalendarTabId, { type: 'BATCH_CLOSE_POPUP' }); } catch (e) {}
+                    }
+
+                    renderParsedAppointments();
+                }
+
+                // Wait for final calendar edit
+                if (pendingCalendarEdit) {
+                    addBatchLog('Waiting for final calendar edit...');
+                    try { await pendingCalendarEdit; } catch (e) {}
+                }
+            }
+
+            batchPhase = batchIsCancelled ? 'cancelled' : 'done';
+            broadcastState();
 
             updateBatchProgress(parsedAppointments.length, parsedAppointments.length,
                 batchIsCancelled ? 'Batch cancelled' : 'Batch processing complete!');
@@ -7665,7 +10284,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             batchIsRunning = false;
             batchIsPaused = false;
             batchIsCancelled = false;
-            runBatchBtn.textContent = 'Run Batch Automation';
+            runBatchBtn.textContent = 'Execute Approved';
             runBatchBtn.style.background = '';
             runBatchBtn.disabled = false;
 
@@ -7983,6 +10602,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ctmAssignedRepDisplay.title = 'CTM assigned rep';
             }
         }
+
+        // Update "My CTM Calls" link in the Links dropdown
+        const ctmMyCallsLink = document.getElementById('ctm-my-calls-link');
+        if (ctmMyCallsLink) {
+            const ctmUserId = name && PEOPLE_DATA.CTM_USER_IDS ? PEOPLE_DATA.CTM_USER_IDS[name] : null;
+            if (ctmUserId) {
+                ctmMyCallsLink.href = `https://app.calltrackingmetrics.com/calls#multi_agents=${ctmUserId}`;
+                ctmMyCallsLink.style.display = '';
+            } else {
+                ctmMyCallsLink.style.display = 'none';
+            }
+        }
     }
 
     // Initialize CTM toggle state from storage
@@ -8001,7 +10632,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result.ctm_enabled && csrName) {
                 updateCtmAssignedRepDisplay(csrName);
             } else {
-                updateCtmAssignedRepDisplay(null);
+                // Even if CTM toggle is off, show the "My CTM Calls" link if we know who they are
+                updateCtmAssignedRepDisplay(csrName || null);
             }
         } catch (e) {
             console.warn('Could not load CTM setting:', e);
@@ -8165,6 +10797,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     // ========================================
 
     // ========================================
+    // TRANSCRIPT AUTO-GRAB STATUS LISTENER
+    // ========================================
+    chrome.runtime.onMessage.addListener((msg) => {
+        if (msg.type === 'TRANSCRIPT_STATUS') {
+            console.log('[Popup] Transcript status:', msg.status, msg.message);
+            const statusColors = {
+                polling: 'var(--warn)',
+                found: 'var(--success)',
+                sent: 'var(--success)',
+                timeout: 'var(--danger)',
+                error: 'var(--danger)'
+            };
+            if (toast) {
+                toast.textContent = msg.message;
+                toast.style.background = statusColors[msg.status] || '';
+                toast.classList.add('show');
+                // Keep polling messages visible longer
+                const duration = msg.status === 'polling' ? 25000 : 4000;
+                clearTimeout(window.__transcriptToastTimeout);
+                window.__transcriptToastTimeout = setTimeout(() => {
+                    toast.classList.remove('show');
+                    toast.style.background = '';
+                }, duration);
+            }
+        }
+    });
+
+    // ========================================
     // PHONE ICON - OPEN CONTACTS FOR ACTIVE CALLS
     // ========================================
 
@@ -8180,27 +10840,41 @@ document.addEventListener('DOMContentLoaded', async () => {
             const ctmTabs = await chrome.tabs.query(ctmQueryOpts);
             console.log('[Popup] Found CTM tabs:', ctmTabs.length, ctmTabs.map(t => ({ id: t.id, url: t.url })));
 
-            for (const tab of ctmTabs) {
+            // Only query one CTM tab (prefer the most recently active one)
+            // Querying multiple tabs causes duplicate/stale counts
+            const ctmTab = ctmTabs.find(t => t.active) || ctmTabs[0];
+            if (ctmTab) {
                 try {
-                    console.log('[Popup] Sending GET_CTM_ACTIVE_CALLS to tab', tab.id);
-                    const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_CTM_ACTIVE_CALLS' });
-                    console.log('[Popup] CTM response from tab', tab.id, ':', response);
+                    console.log('[Popup] Sending GET_CTM_ACTIVE_CALLS to tab', ctmTab.id);
+                    const response = await chrome.tabs.sendMessage(ctmTab.id, { type: 'GET_CTM_ACTIVE_CALLS' });
+                    console.log('[Popup] CTM response from tab', ctmTab.id, ':', response);
                     if (response?.ok && response.calls) {
-                        // Mark calls as CTM source
                         const ctmCalls = response.calls.map(c => ({ ...c, source: 'ctm' }));
                         allCalls.push(...ctmCalls);
                         console.log('[Popup] Added', ctmCalls.length, 'CTM calls to list');
                     }
                 } catch (e) {
-                    // Tab might not have content script loaded
-                    console.log('[Popup] Could not get CTM calls from tab', tab.id, ':', e.message);
+                    console.log('[Popup] Could not get CTM calls from tab', ctmTab.id, ':', e.message);
                 }
             }
         } catch (e) {
             console.log('[Popup] Error querying CTM tabs:', e);
         }
 
-        return allCalls;
+        // Deduplicate by phone number (multiple tabs may report same calls)
+        const seen = new Set();
+        const uniqueCalls = allCalls.filter(call => {
+            const key = call.phoneNumber;
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+
+        if (uniqueCalls.length !== allCalls.length) {
+            console.log('[Popup] Deduplicated calls:', allCalls.length, '->', uniqueCalls.length);
+        }
+
+        return uniqueCalls;
     }
 
     // Active Calls Dropdown
@@ -8236,11 +10910,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         lastActiveCallsCount = count;
     }
 
+    // Track current active call phones (updated each poll cycle)
+    // Accessible from address search to include phone in notes
+    window.__activeCallPhones = [];
+
     // Poll for active calls and update badge
     async function pollActiveCalls() {
         try {
             const calls = await fetchActiveCalls();
             updateActiveCallsBadge(calls.length);
+
+            // Store active call phones for use by address search
+            window.__activeCallPhones = calls.map(c => c.phoneNumber).filter(Boolean);
 
             // If dropdown is open, update the list too
             if (activeCallsDropdown && activeCallsDropdown.style.display !== 'none') {
@@ -8251,6 +10932,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    // Cache of Supabase lookup results: phone -> jobs[]
+    const popupPhoneCache = new Map();
+
     // Update the dropdown list with calls
     function updateActiveCallsList(calls) {
         if (!activeCallsList) return;
@@ -8260,38 +10944,71 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        activeCallsList.innerHTML = calls.map(call => `
-            <div class="active-call-item"
-                 data-phone="${call.phoneNumber}"
-                 data-formatted="${call.formattedPhone || ''}"
-                 data-caller="${call.callerName || ''}"
-                 style="padding: 10px 12px; cursor: pointer; border-bottom: 1px solid var(--border); transition: background 0.15s;">
-                <div style="font-weight: 500;">${call.callerName || 'Unknown Caller'}</div>
-                <div style="font-size: 12px; color: var(--muted); display: flex; justify-content: space-between;">
-                    <span>${call.formattedPhone || call.phoneNumber}</span>
-                    <span style="color: #22c55e; font-weight: 500;">${call.timer || ''}</span>
-                </div>
-                ${call.agentName ? `<div style="font-size: 11px; color: var(--muted); margin-top: 2px;">Rep: ${call.agentName}</div>` : ''}
-            </div>
-        `).join('');
+        activeCallsList.innerHTML = calls.map(call => {
+            let transferDisplay = '';
+            if (call.transferInfo) {
+                if (call.transferInfo.transferFrom && call.transferInfo.transferTo) {
+                    transferDisplay = `<div style="font-size: 11px; color: #f59e0b; margin-top: 2px; font-style: italic;">
+                        Transfer: ${call.transferInfo.transferFrom} → ${call.transferInfo.transferTo}${call.transferInfo.transferTime ? ` @ ${call.transferInfo.transferTime}` : ''}
+                    </div>`;
+                } else if (call.transferInfo.transferTo) {
+                    transferDisplay = `<div style="font-size: 11px; color: #f59e0b; margin-top: 2px; font-style: italic;">
+                        Transferred to: ${call.transferInfo.transferTo}
+                    </div>`;
+                }
+            }
 
-        // Re-attach click handlers
+            return `
+                <div class="active-call-item"
+                     data-phone="${call.phoneNumber}"
+                     data-formatted="${call.formattedPhone || ''}"
+                     data-caller="${call.callerName || ''}"
+                     style="padding: 10px 12px; cursor: pointer; border-bottom: 1px solid var(--border); transition: background 0.15s;">
+                    <div style="font-weight: 500;">${call.callerName || 'Unknown Caller'}</div>
+                    <div style="font-size: 12px; color: var(--muted); display: flex; justify-content: space-between;">
+                        <span>${call.formattedPhone || call.phoneNumber}</span>
+                        <span style="color: #22c55e; font-weight: 500;">${call.timer || ''}</span>
+                    </div>
+                    ${call.agentName ? `<div style="font-size: 11px; color: var(--muted); margin-top: 2px;">Rep: ${call.agentName}</div>` : ''}
+                    ${transferDisplay}
+                    <div class="roofr-job-links" style="margin-top: 4px;"></div>
+                </div>
+            `;
+        }).join('');
+
+        // Attach hover + click handlers, then check Supabase
+        attachCallItemHandlers();
+        enrichCallItemsWithSupabase(calls);
+    }
+
+    // Attach default hover/click handlers to call items
+    function attachCallItemHandlers() {
         activeCallsList.querySelectorAll('.active-call-item').forEach(item => {
             item.addEventListener('mouseenter', () => {
-                item.style.background = 'var(--hover)';
+                if (!item.dataset.roofrMatch) item.style.background = 'var(--hover)';
             });
             item.addEventListener('mouseleave', () => {
-                item.style.background = '';
+                if (!item.dataset.roofrMatch) item.style.background = '';
             });
-            item.addEventListener('click', async () => {
+            item.addEventListener('click', async (e) => {
+                // If clicking a job link inside the item, don't also open contacts
+                if (e.target.closest('.roofr-job-link')) return;
+
                 const phone = item.dataset.phone;
                 const formatted = item.dataset.formatted;
                 const callerName = item.dataset.caller;
 
+                // If this is a known customer with exactly 1 job, open the job card directly
+                const jobUrl = item.dataset.jobUrl;
+                if (jobUrl) {
+                    hideActiveCallsDropdown();
+                    chrome.tabs.create({ url: jobUrl, active: true });
+                    return;
+                }
+
                 if (phone) {
                     hideActiveCallsDropdown();
                     showToast(`Opening contacts for ${formatted || phone}...`);
-
                     try {
                         await chrome.runtime.sendMessage({
                             type: 'OPEN_CONTACTS_FOR_PHONE',
@@ -8306,6 +11023,86 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 }
             });
+        });
+    }
+
+    // Batch check active call phones against Supabase and apply green styling
+    async function enrichCallItemsWithSupabase(calls) {
+        if (calls.length === 0) return;
+
+        // Collect phones that need checking
+        const phonesToCheck = [];
+        for (const call of calls) {
+            let norm = (call.phoneNumber || '').replace(/\D/g, '');
+            if (norm.length === 11 && norm.startsWith('1')) norm = norm.substring(1);
+            if (norm.length === 10 && !popupPhoneCache.has(norm)) {
+                phonesToCheck.push(norm);
+            }
+        }
+
+        // Batch lookup uncached phones
+        if (phonesToCheck.length > 0) {
+            try {
+                const response = await chrome.runtime.sendMessage({
+                    type: 'BATCH_PHONE_LOOKUP',
+                    phones: [...new Set(phonesToCheck)]
+                });
+                if (response?.ok && response.matches) {
+                    for (const phone of phonesToCheck) {
+                        popupPhoneCache.set(phone, response.matches[phone] || []);
+                    }
+                }
+            } catch (err) {
+                console.warn('[Popup] Supabase batch lookup error:', err);
+            }
+        }
+
+        // Apply styling to each call item
+        activeCallsList.querySelectorAll('.active-call-item').forEach(item => {
+            let norm = (item.dataset.phone || '').replace(/\D/g, '');
+            if (norm.length === 11 && norm.startsWith('1')) norm = norm.substring(1);
+
+            const jobs = popupPhoneCache.get(norm);
+            if (!jobs || jobs.length === 0) return;
+
+            // Green background for existing customer
+            item.style.background = 'rgba(34, 197, 94, 0.15)';
+            item.style.borderLeft = '3px solid #22c55e';
+            item.dataset.roofrMatch = 'true';
+
+            // If single job, set jobUrl so clicking the whole row opens it
+            if (jobs.length === 1) {
+                item.dataset.jobUrl = jobs[0].jobUrl;
+            }
+
+            // Hover stays green
+            item.addEventListener('mouseenter', () => {
+                item.style.background = 'rgba(34, 197, 94, 0.25)';
+            });
+            item.addEventListener('mouseleave', () => {
+                item.style.background = 'rgba(34, 197, 94, 0.15)';
+            });
+
+            // Render job link(s) inside the item
+            const linksContainer = item.querySelector('.roofr-job-links');
+            if (linksContainer) {
+                linksContainer.innerHTML = jobs.map(job => `
+                    <a class="roofr-job-link" href="#" data-url="${job.jobUrl}"
+                       style="display: inline-block; font-size: 11px; color: #22c55e; font-weight: 600;
+                              margin-right: 8px; text-decoration: none; cursor: pointer;"
+                       title="${job.customer} — ${job.address}">
+                        ${job.customer}${jobs.length > 1 ? ' →' : ''}
+                    </a>
+                `).join('');
+
+                linksContainer.querySelectorAll('.roofr-job-link').forEach(link => {
+                    link.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        chrome.tabs.create({ url: link.dataset.url, active: true });
+                    });
+                });
+            }
         });
     }
 
@@ -8360,84 +11157,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
 
-            // Build the list of calls
-            activeCallsList.innerHTML = calls.map(call => `
-                <div class="active-call-item"
-                     data-phone="${call.phoneNumber}"
-                     data-formatted="${call.formattedPhone || ''}"
-                     data-caller="${call.callerName || ''}"
-                     data-csr="${call.agentName || ''}"
-                     style="padding: 10px 12px; cursor: pointer; border-bottom: 1px solid var(--border); transition: background 0.15s;">
-                    <div style="font-weight: 500; color: var(--text);">${call.callerName || 'Unknown Caller'}</div>
-                    <div style="font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; margin-top: 2px;">
-                        <span>${call.formattedPhone || call.phoneNumber}</span>
-                        <span style="color: var(--success);">${call.timer || ''}</span>
-                    </div>
-                    ${call.agentName ? `<div style="font-size: 11px; color: var(--muted); margin-top: 2px;">CSR: ${call.agentName}</div>` : ''}
-                </div>
-            `).join('');
-
-            // Add click handlers to each call item
-            activeCallsList.querySelectorAll('.active-call-item').forEach(item => {
-                item.addEventListener('mouseenter', () => {
-                    item.style.background = 'var(--hover)';
-                });
-                item.addEventListener('mouseleave', () => {
-                    item.style.background = '';
-                });
-                item.addEventListener('click', async () => {
-                    const phoneNumber = item.dataset.phone;
-                    const formattedPhone = item.dataset.formatted;
-                    const callerName = item.dataset.caller;
-
-                    // Show loading state
-                    item.style.opacity = '0.6';
-                    item.style.pointerEvents = 'none';
-
-                    try {
-                        const response = await chrome.runtime.sendMessage({
-                            type: 'OPEN_CONTACTS_FOR_PHONE',
-                            phoneNumber: phoneNumber,
-                            formattedPhone: formattedPhone,
-                            callerName: callerName,
-                            windowId: window.__targetWindowId // Pass target window for window isolation
-                        });
-
-                        if (response && response.ok) {
-                            showToast('Contact opened');
-                            hideActiveCallsDropdown();
-                            // Try to fetch job owner after contact loads
-                            setTimeout(async () => {
-                                try {
-                                    // Query Roofr tabs in target window to get job info
-                                    const queryOpts = { url: '*://app.roofr.com/*' };
-                                    if (window.__targetWindowId) queryOpts.windowId = window.__targetWindowId;
-                                    const tabs = await chrome.tabs.query(queryOpts);
-                                    // Find the active one or just use the first one
-                                    const roofrTab = tabs.find(t => t.active) || tabs[0];
-                                    if (roofrTab && roofrTab.url?.includes('roofr.com')) {
-                                        const result = await chrome.tabs.sendMessage(roofrTab.id, { type: 'GET_JOB_INFO' });
-                                        if (result?.ok && result?.info?.jobOwner) {
-                                            updateAssignedRepDisplay(result.info.jobOwner);
-                                        }
-                                    }
-                                } catch (e) {
-                                    // Ignore - contact may not have loaded job yet
-                                }
-                            }, 2000);
-                        } else {
-                            showToast('Failed to open contact');
-                            item.style.opacity = '1';
-                            item.style.pointerEvents = '';
-                        }
-                    } catch (err) {
-                        console.error('[Popup] Error opening contact:', err);
-                        showToast('Error opening contact');
-                        item.style.opacity = '1';
-                        item.style.pointerEvents = '';
-                    }
-                });
-            });
+            // Reuse the shared rendering function (handles Supabase enrichment too)
+            updateActiveCallsList(calls);
         } catch (err) {
             console.error('[Popup] Error fetching active calls:', err);
             activeCallsList.innerHTML = '<div style="padding: 12px; text-align: center; color: var(--danger);">Error loading calls</div>';
@@ -8472,4 +11193,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     init();
 
+});
+
+// ── Auto-Dialer launcher button (appended) ──
+document.addEventListener("DOMContentLoaded", () => {
+  const btn = document.getElementById("open-dialer-btn");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "AD_OPEN_WINDOW" }, () => {
+      if (chrome.runtime.lastError) {
+        console.warn("[Dialer launcher]", chrome.runtime.lastError.message);
+      }
+    });
+  });
 });

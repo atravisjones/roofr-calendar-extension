@@ -15,6 +15,9 @@ dist-ssr
 # Extension signing key - NEVER commit this
 *.pem
 
+# CTM call data - real customer transcripts, phone numbers, employee emails. NEVER commit.
+ctm_*.json
+
 # Claude Code temporary files
 tmpclaude-*
 

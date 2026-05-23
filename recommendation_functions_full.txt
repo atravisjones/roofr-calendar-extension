@@ -1,0 +1,415 @@
+    function findBestSlotStacking(targetCity, weekDays, allEvents, availability, currentRegion) {
+        const candidates = [];
+        const today = startOfDay(new Date());
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const tomorrowISO = toISO(tomorrow);
+        const keyToIndex = { "B1": 0, "B2": 1, "B3": 2, "B4": 3 };
+        const cityStr = targetCity.toUpperCase();
+
+        console.log('findBestSlotStacking debug:', { tomorrowISO, weekDays, currentRegion });
+
+        for (const dateStr of weekDays) {
+            // Only recommend tomorrow or later (never today)
+            if (dateStr < tomorrowISO) {
+                console.log(`Skipping ${dateStr}: before tomorrow (${tomorrowISO})`);
+                continue;
+            }
+            const dailyEvents = allEvents.filter(e => localDayKey(e.start) === dateStr);
+            const totals = CONFIG.computeDailyTotals(dateStr, dailyEvents, availability, currentRegion);
+            // Check if ANY block has availability (don't skip based on netAvailable alone)
+            // perBlockRemaining values can be null if no capacity set, or negative if overbooked
+            const hasAnyBlockAvailable = Object.values(totals.perBlockRemaining || {}).some(v => v !== null && v > 0);
+
+            console.log(`Day ${dateStr}:`, {
+                netAvailable: totals.netAvailable,
+                hasAnyBlockAvailable,
+                perBlockRemaining: totals.perBlockRemaining
+            });
+
+            if (totals.netAvailable <= 0 && !hasAnyBlockAvailable) {
+                console.log(`Skipping ${dateStr}: no availability`);
+                continue;
+            }
+
+            const cityEvents = dailyEvents.filter(e => {
+                const c = CONFIG.getCityFromEvent(e);
+                return c && c.toUpperCase() === cityStr;
+            });
+            const stackSize = cityEvents.length;
+            if (stackSize >= 4) continue;
+
+            const blocks = CONFIG.blockWindowForDate(new Date(dateStr + "T00:00"));
+            const usedBlocks = new Set();
+            cityEvents.forEach(ev => {
+                blocks.forEach(b => {
+                    if (CONFIG.overlapMinutes({ start: ev.start, end: ev.end }, b) >= 15) {
+                        usedBlocks.add(b.key);
+                    }
+                });
+            });
+
+            const validOptions = [];
+            blocks.forEach((b) => {
+                const remaining = totals.perBlockRemaining[b.key] ?? 0;
+                if (remaining > 0 && !usedBlocks.has(b.key)) {
+                    const idx = keyToIndex[b.key];
+                    let minDistance = Infinity;
+
+                    if (stackSize === 0) {
+                        minDistance = 0;
+                    } else {
+                        for (const usedKey of usedBlocks) {
+                            const usedIdx = keyToIndex[usedKey];
+                            const dist = Math.abs(idx - usedIdx);
+                            if (dist < minDistance) minDistance = dist;
+                        }
+                    }
+                    validOptions.push({ key: b.key, idx, minDistance, remaining });
+                }
+            });
+
+            if (validOptions.length > 0) {
+                validOptions.sort((a, b) => {
+                    // 1. Proximity
+                    if (a.minDistance !== b.minDistance) return a.minDistance - b.minDistance;
+                    // 2. Availability
+                    if (b.remaining !== a.remaining) return b.remaining - a.remaining;
+                    // 3. Time
+                    return a.idx - b.idx;
+                });
+                const best = validOptions[0];
+                let reason = "";
+
+                if (stackSize > 0) {
+                    const existingIndices = Array.from(usedBlocks).map(k => keyToIndex[k]);
+                    const bestIdx = best.idx;
+                    const above = existingIndices.some(i => i < bestIdx);
+                    const below = existingIndices.some(i => i > bestIdx);
+
+                    if (above && below) {
+                        reason = `There are ${stackSize} ${cityStr} jobs surrounding this time slot.`;
+                    } else if (above) {
+                        reason = `There are ${stackSize} ${cityStr} jobs scheduled before this time slot.`;
+                    } else {
+                        reason = `There are ${stackSize} ${cityStr} jobs scheduled after this time slot.`;
+                    }
+                } else {
+                    reason = `Start a new stack: High availability in this slot.`;
+                }
+
+                candidates.push({ dateStr, blockKey: best.key, stackSize, reason, remaining: best.remaining });
+            }
+        }
+
+        candidates.sort((a, b) => {
+            if (b.stackSize !== a.stackSize) return b.stackSize - a.stackSize;
+            return new Date(a.dateStr) - new Date(b.dateStr);
+        });
+
+        return candidates;
+    }
+
+    async function runAddressRecommendation() {
+        const text = (addrInput?.value || "").trim();
+        if (!text) return;
+
+        const cityList = CONFIG.resolveCityCandidatesFromInput(text);
+        if (!cityList.length) { alert("City not found."); return; }
+
+        const primaryCity = cityList[0];
+
+        const potentialNeighbors = cityList.slice(1);
+        const activeNeighbors = potentialNeighbors.filter(city => {
+            const cUpper = city.toUpperCase();
+            return (state.allEvents || []).some(ev => {
+                const evCity = CONFIG.getCityFromEvent(ev);
+                return evCity && evCity.toUpperCase() === cUpper;
+            });
+        });
+
+        renderAdjacentButtons(activeNeighbors);
+        await runAddressRecommendationForCity(primaryCity);
+    }
+
+    function renderAdjacentButtons(cities) {
+        if (!recoOptions) return;
+        recoOptions.innerHTML = '';
+
+        if (cities.length === 0) {
+            recoOptions.classList.add('hidden');
+            return;
+        }
+        recoOptions.classList.remove('hidden');
+
+        const label = document.createElement('span');
+        label.textContent = "Close Jobs:";
+        label.style.fontSize = "11px";
+        label.style.fontWeight = "800";
+        label.style.color = "#92400e";
+        label.style.display = "flex";
+        label.style.alignItems = "center";
+        label.style.marginRight = "2px";
+        recoOptions.appendChild(label);
+
+        cities.forEach(city => {
+            const btn = document.createElement('button');
+            btn.className = 'reco-city-btn';
+            btn.textContent = city;
+            btn.title = `Recommend for ${city}`;
+            btn.addEventListener('click', () => {
+                runAddressRecommendationForCity(city);
+            });
+            recoOptions.appendChild(btn);
+        });
+    }
+
+    async function runAddressRecommendationForCity(primaryCity) {
+        const region = CONFIG.getRegionForCity(primaryCity);
+        if (region) state.currentRegion = region;
+        state.highlightedCity = primaryCity;
+
+        await sendFindCommand({ type: 'CLEAR_HIGHLIGHT' });
+        await sendFindCommand({ type: 'HIGHLIGHT_CITY', city: primaryCity });
+
+        // Try to get smart recommendations from the Routing API first
+        const address = state.addressInput || primaryCity;
+        const smartRecs = await getSmartRecommendations(address, [], state.weekDays, 'normal');
+
+        let candidates = [];
+
+        if (smartRecs && smartRecs.length > 0) {
+            // Convert API recommendations to our candidate format
+            candidates = smartRecs.map(rec => {
+                // Map API time slot to block key
+                const slotToBlock = { 'ts-1': 'B1', 'ts-2': 'B2', 'ts-3': 'B3', 'ts-4': 'B4' };
+                const blockKey = slotToBlock[rec.timeSlotId] || 'B1';
+
+                // Build reason text with rep name and skills
+                let reason = '';
+                if (rec.repName) {
+                    reason = `${rec.repName}`;
+                    if (rec.reasons && rec.reasons.length > 0) {
+                        reason += ` - ${rec.reasons.join(', ')}`;
+                    }
+                } else if (rec.reasons && rec.reasons.length > 0) {
+                    reason = rec.reasons.join(', ');
+                } else {
+                    reason = 'Available slot';
+                }
+
+                return {
+                    dateStr: rec.date,
+                    blockKey,
+                    stackSize: 0,
+                    reason,
+                    remaining: rec.remaining || 1,
+                    repName: rec.repName,
+                    repId: rec.repId,
+                    score: rec.score
+                };
+            });
+            addLog(`Using ${candidates.length} smart recommendations from API`);
+        } else {
+            // Fall back to local stacking algorithm
+            candidates = findBestSlotStacking(
+                primaryCity, state.weekDays, state.allEvents, state.availability, state.currentRegion
+            );
+            addLog(`Using ${candidates.length} local stacking recommendations`);
+        }
+
+        state.recoCandidates = candidates;
+        state.recoIndex = 0;
+
+        debouncedSaveState();
+        renderUIFromState();
+
+        if (candidates.length === 0) {
+            // Check if there's cached data for next week
+            const weekStart = state.weekDays[0];
+            const nextWeekData = await checkNextWeekAvailability(weekStart, state.currentRegion);
+
+            if (nextWeekData.hasCache) {
+                const scannedAgo = nextWeekData.scannedAt
+                    ? Math.round((Date.now() - new Date(nextWeekData.scannedAt).getTime()) / (1000 * 60))
+                    : null;
+                const timeAgoText = scannedAgo ? ` (scanned ${scannedAgo}m ago by ${nextWeekData.scannedBy})` : '';
+
+                const useNextWeek = confirm(
+                    `No availability in current week for ${primaryCity}.\n\n` +
+                    `Cached data found for next week${timeAgoText}.\n\n` +
+                    `Would you like to use the cached data to find availability?\n` +
+                    `(You can still navigate to verify)`
+                );
+
+                if (useNextWeek) {
+                    // Use the cached next week data
+                    const nextCandidates = findBestSlotStacking(
+                        primaryCity,
+                        nextWeekData.weekDays,
+                        nextWeekData.events,
+                        nextWeekData.availability,
+                        state.currentRegion
+                    );
+
+                    if (nextCandidates.length > 0) {
+                        // Mark these as from cached data
+                        nextCandidates.forEach(c => {
+                            c.reason = `[From cache] ${c.reason}`;
+                        });
+                        state.recoCandidates = nextCandidates;
+                        state.recoIndex = 0;
+                        debouncedSaveState();
+                        renderUIFromState();
+                        showToast(`Found ${nextCandidates.length} options in next week (cached)`);
+                        return;
+                    }
+                }
+            }
+
+            alert(`No available capacity found for ${primaryCity} in the visible week.`);
+        }
+    }
+
+    function handleNextRecommendation() {
+        if (!state.recoCandidates || state.recoCandidates.length === 0) return;
+        state.recoIndex = (state.recoIndex + 1) % state.recoCandidates.length;
+        debouncedSaveState();
+        renderUIFromState();
+    }
+
+    function handlePrevRecommendation() {
+        if (!state.recoCandidates || state.recoCandidates.length === 0) return;
+        state.recoIndex = (state.recoIndex - 1 + state.recoCandidates.length) % state.recoCandidates.length;
+        debouncedSaveState();
+        renderUIFromState();
+    }
+
+    // Main priority pills handler
+    let mainPriority = 'high'; // Default
+    mainPriorityPills.forEach(pill => {
+        pill.addEventListener('click', async () => {
+            mainPriorityPills.forEach(p => p.classList.remove('active'));
+            pill.classList.add('active');
+            mainPriority = pill.dataset.priority;
+
+            // Reset navigation state for fresh search
+            state.lastNavDirection = null;
+            state.weekNavCount = 0;
+            state.pendingWeekNav = null;
+            state.originalTargetDate = null;
+
+            // Ensure calendar is open when clicking priority
+            const targetTab = await ensureCalendarTabOpen();
+            if (targetTab) {
+                // Calendar was just opened/focused, setup and scan it
+                await setupCalendarForScan(targetTab.id);
+                window.__targetRoofrTabId = targetTab.id;
+                runScanFlow(true); // Auto-scan will trigger recommendation via state
+            }
+
+            // Auto-run recommendation if there's an address already entered
+            const hasAddress = addrInput?.value?.trim();
+            if (hasAddress) {
+                await runMainRecommendation();
+                updateGoButtonState();
+            }
+        });
+    });
+
+    // Helper to check if it's after 5pm MST
+    function isAfter5pmMST() {
+        const now = new Date();
+        const mstOffset = -7; // MST is UTC-7
+        const utcHours = now.getUTCHours();
+        const mstHours = (utcHours + mstOffset + 24) % 24;
+        return mstHours >= 17;
+    }
+
+    // Helper to check if it's after 5pm MST (used for HIGH priority adjustment)
+    // If after 5pm, we skip tomorrow for HIGH priority
+
+    // Helper to find the first available date from tomorrow onwards
+    function findFirstAvailableDate(allCandidates) {
+        const tomorrow = new Date(startOfDay(new Date()));
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        // If after 5pm MST, start from day after tomorrow
+        if (isAfter5pmMST()) {
+            tomorrow.setDate(tomorrow.getDate() + 1);
+        }
+        const tomorrowISO = toISO(tomorrow);
+
+        // Filter to candidates from tomorrow onwards and find earliest
+        const validCandidates = allCandidates.filter(c => c.dateStr >= tomorrowISO);
+        if (validCandidates.length === 0) return null;
+
+        // Find earliest date
+        return validCandidates.reduce((min, c) =>
+            c.dateStr < min ? c.dateStr : min, validCandidates[0].dateStr);
+    }
+
+    // Helper to find candidates on a specific date, with ±1 day fallback
+    function findCandidatesForDate(allCandidates, targetDateISO, allowFallback = true) {
+        // First try exact date
+        let candidates = allCandidates.filter(c => c.dateStr === targetDateISO);
+        if (candidates.length > 0) return { candidates, actualDate: targetDateISO };
+
+        if (!allowFallback) return { candidates: [], actualDate: targetDateISO };
+
+        // Try day after
+        const targetDate = new Date(targetDateISO + 'T12:00:00');
+        const dayAfter = new Date(targetDate);
+        dayAfter.setDate(targetDate.getDate() + 1);
+        const dayAfterISO = toISO(dayAfter);
+
+        candidates = allCandidates.filter(c => c.dateStr === dayAfterISO);
+        if (candidates.length > 0) return { candidates, actualDate: dayAfterISO };
+
+        // Try day before
+        const dayBefore = new Date(targetDate);
+        dayBefore.setDate(targetDate.getDate() - 1);
+        const dayBeforeISO = toISO(dayBefore);
+
+        candidates = allCandidates.filter(c => c.dateStr === dayBeforeISO);
+        if (candidates.length > 0) return { candidates, actualDate: dayBeforeISO };
+
+        return { candidates: [], actualDate: targetDateISO };
+    }
+
+    // Helper to add days to a date string
+    function addDaysToDateStr(dateStr, days) {
+        const date = new Date(dateStr + 'T12:00:00');
+        date.setDate(date.getDate() + days);
+        return toISO(date);
+    }
+
+    // Helper to find cached week data containing a specific date
+    function getCachedWeekContainingDate(targetDate) {
+        const targetISO = typeof targetDate === 'string' ? targetDate : toISO(targetDate);
+        for (const [weekKey, data] of Object.entries(state.weekDataCache || {})) {
+            const weekDays = data.weekDays || [];
+            if (weekDays.length > 0) {
+                const firstDay = weekDays[0];
+                const lastDay = weekDays[weekDays.length - 1];
+                if (targetISO >= firstDay && targetISO <= lastDay) {
+                    return { weekKey, data };
+                }
+            }
+        }
+        return null;
+    }
+
+    // Helper to calculate first available date from cached data
+    function getFirstAvailableFromCache(cachedData, city, region) {
+        if (!cachedData || !cachedData.events || !cachedData.weekDays) return null;
+
+        const today = startOfDay(new Date());
+        const tomorrowISO = toISO(new Date(today.getTime() + 86400000));
+
+        // Use cached data to find candidates
+        const candidates = findBestSlotStackingWithData(
+            city, cachedData.weekDays, cachedData.events, cachedData.availability, region
+        );
+
+        // Find first available from tomorrow onwards
+        const validCandidates = candidates.filter(c => c.dateStr >= tomorrowISO);

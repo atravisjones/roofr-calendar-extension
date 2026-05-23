@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Auto-Dialer</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --surface-hi: #334155;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #3b82f6;
+      --accent-hi: #60a5fa;
+      --success: #22c55e;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --radius: 8px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      background: var(--bg); color: var(--text);
+      font-family: var(--font); font-size: 14px;
+    }
+    .app { display: flex; flex-direction: column; height: 100vh; }
+
+    header {
+      padding: 10px 14px; background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    header h1 { margin: 0; font-size: 15px; font-weight: 600; }
+    header .meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; border-radius: 12px;
+      background: var(--surface-hi); font-size: 11px;
+    }
+    .pill .dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--muted);
+    }
+    .pill.ok .dot { background: var(--success); }
+    .pill.warn .dot { background: var(--warn); }
+    .pill.bad .dot { background: var(--danger); }
+
+    .controls {
+      padding: 10px 14px; background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex; gap: 8px; align-items: center;
+    }
+    button {
+      font: inherit; cursor: pointer; border: 1px solid var(--border);
+      background: var(--surface-hi); color: var(--text);
+      padding: 7px 12px; border-radius: var(--radius);
+      transition: background 120ms;
+    }
+    button:hover:not(:disabled) { background: var(--accent); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.primary { background: var(--accent); border-color: var(--accent); }
+    button.primary:hover:not(:disabled) { background: var(--accent-hi); }
+    button.danger { background: var(--danger); border-color: var(--danger); }
+    .stats { margin-left: auto; font-size: 11px; color: var(--muted); }
+
+    main { flex: 1; overflow-y: auto; padding: 14px; }
+
+    #current {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 14px; margin-bottom: 14px;
+    }
+    #current.empty { color: var(--muted); text-align: center; font-style: italic; }
+    .lead-name { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+    .lead-phone { font-size: 18px; font-weight: 500; color: var(--accent-hi); margin-bottom: 8px; }
+    .lead-meta { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+    .lead-meta span { margin-right: 10px; }
+    .phase {
+      display: inline-block; padding: 3px 10px; border-radius: 12px;
+      background: var(--surface-hi); font-size: 11px; text-transform: uppercase;
+      letter-spacing: 0.05em; margin-bottom: 10px;
+    }
+    .phase.dialing { background: var(--warn); color: #000; }
+    .phase.ringing { background: var(--warn); color: #000; animation: pulse 1s ease-in-out infinite alternate; }
+    .phase.connected { background: var(--success); color: #000; }
+    .phase.wrapup { background: var(--accent); }
+    .phase.failed { background: var(--danger); }
+    @keyframes pulse { from { opacity: 1; } to { opacity: 0.5; } }
+    .call-actions { display: flex; gap: 6px; margin-top: 8px; }
+
+    h2 { margin: 14px 0 6px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    #queue { list-style: none; margin: 0; padding: 0; }
+    #queue li {
+      background: var(--surface); border: 1px solid var(--border);
+      padding: 8px 10px; border-radius: var(--radius); margin-bottom: 6px;
+      font-size: 12px; display: flex; justify-content: space-between; align-items: center;
+    }
+    #queue li.locked { opacity: 0.5; }
+    #queue .meta { font-size: 10px; color: var(--muted); }
+    .tier { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--surface-hi); margin-right: 6px; }
+    .tier.t1 { background: #22c55e22; color: #4ade80; }
+    .tier.t2 { background: #f59e0b22; color: #fbbf24; }
+    .tier.t3 { background: #94a3b822; color: var(--muted); }
+
+    /* Wrap-up modal */
+    .scrim {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      display: none; align-items: center; justify-content: center; z-index: 100;
+    }
+    .scrim.show { display: flex; }
+    .modal {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px; width: 360px; max-width: 90%;
+    }
+    .modal h3 { margin: 0 0 10px 0; font-size: 15px; }
+    .modal label { display: block; font-size: 11px; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .modal select, .modal textarea {
+      width: 100%; padding: 8px; background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px; font: inherit;
+    }
+    .modal textarea { resize: vertical; min-height: 60px; }
+    .modal-actions { display: flex; gap: 8px; margin-top: 12px; }
+    .modal-actions button { flex: 1; }
+    .auto-advance {
+      font-size: 11px; color: var(--muted); margin-top: 8px; text-align: center;
+    }
+    .auto-advance a { color: var(--accent-hi); cursor: pointer; }
+
+    #log {
+      margin-top: 14px; padding: 8px 10px;
+      background: #0a0f1c; border: 1px solid var(--border); border-radius: var(--radius);
+      font-family: ui-monospace, "Cascadia Code", Menlo, monospace; font-size: 10px;
+      color: var(--muted); max-height: 120px; overflow-y: auto;
+    }
+    #log .ev { color: var(--accent-hi); }
+    #log .err { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div>
+        <h1>Auto-Dialer</h1>
+        <div class="meta">
+          <span id="rep-name">Rep: …</span> ·
+          <span id="ctm-pill" class="pill"><span class="dot"></span><span class="label">CTM: checking</span></span> ·
+          <span id="bridge-pill" class="pill"><span class="dot"></span><span class="label">Bridge: idle</span></span>
+        </div>
+      </div>
+      <button id="settings-btn" title="Open extension options">⚙</button>
+    </header>
+
+    <div class="controls">
+      <button id="start-btn" class="primary">▶ Start</button>
+      <button id="pause-btn" disabled>⏸ Pause</button>
+      <button id="stop-btn" class="danger" disabled>⏹ Stop</button>
+      <span class="stats">
+        <span id="queue-count">0</span> queued ·
+        <span id="t1-count">0</span> new ·
+        <span id="t2-count">0</span> follow-up
+      </span>
+    </div>
+
+    <main>
+      <div id="current" class="empty">Press <strong>Start</strong> to begin dialing.</div>
+
+      <h2>Queue (next 8)</h2>
+      <ul id="queue"></ul>
+
+      <h2>Event log</h2>
+      <div id="log"></div>
+    </main>
+  </div>
+
+  <div class="scrim" id="wrapup-scrim">
+    <div class="modal">
+      <h3 id="wrapup-title">Wrap up</h3>
+      <label for="wrapup-status">Status</label>
+      <select id="wrapup-status">
+        <option value="Connected">Connected — spoke to lead</option>
+        <option value="Left VM">Left Voicemail</option>
+        <option value="No Answer">No Answer</option>
+        <option value="Wrong Number">Wrong Number</option>
+        <option value="DNC">Do Not Call</option>
+        <option value="Resolved">Resolved (booked / lost)</option>
+        <option value="Follow-Up">Follow-Up (rep marks for retry)</option>
+      </select>
+      <label for="wrapup-notes">Note</label>
+      <textarea id="wrapup-notes" placeholder="Optional note for the sheet…"></textarea>
+      <div class="modal-actions">
+        <button id="wrapup-save-next" class="primary">Save → Next</button>
+        <button id="wrapup-save-stop">Save → Stop</button>
+      </div>
+      <div class="auto-advance" id="auto-advance"></div>
+    </div>
+  </div>
+
+  <script src="dialer-sources.js"></script>
+  <script src="dialer.js"></script>
+</body>
+</html>

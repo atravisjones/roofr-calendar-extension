@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Batch Dashboard — Roofr Calendar</title>
+    <style>
+        :root {
+            --bg: #f5f7fb; --fg: #0f172a; --muted: #6b7280; --border: #e5e7eb;
+            --accent: #3b82f6; --accent-light: #dbeafe; --accent-very-light: rgba(59,130,246,0.05);
+            --card: #ffffff;
+            --success: #10b981; --success-light: #d1fae5;
+            --error: #ef4444; --error-light: #fee2e2;
+            --warning: #f59e0b; --warning-light: #fef3c7;
+            --purple: #8b5cf6; --purple-light: #ede9fe;
+            --shadow: 0 1px 3px rgba(0,0,0,0.06);
+            --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+            --radius: 10px;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: var(--bg);
+            color: var(--fg);
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.5;
+        }
+
+        /* ── HEADER ── */
+        .header {
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+            padding: 14px 24px 12px;
+            position: sticky; top: 0; z-index: 10;
+            box-shadow: var(--shadow);
+        }
+
+        .header-row {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 10px;
+        }
+
+        .header h1 {
+            font-size: 18px; font-weight: 700;
+            display: flex; align-items: center; gap: 8px;
+        }
+
+        .header-actions { display: flex; gap: 8px; align-items: center; }
+
+        .btn-small {
+            font-size: 12px; padding: 4px 12px; border-radius: 6px;
+            border: 1px solid var(--border); background: var(--card);
+            color: var(--muted); cursor: pointer; font-weight: 500;
+        }
+        .btn-small:hover { background: #f8fafc; }
+
+        .phase-badge {
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 3px 12px; border-radius: 20px;
+            font-size: 12px; font-weight: 600;
+        }
+        .phase-idle { background: #f1f5f9; color: var(--muted); }
+        .phase-review { background: var(--accent-light); color: var(--accent); }
+        .phase-phase1 { background: var(--warning-light); color: #92400e; }
+        .phase-phase2 { background: var(--accent-light); color: var(--accent); }
+        .phase-phase3 { background: var(--purple-light); color: var(--purple); }
+        .phase-done { background: var(--success-light); color: #065f46; }
+        .phase-cancelled { background: var(--error-light); color: var(--error); }
+
+        .stats-bar {
+            display: flex; gap: 16px; font-size: 12px; color: var(--muted);
+            margin-bottom: 8px; flex-wrap: wrap;
+        }
+        .stat { display: flex; align-items: center; gap: 4px; }
+        .stat-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+
+        .phase-steps {
+            display: flex; align-items: center; gap: 3px;
+            font-size: 11px; margin-bottom: 8px;
+        }
+        .phase-step {
+            padding: 2px 8px; border-radius: 4px;
+            color: var(--muted); background: #f1f5f9;
+            font-weight: 500;
+        }
+        .phase-step.active { background: var(--accent); color: white; }
+        .phase-step.complete { background: var(--success-light); color: #065f46; }
+        .phase-connector { width: 10px; height: 1px; background: var(--border); }
+
+        .progress-track {
+            height: 5px; background: #e2e8f0; border-radius: 3px; overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%; background: var(--accent); border-radius: 3px;
+            transition: width 0.4s ease;
+        }
+        .progress-fill.done { background: var(--success); }
+        .progress-fill.cancelled { background: var(--error); }
+
+        /* ── MAIN LAYOUT ── */
+        .main {
+            display: flex; gap: 16px; padding: 16px 24px;
+            max-width: 1440px; margin: 0 auto;
+            min-height: calc(100vh - 110px);
+        }
+
+        .appointments-col { flex: 1; min-width: 0; }
+
+        .log-col {
+            width: 420px; flex-shrink: 0;
+            position: sticky; top: 110px;
+            height: calc(100vh - 130px);
+            display: flex; flex-direction: column;
+        }
+
+        /* ── REP GROUPS ── */
+        .rep-group { margin-bottom: 14px; }
+
+        .rep-header {
+            font-size: 13px; font-weight: 700; color: var(--accent);
+            padding: 4px 0 4px 2px;
+            display: flex; align-items: center; gap: 8px;
+        }
+
+        .rep-count {
+            font-size: 11px; font-weight: 500; color: var(--muted);
+            background: #f1f5f9; padding: 1px 7px; border-radius: 10px;
+        }
+
+        /* ── APPOINTMENT CARDS ── */
+        .apt-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-left: 4px solid #d1d5db;
+            border-radius: var(--radius);
+            padding: 10px 14px;
+            margin-bottom: 6px;
+            box-shadow: var(--shadow);
+            transition: border-color 0.2s, opacity 0.2s;
+        }
+        .apt-card.s-done { border-left-color: var(--success); }
+        .apt-card.s-error { border-left-color: var(--error); }
+        .apt-card.s-active {
+            border-left-color: var(--accent);
+            animation: pulse-border 1.5s ease-in-out infinite;
+        }
+        .apt-card.s-skipped { border-left-color: #e5e7eb; opacity: 0.55; }
+        .apt-card.s-skipped .apt-addr { text-decoration: line-through; }
+        .apt-card.review-highlight { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+        @keyframes pulse-border {
+            0%, 100% { border-left-color: var(--accent); }
+            50% { border-left-color: #93c5fd; }
+        }
+
+        .apt-row {
+            display: flex; align-items: center; gap: 8px;
+        }
+
+        .apt-cb {
+            width: 16px; height: 16px; accent-color: var(--accent);
+            cursor: pointer; flex-shrink: 0;
+        }
+
+        .apt-time {
+            font-size: 12px; font-weight: 600; color: var(--fg);
+            white-space: nowrap; min-width: 90px;
+        }
+
+        .apt-addr {
+            font-size: 12px; color: var(--fg); flex: 1; min-width: 0;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+
+        .apt-badge {
+            font-size: 10px; font-weight: 600;
+            padding: 2px 8px; border-radius: 10px; white-space: nowrap;
+        }
+        .badge-done { background: var(--success-light); color: #065f46; }
+        .badge-error { background: var(--error-light); color: var(--error); }
+        .badge-skipped { background: #f1f5f9; color: var(--muted); }
+        .badge-queued { background: var(--accent-light); color: var(--accent); }
+        .badge-pending { background: #f1f5f9; color: var(--muted); }
+
+        .apt-meta {
+            display: flex; align-items: center; gap: 10px;
+            margin-top: 4px; padding-left: 24px; font-size: 11px;
+        }
+
+        .apt-ind { display: flex; align-items: center; gap: 3px; color: var(--muted); }
+        .apt-ind.ok { color: var(--success); font-weight: 500; }
+
+        .apt-link {
+            color: var(--accent); text-decoration: none; font-weight: 500;
+            font-size: 11px;
+        }
+        .apt-link:hover { text-decoration: underline; }
+
+        /* ── LOG PANEL ── */
+        .log-panel {
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: var(--radius); box-shadow: var(--shadow);
+            display: flex; flex-direction: column; overflow: hidden; height: 100%;
+        }
+
+        .log-top {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 8px 12px; border-bottom: 1px solid var(--border);
+            font-size: 13px; font-weight: 600;
+        }
+
+        .log-entries {
+            flex: 1; overflow-y: auto; padding: 6px 12px;
+            font-family: 'SF Mono', Consolas, Monaco, 'Courier New', monospace;
+            font-size: 11px; line-height: 1.7;
+        }
+
+        .le { padding: 0 0 1px; word-break: break-word; }
+        .le .lt { color: var(--muted); margin-right: 4px; }
+        .le.l-success { color: var(--success); }
+        .le.l-error { color: var(--error); }
+
+        /* ── EMPTY STATE ── */
+        .empty {
+            text-align: center; padding: 80px 20px; color: var(--muted);
+        }
+        .empty-icon { font-size: 42px; margin-bottom: 14px; opacity: 0.35; }
+        .empty-title { font-size: 16px; font-weight: 600; color: var(--fg); margin-bottom: 6px; }
+        .empty-text { font-size: 13px; }
+
+        /* ── RESPONSIVE ── */
+        @media (max-width: 960px) {
+            .main { flex-direction: column; }
+            .log-col { width: 100%; position: static; height: 320px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-row">
+            <h1>Batch Dashboard</h1>
+            <div class="header-actions">
+                <div id="phase-badge" class="phase-badge phase-idle">Waiting...</div>
+                <button class="btn-small" id="refresh-btn" title="Request latest state">Refresh</button>
+            </div>
+        </div>
+        <div id="stats-bar" class="stats-bar">
+            <span>No data — parse a schedule in the side panel</span>
+        </div>
+        <div id="phase-steps" class="phase-steps" style="display: none;">
+            <span class="phase-step" data-phase="review">Review</span>
+            <span class="phase-connector"></span>
+            <span class="phase-step" data-phase="phase1">Owners</span>
+            <span class="phase-connector"></span>
+            <span class="phase-step" data-phase="phase2">Calendar</span>
+            <span class="phase-connector"></span>
+            <span class="phase-step" data-phase="phase3">Remaining</span>
+        </div>
+        <div class="progress-track">
+            <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+        </div>
+    </div>
+
+    <div class="main">
+        <div class="appointments-col" id="apt-col">
+            <div class="empty">
+                <div class="empty-icon">📋</div>
+                <div class="empty-title">No Appointments Yet</div>
+                <div class="empty-text">Parse a schedule report in the side panel to see appointments here.</div>
+            </div>
+        </div>
+        <div class="log-col">
+            <div class="log-panel">
+                <div class="log-top">
+                    <span>Live Log</span>
+                    <button class="btn-small" id="clear-log">Clear</button>
+                </div>
+                <div class="log-entries" id="log-entries"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const channel = new BroadcastChannel('roofr-batch-dashboard');
+
+        let state = {
+            appointments: [], phase: 'idle',
+            progress: { current: 0, total: 0 },
+            reviewBatchStart: 0, reviewBatchSize: 8,
+            isRunning: false, isPaused: false
+        };
+        let logs = [];
+        let autoScroll = true;
+
+        const $aptCol = document.getElementById('apt-col');
+        const $logEntries = document.getElementById('log-entries');
+        const $phaseBadge = document.getElementById('phase-badge');
+        const $statsBar = document.getElementById('stats-bar');
+        const $phaseSteps = document.getElementById('phase-steps');
+        const $progressFill = document.getElementById('progress-fill');
+
+        channel.onmessage = (e) => {
+            const msg = e.data;
+            switch (msg.type) {
+                case 'BATCH_FULL_STATE':
+                    state = msg.data;
+                    render();
+                    break;
+                case 'BATCH_LOG':
+                    addLog(msg);
+                    break;
+                case 'BATCH_LOG_HISTORY':
+                    if (msg.logs) {
+                        $logEntries.innerHTML = '';
+                        logs = [];
+                        for (const l of msg.logs) addLog(l);
+                    }
+                    break;
+            }
+        };
+
+        // Request state on load
+        channel.postMessage({ type: 'DASHBOARD_CONNECTED' });
+
+        document.getElementById('refresh-btn').onclick = () => {
+            channel.postMessage({ type: 'DASHBOARD_CONNECTED' });
+        };
+
+        document.getElementById('clear-log').onclick = () => {
+            logs = [];
+            $logEntries.innerHTML = '';
+        };
+
+        $logEntries.addEventListener('scroll', () => {
+            autoScroll = $logEntries.scrollTop + $logEntries.clientHeight >= $logEntries.scrollHeight - 30;
+        });
+
+        function addLog(entry) {
+            const log = {
+                message: entry.message,
+                type: entry.logType || 'info',
+                timestamp: entry.timestamp || new Date().toLocaleTimeString()
+            };
+            logs.push(log);
+
+            const div = document.createElement('div');
+            div.className = `le l-${log.type}`;
+            div.innerHTML = `<span class="lt">[${esc(log.timestamp)}]</span>${esc(log.message)}`;
+            $logEntries.appendChild(div);
+
+            if (autoScroll) $logEntries.scrollTop = $logEntries.scrollHeight;
+        }
+
+        function render() {
+            renderStats();
+            renderPhase();
+            renderProgress();
+            renderAppointments();
+        }
+
+        function renderStats() {
+            const a = state.appointments;
+            if (!a.length) {
+                $statsBar.innerHTML = '<span>No data — parse a schedule in the side panel</span>';
+                return;
+            }
+            const approved = a.filter(x => x.approved).length;
+            const done = a.filter(x => x.status === 'done').length;
+            const errors = a.filter(x => x.status === 'error').length;
+            const skipped = a.filter(x => !x.approved || x.status === 'skipped').length;
+            const pending = a.filter(x => x.approved && x.status === 'pending').length;
+
+            let h = `<span class="stat"><span class="stat-dot" style="background:var(--fg)"></span>${a.length} total</span>`;
+            h += `<span class="stat"><span class="stat-dot" style="background:var(--accent)"></span>${approved} approved</span>`;
+            if (done) h += `<span class="stat"><span class="stat-dot" style="background:var(--success)"></span>${done} done</span>`;
+            if (errors) h += `<span class="stat"><span class="stat-dot" style="background:var(--error)"></span>${errors} errors</span>`;
+            if (skipped) h += `<span class="stat"><span class="stat-dot" style="background:#d1d5db"></span>${skipped} skipped</span>`;
+            if (pending) h += `<span class="stat"><span class="stat-dot" style="background:var(--warning)"></span>${pending} pending</span>`;
+            $statsBar.innerHTML = h;
+        }
+
+        function renderPhase() {
+            const labels = {
+                idle: 'Idle', review: 'Reviewing',
+                phase1: 'Phase 1: Setting Owners', phase2: 'Phase 2: Calendar Updates',
+                phase3: 'Phase 3: Remaining Jobs', done: 'Complete', cancelled: 'Cancelled'
+            };
+            const label = labels[state.phase] || state.phase;
+            $phaseBadge.className = `phase-badge phase-${state.phase}`;
+            $phaseBadge.textContent = state.isPaused ? `${label} (Paused)` : label;
+
+            if (state.appointments.length) {
+                $phaseSteps.style.display = 'flex';
+                const phases = ['review', 'phase1', 'phase2', 'phase3'];
+                const ci = phases.indexOf(state.phase);
+                $phaseSteps.querySelectorAll('.phase-step').forEach(s => {
+                    const si = phases.indexOf(s.dataset.phase);
+                    s.classList.remove('active', 'complete');
+                    if (state.phase === 'done') s.classList.add('complete');
+                    else if (s.dataset.phase === state.phase) s.classList.add('active');
+                    else if (si < ci && ci >= 0) s.classList.add('complete');
+                });
+            } else {
+                $phaseSteps.style.display = 'none';
+            }
+        }
+
+        function renderProgress() {
+            const approved = state.appointments.filter(a => a.approved);
+            const done = approved.filter(a => a.status === 'done' || a.status === 'error').length;
+            const pct = approved.length ? (done / approved.length) * 100 : 0;
+            $progressFill.style.width = pct + '%';
+            $progressFill.className = 'progress-fill' +
+                (state.phase === 'done' ? ' done' : state.phase === 'cancelled' ? ' cancelled' : '');
+        }
+
+        function renderAppointments() {
+            const a = state.appointments;
+            if (!a.length) {
+                $aptCol.innerHTML = `<div class="empty">
+                    <div class="empty-icon">📋</div>
+                    <div class="empty-title">No Appointments Yet</div>
+                    <div class="empty-text">Parse a schedule report in the side panel to see appointments here.</div>
+                </div>`;
+                return;
+            }
+
+            const groups = {};
+            a.forEach((apt, i) => {
+                if (!groups[apt.rep]) groups[apt.rep] = [];
+                groups[apt.rep].push({ ...apt, _i: i });
+            });
+
+            let h = '';
+            for (const [rep, apts] of Object.entries(groups)) {
+                const d = apts.filter(x => x.status === 'done').length;
+                h += `<div class="rep-group"><div class="rep-header">${esc(rep)}<span class="rep-count">${d}/${apts.length}</span></div>`;
+
+                for (const apt of apts) {
+                    const sc = apt.status === 'done' ? 's-done'
+                        : apt.status === 'error' ? 's-error'
+                        : (apt.status === 'skipped' || !apt.approved) ? 's-skipped'
+                        : (state.isRunning && apt.approved) ? 's-active' : '';
+
+                    const inBatch = state.phase === 'review' &&
+                        apt._i >= state.reviewBatchStart &&
+                        apt._i < state.reviewBatchStart + state.reviewBatchSize;
+                    const hl = inBatch ? ' review-highlight' : '';
+                    const ck = apt.approved ? ' checked' : '';
+                    const dis = state.isRunning ? ' disabled' : '';
+
+                    h += `<div class="apt-card ${sc}${hl}" data-i="${apt._i}">
+                        <div class="apt-row">
+                            <input type="checkbox" class="apt-cb"${ck}${dis} data-i="${apt._i}">
+                            <span class="apt-time">${esc(apt.startTime)}${apt.endTime ? '–' + esc(apt.endTime) : ''}</span>
+                            <span class="apt-addr" title="${esc(apt.address)}">${esc(apt.address)}</span>
+                            ${badge(apt)}
+                        </div>
+                        <div class="apt-meta">
+                            <span class="apt-ind${apt.calendarAdded ? ' ok' : ''}">${apt.calendarAdded ? '✓' : '○'} Cal</span>
+                            <span class="apt-ind${apt.jobCardAdded ? ' ok' : ''}">${apt.jobCardAdded ? '✓' : '○'} Owner</span>
+                            ${apt.jobUrl ? `<a href="${esc(apt.jobUrl)}" target="_blank" class="apt-link">View Job ↗</a>` : ''}
+                        </div>
+                    </div>`;
+                }
+                h += '</div>';
+            }
+            $aptCol.innerHTML = h;
+
+            $aptCol.querySelectorAll('.apt-cb').forEach(cb => {
+                cb.addEventListener('change', (e) => {
+                    const i = parseInt(e.target.dataset.i);
+                    const approved = e.target.checked;
+                    state.appointments[i].approved = approved;
+                    channel.postMessage({ type: 'BATCH_TOGGLE_APPROVED', index: i, approved });
+                    render();
+                });
+            });
+        }
+
+        function badge(apt) {
+            if (apt.status === 'done') return `<span class="apt-badge badge-done">✓ Done</span>`;
+            if (apt.status === 'error') return `<span class="apt-badge badge-error">✗ Error</span>`;
+            if (apt.status === 'skipped' || !apt.approved) return `<span class="apt-badge badge-skipped">⊘ Skipped</span>`;
+            if (state.isRunning) return `<span class="apt-badge badge-queued">● Queued</span>`;
+            return `<span class="apt-badge badge-pending">○ Pending</span>`;
+        }
+
+        function esc(s) {
+            if (!s) return '';
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        render();
+    </script>
+</body>
+</html>

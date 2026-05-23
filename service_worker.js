@@ -10,7 +10,7 @@ const SEED_DEFAULTS = {
     AVAIL_RANGE_SOUTH: "I10:Q17",
 
     // People Lists (Comma separated defaults)
-    PEOPLE_REPS: "Ashkan Etemadi, Brandon Cook, Brett Jackson, Brian Griggs, Chandler Duffy, Christian Noren, Cole Ludewig, Joseph Simms, Justin Parker, Kyle Ludewig, London Smith, Nick Williams, Oliver Johnson, Phil Merrell, Richard Hadsall, Ted Pear, William Ludewig, William Yost",
+    PEOPLE_REPS: "Chandler Duffy, Christian Noren, Connor Hamby, Jonathan Marino, Josh Jewett, Justin Parker, London Smith, Nick Williams, Orlando Chavarria, Richard Hadsall, Stephen Chaidez, Tanner Broadbent",
     PEOPLE_MGMT: "Andrew Clark, Anthony Bonomo, Bradley Crohurst, Brenda Ochoa, Yousef Ayad",
     PEOPLE_CSRS: "Bronté Pisz, Diva Shahpur, Layla Fairfield, Madison Meyers, Nica Javier, Raven Pelfrey, Travis Jones",
     PEOPLE_PRODUCTION: "Jayda Fairfield, Justin Saiz",
@@ -30,8 +30,8 @@ const SEED_DEFAULTS = {
     // Tab visibility defaults
     show_job_sorting: false,
     show_people: true,
-    show_clipboard: false,
-    show_reports: false,
+    show_clipboard: true,  // Fixed: was false, now matches options.js default
+    show_reports: true,
     // Interface behavior
     show_dock_note: true,
     default_tab: "scanner",
@@ -39,7 +39,7 @@ const SEED_DEFAULTS = {
     show_date_picker: true,
     show_team_selector: true,
     show_refresh_button: true,
-    auto_expand_days: true,
+    auto_expand_days: false,  // Default to collapsed
     show_tab_badges: true,
     global_panel_mode: true,
 
@@ -84,16 +84,16 @@ const SEED_DEFAULTS = {
     phone_search_auto_open: true,
 
     // =====================
-    // CALLRAIL SETTINGS
+    // CTM (CALLTRACKINGMETRICS) SETTINGS
     // =====================
-    callrail_enabled: false,
-    callrail_user: "",
-    callrail_display_name: "",
-    callrail_auto_search: true,
-    callrail_show_notifications: true,
-    callrail_show_active_calls: true,
-    callrail_auto_open_lead_center: true,
-    callrail_group_tabs: true,
+    ctm_enabled: false,
+    ctm_user: "",
+    ctm_display_name: "",
+    ctm_auto_search: true,
+    ctm_show_notifications: true,
+    ctm_show_active_calls: true,
+    ctm_auto_open_calls_page: true,
+    ctm_group_tabs: true,
 
     // =====================
     // JOB SORTING SETTINGS
@@ -158,10 +158,19 @@ const SEED_DEFAULTS = {
 const PREFS_KEY = 'roofr_user_prefs';
 const ROOFR_DOMAIN = "app.roofr.com";
 const ROOFR_CONTACTS_URL = "https://app.roofr.com/dashboard/team/239329/contacts";
-const CALLRAIL_URL = "https://app.callrail.com/lead-center/a/629065099/agent-tool/dialer/call?company_id=459564228";
-const CALLRAIL_LEAD_CENTER_BASE = "https://app.callrail.com/lead-center";
-const CALLRAIL_CHECK_ALARM = "callrail_lead_center_check";
-const CALLRAIL_CHECK_INTERVAL_MINUTES = 10;
+const ROOFR_TEAM_ID = "239329";
+const ROOFR_API_BASE = "https://app.roofr.com/api";
+
+// Supabase (roofr-search) — public read-only, no auth cookies needed
+const SUPABASE_URL = "https://ucfqgkbkxbztxlyniuph.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVjZnFna2JreGJ6dHhseW5pdXBoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzNjI1ODQsImV4cCI6MjA4OTkzODU4NH0.iIRHU4pxcVSMiWAcjtMgUsAVfwRnl90zg4Zkg0Fe4a0";
+
+// CTM (CallTrackingMetrics) Constants
+const CTM_URL = "https://app.calltrackingmetrics.com/calls";
+const CTM_CALLS_BASE = "https://app.calltrackingmetrics.com";
+const CTM_CHECK_ALARM = "ctm_calls_page_check";
+const CTM_CHECK_INTERVAL_MINUTES = 10;
+
 
 // ========================================
 // AUTO-UPDATE CONFIGURATION
@@ -360,29 +369,15 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     }
 });
 
-// Listen for preference updates from popup.js and CallRail incoming calls
+// Listen for preference updates from popup.js and CTM incoming calls
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg.type === "CALLRAIL_INCOMING_CALL") {
-        // Pass caller name for tab group title and windowId for window isolation
-        // Use sender's tab windowId if message came from content script, otherwise use msg.windowId
-        const windowId = msg.windowId || (sender.tab ? sender.tab.windowId : null);
-        handleCallRailIncomingCall(msg.phoneNumber, msg.formattedPhone, false, msg.callerName, windowId)
-            .then(result => {
-                console.log('[Service Worker] CallRail call handled:', result);
-            })
-            .catch(err => {
-                console.error('[Service Worker] Error handling CallRail call:', err);
-            });
-        return false; // No response needed
-    }
-
     // Open contacts page and search for a specific phone number (triggered from popup UI)
     if (msg.type === "OPEN_CONTACTS_FOR_PHONE") {
         // Pass true to skip enabled check since this is a manual user action
         // Pass caller name for tab group title and windowId for window isolation
         // Use sender's tab windowId if message came from content script, otherwise use msg.windowId
         const windowId = msg.windowId || (sender.tab ? sender.tab.windowId : null);
-        handleCallRailIncomingCall(msg.phoneNumber, msg.formattedPhone, true, msg.callerName, windowId)
+        handleCtmIncomingCall(msg.phoneNumber, msg.formattedPhone, true, msg.callerName, windowId)
             .then(result => {
                 sendResponse({ ok: true, result });
             })
@@ -390,23 +385,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 sendResponse({ ok: false, error: err.message });
             });
         return true; // Async response
-    }
-
-    // Clear tracking for a specific phone number (called when call ends)
-    if (msg.type === "CALLRAIL_CALL_ENDED") {
-        if (msg.phoneNumber) {
-            openedCallPhones.delete(msg.phoneNumber);
-            console.log('[Service Worker] Cleared tracking for ended call:', msg.phoneNumber);
-        }
-        return false;
-    }
-
-    // Clear all tracking when CallRail page loads/refreshes
-    // This ensures active calls are re-detected after a page refresh
-    if (msg.type === "CALLRAIL_PAGE_LOADED") {
-        openedCallPhones.clear();
-        console.log('[Service Worker] CallRail page loaded, cleared all call tracking');
-        return false;
     }
 
     if (msg.type === "UPDATE_PANEL_BEHAVIOR") {
@@ -441,76 +419,268 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return false;
     }
 
-    // Open CallRail tab if requested or not already open (in target window if specified)
-    if (msg.type === "OPEN_CALLRAIL") {
+    // =====================================================
+    // CTM (CALLTRACKINGMETRICS) MESSAGE HANDLERS
+    // =====================================================
+
+    // Handle incoming CTM call
+    if (msg.type === "CTM_INCOMING_CALL") {
+        const windowId = msg.windowId || (sender.tab ? sender.tab.windowId : null);
+        handleCtmIncomingCall(
+            msg.phoneNumber,
+            msg.formattedPhone,
+            false,                          // skipEnabledCheck
+            msg.callerName,
+            windowId,
+            msg.agentName || null,          // agentName
+            msg.isAnswered || false         // isAnswered
+        )
+            .then(result => {
+                console.log('[Service Worker] CTM call handled:', result);
+            })
+            .catch(err => {
+                console.error('[Service Worker] Error handling CTM call:', err);
+            });
+        return false;
+    }
+
+    // Clear tracking for a specific phone number when CTM call ends
+    if (msg.type === "CTM_CALL_ENDED") {
+        if (msg.phoneNumber) {
+            openedCtmCallPhones.delete(msg.phoneNumber);
+            console.log('[Service Worker] Cleared CTM tracking for ended call:', msg.phoneNumber);
+        }
+        return false;
+    }
+
+    // Clear all CTM tracking when CTM page loads/refreshes
+    if (msg.type === "CTM_PAGE_LOADED") {
+        openedCtmCallPhones.clear();
+        console.log('[Service Worker] CTM page loaded, cleared all CTM call tracking');
+        return false;
+    }
+
+    // Batch phone lookup — check which phones exist in Supabase
+    if (msg.type === "BATCH_PHONE_LOOKUP") {
         (async () => {
             try {
-                // Check if CallRail is already open in target window
-                const queryOpts = { url: '*://app.callrail.com/*' };
-                if (msg.windowId) queryOpts.windowId = msg.windowId;
-                const callrailTabs = await chrome.tabs.query(queryOpts);
-                if (callrailTabs.length > 0) {
-                    // Focus existing tab
-                    await chrome.tabs.update(callrailTabs[0].id, { active: true });
-                    await chrome.windows.update(callrailTabs[0].windowId, { focused: true });
-                    console.log('[Service Worker] Focused existing CallRail tab');
-                } else {
-                    // Open new CallRail tab in target window
-                    const createOpts = { url: CALLRAIL_URL, active: true };
-                    if (msg.windowId) createOpts.windowId = msg.windowId;
-                    await chrome.tabs.create(createOpts);
-                    console.log('[Service Worker] Opened new CallRail tab');
+                const phones = msg.phones || [];
+                if (phones.length === 0) {
+                    sendResponse({ ok: true, matches: {} });
+                    return;
                 }
+
+                // Normalize all phones to 10 digits
+                const normalized = phones.map(p => {
+                    let n = p.replace(/\D/g, '');
+                    if (n.length === 11 && n.startsWith('1')) n = n.substring(1);
+                    return n.length === 10 ? n : null;
+                }).filter(Boolean);
+
+                if (normalized.length === 0) {
+                    sendResponse({ ok: true, matches: {} });
+                    return;
+                }
+
+                // Supabase IN query: phone=in.(num1,num2,num3)
+                const inList = normalized.join(',');
+                const url = `${SUPABASE_URL}/rest/v1/jobs?phone=in.(${inList})&select=job_id,customer,address,phone&order=created_at.desc`;
+
+                const resp = await fetch(url, {
+                    headers: {
+                        'apikey': SUPABASE_ANON_KEY,
+                        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+                        'Accept': 'application/json'
+                    }
+                });
+
+                if (!resp.ok) {
+                    console.log('[Service Worker] Batch lookup HTTP error:', resp.status);
+                    sendResponse({ ok: false, error: `HTTP ${resp.status}` });
+                    return;
+                }
+
+                const jobs = await resp.json();
+
+                // Group by phone — most recent job first (already ordered by created_at desc)
+                const matches = {};
+                for (const job of jobs) {
+                    if (!job.phone) continue;
+                    if (!matches[job.phone]) {
+                        matches[job.phone] = [];
+                    }
+                    matches[job.phone].push({
+                        job_id: job.job_id,
+                        customer: job.customer || 'Unknown',
+                        address: job.address || '',
+                        jobUrl: `https://app.roofr.com/dashboard/team/${ROOFR_TEAM_ID}/jobs/details/${job.job_id}`
+                    });
+                }
+
+                console.log('[Service Worker] Batch lookup:', normalized.length, 'phones →', Object.keys(matches).length, 'matched');
+                sendResponse({ ok: true, matches });
+            } catch (err) {
+                console.error('[Service Worker] Batch lookup error:', err);
+                sendResponse({ ok: false, error: err.message });
+            }
+        })();
+        return true; // Async response
+    }
+
+    // Open a specific job card directly (from job matches dropdown)
+    if (msg.type === "OPEN_JOB_DIRECT") {
+        (async () => {
+            try {
+                const jobUrl = msg.jobUrl;
+                const customerName = msg.customerName || 'Unknown';
+                const senderWindowId = msg.windowId || (sender.tab ? sender.tab.windowId : null);
+
+                console.log('[Service Worker] Opening job directly:', jobUrl);
+
+                // Find CTM tab to position next to
+                const ctmQueryOpts = { url: '*://app.calltrackingmetrics.com/*' };
+                if (senderWindowId) ctmQueryOpts.windowId = senderWindowId;
+                const ctmTabs = await chrome.tabs.query(ctmQueryOpts);
+
+                let ctmTabIndex = -1;
+                let ctmWindowId = null;
+                if (ctmTabs.length > 0) {
+                    ctmTabIndex = ctmTabs[0].index;
+                    ctmWindowId = ctmTabs[0].windowId;
+                }
+
+                // Find existing Roofr tab to reuse, or create new
+                const roofrQueryOpts = { url: '*://app.roofr.com/*' };
+                if (senderWindowId) roofrQueryOpts.windowId = senderWindowId;
+                else if (ctmWindowId) roofrQueryOpts.windowId = ctmWindowId;
+                const roofrTabs = await chrome.tabs.query(roofrQueryOpts);
+
+                const reusableTab = roofrTabs.find(tab => tab.url && (tab.url.includes('/contacts') || tab.url.includes('/jobs/')));
+
+                let targetTab;
+                if (reusableTab) {
+                    targetTab = reusableTab;
+                    await chrome.tabs.update(targetTab.id, { url: jobUrl, active: true });
+                    await chrome.windows.update(targetTab.windowId, { focused: true });
+                    if (ctmTabIndex >= 0 && targetTab.index !== ctmTabIndex + 1) {
+                        await chrome.tabs.move(targetTab.id, { index: ctmTabIndex + 1 });
+                    }
+                } else {
+                    const createOptions = { url: jobUrl, active: true };
+                    if (ctmTabIndex >= 0) createOptions.index = ctmTabIndex + 1;
+                    if (senderWindowId) createOptions.windowId = senderWindowId;
+                    else if (ctmWindowId) createOptions.windowId = ctmWindowId;
+                    targetTab = await chrome.tabs.create(createOptions);
+                }
+
+                // Tab group with customer name
+                const groupTabsSetting = await chrome.storage.sync.get({ ctm_group_tabs: true });
+                if (customerName && groupTabsSetting.ctm_group_tabs !== false) {
+                    try {
+                        const displayName = getDisplayName(customerName);
+                        await waitForTabLoad(targetTab.id);
+                        const tabInfo = await chrome.tabs.get(targetTab.id);
+
+                        if (tabInfo.groupId && tabInfo.groupId !== -1) {
+                            await chrome.tabGroups.update(tabInfo.groupId, {
+                                title: displayName,
+                                color: 'cyan'
+                            });
+                        } else {
+                            const groupId = await chrome.tabs.group({ tabIds: [targetTab.id] });
+                            await chrome.tabGroups.update(groupId, {
+                                title: displayName,
+                                color: 'cyan',
+                                collapsed: false
+                            });
+                        }
+                    } catch (groupError) {
+                        console.warn('[Service Worker] Tab group error:', groupError);
+                    }
+                }
+
+                console.log('[Service Worker] Job opened:', jobUrl);
             } catch (e) {
-                console.error('[Service Worker] Error opening CallRail:', e);
+                console.error('[Service Worker] Error opening job:', e);
             }
         })();
         return false;
     }
 
-    // Check if CallRail is enabled (for content script)
-    if (msg.type === "CHECK_CALLRAIL_ENABLED") {
+    // Open CTM tab if requested or not already open
+    if (msg.type === "OPEN_CTM") {
         (async () => {
             try {
-                const settings = await chrome.storage.sync.get({ callrail_enabled: false });
-                sendResponse({ enabled: settings.callrail_enabled });
+                const queryOpts = { url: '*://app.calltrackingmetrics.com/*' };
+                if (msg.windowId) queryOpts.windowId = msg.windowId;
+                const ctmTabs = await chrome.tabs.query(queryOpts);
+                if (ctmTabs.length > 0) {
+                    await chrome.tabs.update(ctmTabs[0].id, { active: true });
+                    await chrome.windows.update(ctmTabs[0].windowId, { focused: true });
+                    console.log('[Service Worker] Focused existing CTM tab');
+                } else {
+                    const createOpts = { url: CTM_URL, active: true };
+                    if (msg.windowId) createOpts.windowId = msg.windowId;
+                    await chrome.tabs.create(createOpts);
+                    console.log('[Service Worker] Opened new CTM tab');
+                }
             } catch (e) {
-                sendResponse({ enabled: false }); // Default to disabled on error
+                console.error('[Service Worker] Error opening CTM:', e);
             }
         })();
-        return true; // Async response
+        return false;
     }
 
-    // Get CallRail settings for content script (content scripts can't access storage directly in MV3)
-    if (msg.type === "GET_CALLRAIL_SETTINGS") {
+    // Check if CTM is enabled
+    if (msg.type === "CHECK_CTM_ENABLED") {
+        (async () => {
+            try {
+                const settings = await chrome.storage.sync.get({ ctm_enabled: false });
+                sendResponse({ enabled: settings.ctm_enabled });
+            } catch (e) {
+                sendResponse({ enabled: false });
+            }
+        })();
+        return true;
+    }
+
+    // Get CTM settings for content script
+    if (msg.type === "GET_CTM_SETTINGS") {
         (async () => {
             try {
                 const rawSettings = await chrome.storage.sync.get({
-                    callrail_enabled: false,
-                    callrail_csr: '',            // The CSR selected from popup modal "Start Calls"
-                    callrail_user: '',           // The CSR from settings page dropdown
-                    callrail_display_name: ''    // Optional: name as it appears in CallRail
+                    ctm_enabled: false,
+                    ctm_csr: '',
+                    ctm_user: '',
+                    ctm_display_name: '',
+                    // New CTM settings
+                    ctm_auto_search: true,
+                    ctm_show_notifications: true,
+                    ctm_show_active_calls: true,
+                    ctm_group_tabs: true
                 });
-                // Priority: callrail_csr (popup modal) > callrail_display_name > callrail_user (settings page)
-                // The popup modal "Start Calls" saves to callrail_csr
-                // The settings page saves to callrail_user
-                const primaryCsr = rawSettings.callrail_csr || rawSettings.callrail_display_name || rawSettings.callrail_user;
+                const primaryCsr = rawSettings.ctm_csr || rawSettings.ctm_display_name || rawSettings.ctm_user;
                 const settings = {
-                    callrail_enabled: rawSettings.callrail_enabled,
-                    callrail_csr: primaryCsr,
-                    callrail_user: rawSettings.callrail_user,
-                    callrail_display_name: rawSettings.callrail_display_name
+                    ctm_enabled: rawSettings.ctm_enabled,
+                    ctm_csr: primaryCsr,
+                    ctm_user: rawSettings.ctm_user,
+                    ctm_display_name: rawSettings.ctm_display_name,
+                    // New CTM settings
+                    ctm_auto_search: rawSettings.ctm_auto_search,
+                    ctm_show_notifications: rawSettings.ctm_show_notifications,
+                    ctm_show_active_calls: rawSettings.ctm_show_active_calls,
+                    ctm_group_tabs: rawSettings.ctm_group_tabs
                 };
-                console.log('[Service Worker] CallRail settings:', settings);
+                console.log('[Service Worker] CTM settings:', settings);
                 sendResponse({ success: true, settings });
             } catch (e) {
                 sendResponse({
                     success: false,
-                    settings: { callrail_enabled: false, callrail_csr: '', callrail_user: '', callrail_display_name: '' }
+                    settings: { ctm_enabled: false, ctm_csr: '', ctm_user: '', ctm_display_name: '', ctm_auto_search: true, ctm_show_notifications: true, ctm_show_active_calls: true, ctm_group_tabs: true }
                 });
             }
         })();
-        return true; // Async response
+        return true;
     }
 
     // Set auto scan pending flag in session storage (content scripts can't access storage directly in MV3)
@@ -565,187 +735,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // Track which phone numbers have already been opened (prevents duplicate opens)
-const openedCallPhones = new Set();
+const openedCtmCallPhones = new Set();   // CTM tracking
 
 // Clear opened calls tracking after 30 minutes (in case of long sessions)
 setInterval(() => {
-    openedCallPhones.clear();
-    console.log('[Service Worker] Cleared opened calls tracking');
+    openedCtmCallPhones.clear();
+    console.log('[Service Worker] Cleared opened calls tracking (CTM)');
 }, 30 * 60 * 1000);
-
-// Handle incoming CallRail calls - opens/focuses Roofr contacts and searches for phone number
-// skipEnabledCheck: if true, bypass the callrail_enabled setting check AND duplicate tracking (used for manual UI triggers)
-// callerName: optional name to use for tab group title
-// targetWindowId: optional window ID to constrain all tab operations to a specific browser window
-async function handleCallRailIncomingCall(phoneNumber, formattedPhone, skipEnabledCheck = false, callerName = null, targetWindowId = null) {
-    console.log('[Service Worker] Handling incoming call:', phoneNumber, 'Caller:', callerName, 'Manual:', skipEnabledCheck, 'WindowId:', targetWindowId);
-
-    // Check if we've already opened this phone number (prevent duplicate opens)
-    // Skip this check for manual triggers (skipEnabledCheck=true) - user explicitly wants to open/focus
-    if (!skipEnabledCheck && openedCallPhones.has(phoneNumber)) {
-        console.log('[Service Worker] Already opened contact for this call, skipping duplicate');
-        return { ok: true, reason: 'already_opened' };
-    }
-
-    // Check if CallRail integration is enabled (unless bypassed for manual triggers)
-    if (!skipEnabledCheck) {
-        try {
-            const settings = await chrome.storage.sync.get({ callrail_enabled: false });
-            if (!settings.callrail_enabled) {
-                console.log('[Service Worker] CallRail integration is disabled, skipping');
-                return { ok: false, reason: 'disabled' };
-            }
-        } catch (e) {
-            console.log('[Service Worker] Could not check settings, assuming disabled');
-            return { ok: false, reason: 'settings_error' };
-        }
-    }
-
-    // Mark this phone as opened (for automatic detection duplicate prevention)
-    openedCallPhones.add(phoneNumber);
-
-    try {
-        // Find the CallRail tab to position the Roofr tab next to it (in target window if specified)
-        const callrailQueryOpts = { url: '*://app.callrail.com/*' };
-        if (targetWindowId) callrailQueryOpts.windowId = targetWindowId;
-        const callrailTabs = await chrome.tabs.query(callrailQueryOpts);
-        let callrailTabIndex = -1;
-        let callrailWindowId = targetWindowId; // Use target window ID if provided
-        if (callrailTabs.length > 0) {
-            callrailTabIndex = callrailTabs[0].index;
-            callrailWindowId = callrailTabs[0].windowId;
-            console.log('[Service Worker] Found CallRail tab at index:', callrailTabIndex);
-        }
-
-        // Step 1: Look for an existing contacts LIST tab in target window (not a job card or contact detail page)
-        // We specifically want tabs that are on the main contacts list view
-        const roofrQueryOpts = { url: '*://app.roofr.com/*' };
-        if (targetWindowId) roofrQueryOpts.windowId = targetWindowId;
-        const roofrTabs = await chrome.tabs.query(roofrQueryOpts);
-
-        let targetTab;
-
-        // Find a tab that's specifically on the contacts LIST (not a detail page or job card)
-        // The contacts list URL looks like: /contacts or /contacts?...
-        // Contact detail pages have format: /contacts/XXXXX or /contacts/XXXXX?selectedJobId=...
-        const contactsListTab = roofrTabs.find(tab => {
-            if (!tab.url) return false;
-            // Match /contacts at the end, or /contacts? or /contacts/?
-            // But NOT /contacts/XXXXX (which is a contact detail page)
-            return tab.url.match(/\/contacts\/?(\?|$)/) && !tab.url.match(/\/contacts\/\d+/);
-        });
-
-        if (contactsListTab) {
-            // Found an existing contacts list tab - reuse it
-            targetTab = contactsListTab;
-            console.log('[Service Worker] Found existing contacts list tab:', targetTab.id);
-
-            // Move tab next to CallRail if in a different position
-            if (callrailTabIndex >= 0 && targetTab.index !== callrailTabIndex + 1) {
-                await chrome.tabs.move(targetTab.id, { index: callrailTabIndex + 1 });
-                console.log('[Service Worker] Moved tab next to CallRail');
-            }
-
-            // Focus the tab and bring window to front
-            await chrome.tabs.update(targetTab.id, { active: true });
-            await chrome.windows.update(targetTab.windowId, { focused: true });
-
-            // Reload the tab to ensure fresh content and content script is active
-            await chrome.tabs.reload(targetTab.id);
-            await waitForTabLoad(targetTab.id);
-        } else {
-            // No contacts list tab found - create a new one in target window
-            // IMPORTANT: Do NOT navigate away from existing Roofr tabs (job cards, contact details, etc.)
-            // Those tabs should be preserved so users don't lose their work
-            console.log('[Service Worker] No contacts list tab found, creating new tab');
-
-            // Create tab next to CallRail if found, otherwise at default position in target window
-            const createOptions = {
-                url: ROOFR_CONTACTS_URL,
-                active: true
-            };
-            if (callrailTabIndex >= 0) {
-                createOptions.index = callrailTabIndex + 1;
-            }
-            // Use target window ID if provided, otherwise use callrail window
-            if (targetWindowId) {
-                createOptions.windowId = targetWindowId;
-            } else if (callrailWindowId) {
-                createOptions.windowId = callrailWindowId;
-            }
-
-            targetTab = await chrome.tabs.create(createOptions);
-            console.log('[Service Worker] Created new Roofr contacts tab:', targetTab.id);
-            await waitForTabLoad(targetTab.id);
-        }
-
-        // Step 2: Create or update tab group with customer name
-        if (callerName) {
-            try {
-                const groupTitle = callerName;
-
-                // Check if tab is already in a group
-                const tabInfo = await chrome.tabs.get(targetTab.id);
-
-                if (tabInfo.groupId && tabInfo.groupId !== -1) {
-                    // Tab is already in a group - update the group title
-                    await chrome.tabGroups.update(tabInfo.groupId, {
-                        title: groupTitle,
-                        color: 'grey'
-                    });
-                    console.log('[Service Worker] Updated existing tab group title to:', groupTitle);
-                } else {
-                    // Create a new tab group
-                    const groupId = await chrome.tabs.group({ tabIds: [targetTab.id] });
-                    await chrome.tabGroups.update(groupId, {
-                        title: groupTitle,
-                        color: 'grey',
-                        collapsed: false
-                    });
-                    console.log('[Service Worker] Created tab group:', groupTitle);
-                }
-            } catch (groupError) {
-                console.warn('[Service Worker] Could not create/update tab group:', groupError);
-            }
-        }
-
-        // Step 3: Give the React app and content script time to initialize
-        // Wait longer to ensure everything is ready
-        await new Promise(r => setTimeout(r, 2500));
-
-        // Step 4: Send message to inject search with retry logic
-        const searchPhone = formattedPhone || phoneNumber;
-        let lastError = null;
-
-        for (let attempt = 1; attempt <= 3; attempt++) {
-            try {
-                console.log('[Service Worker] Attempt', attempt, 'to inject search for:', searchPhone);
-                const response = await chrome.tabs.sendMessage(targetTab.id, {
-                    type: 'INJECT_CONTACT_SEARCH',
-                    phoneNumber: searchPhone
-                });
-                console.log('[Service Worker] Search injection result:', response);
-                return { ok: true, tabId: targetTab.id, response };
-            } catch (msgError) {
-                lastError = msgError;
-                console.warn('[Service Worker] Attempt', attempt, 'failed:', msgError.message);
-                if (attempt < 3) {
-                    // Wait before retrying
-                    await new Promise(r => setTimeout(r, 1000));
-                }
-            }
-        }
-
-        console.error('[Service Worker] All attempts failed');
-        return { ok: false, tabId: targetTab.id, error: lastError?.message || 'Failed after 3 attempts' };
-
-    } catch (error) {
-        console.error('[Service Worker] Error:', error);
-        // Remove from tracking if there was an error so it can be retried
-        openedCallPhones.delete(phoneNumber);
-        return { ok: false, error: error.message };
-    }
-}
 
 // Helper function to wait for a tab to finish loading
 function waitForTabLoad(tabId, timeout = 10000) {
@@ -767,87 +763,335 @@ function waitForTabLoad(tabId, timeout = 10000) {
 }
 
 // ========================================
-// CALLRAIL LEAD CENTER MONITORING
+// CTM INCOMING CALL HANDLER
 // ========================================
 
-// Check if CallRail Lead Center is open and open/pin it if not
-async function checkAndOpenCallRailLeadCenter() {
+// Helper to get display name (first name only, unless generic like "Wireless Caller")
+function getDisplayName(fullName) {
+    if (!fullName) return 'Unknown';
+    const parts = fullName.trim().split(' ');
+    // Keep full name for generic names (wireless caller, unknown caller, etc.)
+    const lowerName = fullName.toLowerCase();
+    if (lowerName.includes('wireless') || lowerName.includes('unknown') ||
+        lowerName.includes('caller') || lowerName.includes('private') ||
+        lowerName.includes('blocked') || lowerName.includes('anonymous')) {
+        return fullName;  // Keep full "Wireless Caller"
+    }
+    return parts[0];  // Just first name "Andrew"
+}
+
+// Helper to update tab group title when call state changes
+async function updateCtmTabGroup(phoneNumber, callerName, agentName, isAnswered, targetWindowId) {
     try {
-        // First check if monitoring is enabled
-        const settings = await chrome.storage.sync.get({ callrail_enabled: false });
-        if (!settings.callrail_enabled) {
-            console.log('[Service Worker] CallRail monitoring disabled, skipping check');
+        // Check if tab grouping is enabled
+        const groupTabsSetting = await chrome.storage.sync.get({ ctm_group_tabs: true });
+        if (groupTabsSetting.ctm_group_tabs === false) {
+            console.log('[Service Worker] Tab grouping disabled, skipping update');
             return;
         }
 
-        // Query for all CallRail tabs
-        const callrailTabs = await chrome.tabs.query({ url: '*://app.callrail.com/*' });
+        // Find the Roofr contacts tab
+        const roofrQueryOpts = { url: '*://app.roofr.com/*' };
+        if (targetWindowId) roofrQueryOpts.windowId = targetWindowId;
+        const roofrTabs = await chrome.tabs.query(roofrQueryOpts);
 
-        // Check if any tab is specifically the lead center
-        const leadCenterTab = callrailTabs.find(tab =>
-            tab.url && tab.url.startsWith(CALLRAIL_LEAD_CENTER_BASE)
-        );
+        // Find tabs in groups
+        for (const tab of roofrTabs) {
+            if (tab.groupId && tab.groupId !== -1) {
+                const group = await chrome.tabGroups.get(tab.groupId);
+                // Check if this group is for our call (contains caller name)
+                const displayName = getDisplayName(callerName);
+                if (group.title && callerName && group.title.includes(displayName)) {
+                    // Just use caller first name, no agent name needed
+                    await chrome.tabGroups.update(tab.groupId, {
+                        title: displayName,
+                        color: isAnswered ? 'cyan' : 'yellow'
+                    });
+                    console.log('[Service Worker] Updated tab group to:', displayName);
+                    return;
+                }
+            }
+        }
+        console.log('[Service Worker] No matching tab group found to update');
+    } catch (err) {
+        console.warn('[Service Worker] Error updating tab group:', err);
+    }
+}
 
-        if (leadCenterTab) {
-            console.log('[Service Worker] CallRail Lead Center is already open:', leadCenterTab.id);
-            // Ensure it's pinned
-            if (!leadCenterTab.pinned) {
-                await chrome.tabs.update(leadCenterTab.id, { pinned: true });
-                console.log('[Service Worker] Pinned existing Lead Center tab');
+// ========================================
+// SUPABASE PHONE LOOKUP
+// ========================================
+
+// Look up Roofr jobs by phone number using the Supabase database
+// No Roofr tab required — queries Supabase directly via REST API
+// Returns { found: true, jobs: [...] } or { found: false }
+async function lookupJobByPhoneSupabase(phoneNumber) {
+    try {
+        let searchPhone = phoneNumber.replace(/\D/g, '');
+        if (searchPhone.length === 11 && searchPhone.startsWith('1')) {
+            searchPhone = searchPhone.substring(1);
+        }
+        if (searchPhone.length !== 10) {
+            console.log('[Supabase] Invalid phone length after normalization:', searchPhone.length);
+            return { found: false };
+        }
+
+        console.log('[Supabase] Looking up phone:', searchPhone);
+
+        const headers = {
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+            'Accept': 'application/json'
+        };
+
+        // Query Supabase jobs table — exact match first
+        const url = `${SUPABASE_URL}/rest/v1/jobs?phone=eq.${searchPhone}&select=job_id,customer,address,stage,status,value&limit=10&order=created_at.desc`;
+        const resp = await fetch(url, { headers });
+
+        let matchedJobs = [];
+
+        if (resp.ok) {
+            const jobs = await resp.json();
+            if (jobs && jobs.length > 0) {
+                matchedJobs = jobs;
             }
         } else {
-            // Lead Center is not open - need to open it
-            // If there are other CallRail tabs (not lead center), we still need to open lead center
-            console.log('[Service Worker] CallRail Lead Center not found, opening...');
-
-            const newTab = await chrome.tabs.create({
-                url: CALLRAIL_URL,
-                active: false,
-                pinned: true
-            });
-            console.log('[Service Worker] Opened and pinned CallRail Lead Center tab:', newTab.id);
+            console.log('[Supabase] HTTP error on exact match:', resp.status);
         }
-    } catch (e) {
-        console.error('[Service Worker] Error checking/opening CallRail Lead Center:', e);
+
+        // If no exact match, try partial match (phone stored with formatting)
+        if (matchedJobs.length === 0) {
+            const likeUrl = `${SUPABASE_URL}/rest/v1/jobs?phone=like.*${searchPhone}*&select=job_id,customer,address,stage,status,value&limit=10&order=created_at.desc`;
+            const likeResp = await fetch(likeUrl, { headers });
+
+            if (likeResp.ok) {
+                const likeJobs = await likeResp.json();
+                if (likeJobs && likeJobs.length > 0) {
+                    matchedJobs = likeJobs;
+                    console.log('[Supabase] LIKE match found:', likeJobs.length, 'jobs');
+                }
+            }
+        }
+
+        if (matchedJobs.length === 0) {
+            console.log('[Supabase] No jobs found for phone:', searchPhone);
+            return { found: false };
+        }
+
+        // Enrich each job with its Roofr URL
+        const enriched = matchedJobs.map(job => ({
+            job_id: job.job_id,
+            customer: job.customer || 'Unknown',
+            address: job.address || '',
+            stage: job.stage || '',
+            status: job.status || '',
+            value: job.value || '',
+            jobUrl: `https://app.roofr.com/dashboard/team/${ROOFR_TEAM_ID}/jobs/details/${job.job_id}`
+        }));
+
+        console.log('[Supabase] Found', enriched.length, 'job(s) for phone:', searchPhone);
+        return {
+            found: true,
+            jobs: enriched
+        };
+    } catch (err) {
+        console.error('[Supabase] Phone lookup failed:', err.message);
+        return { found: false };
     }
 }
 
-// Start the 10-minute monitoring alarm
-async function startCallRailLeadCenterMonitoring() {
-    try {
-        // Clear any existing alarm first
-        await chrome.alarms.clear(CALLRAIL_CHECK_ALARM);
+// Handle incoming CTM calls - opens/focuses Roofr contacts and searches for phone number
+async function handleCtmIncomingCall(phoneNumber, formattedPhone, skipEnabledCheck = false, callerName = null, targetWindowId = null, agentName = null, isAnswered = false) {
+    console.log('[Service Worker] Handling incoming CTM call:', {
+        phone: phoneNumber,
+        caller: callerName,
+        agent: agentName,
+        isAnswered: isAnswered,
+        manual: skipEnabledCheck
+    });
 
-        // Create a new repeating alarm
-        await chrome.alarms.create(CALLRAIL_CHECK_ALARM, {
-            periodInMinutes: CALLRAIL_CHECK_INTERVAL_MINUTES
-        });
-        console.log('[Service Worker] Started CallRail Lead Center monitoring (every 10 minutes)');
+    // FIRST: Check if contact is already open in browser (most reliable check)
+    // This runs before memory-based checks in case the tracking set was cleared
+    if (!skipEnabledCheck && callerName) {
+        try {
+            const displayName = getDisplayName(callerName);
+            const roofrTabs = await chrome.tabs.query({ url: '*://app.roofr.com/*' });
 
-        // Also run an immediate check
-        await checkAndOpenCallRailLeadCenter();
-    } catch (e) {
-        console.error('[Service Worker] Error starting CallRail monitoring:', e);
+            for (const tab of roofrTabs) {
+                if (tab.groupId && tab.groupId !== -1) {
+                    try {
+                        const group = await chrome.tabGroups.get(tab.groupId);
+                        if (group.title && group.title === displayName) {
+                            // Contact is already open - just focus the tab
+                            console.log('[Service Worker] Contact already open in browser for:', displayName);
+                            await chrome.tabs.update(tab.id, { active: true });
+                            await chrome.windows.update(tab.windowId, { focused: true });
+                            // Make sure phone is tracked
+                            openedCtmCallPhones.add(phoneNumber);
+                            return { ok: true, reason: 'contact_already_open', tabId: tab.id };
+                        }
+                    } catch (e) {
+                        // Tab group might not exist
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('[Service Worker] Error checking for open contact:', e);
+        }
     }
-}
 
-// Stop the monitoring alarm
-async function stopCallRailLeadCenterMonitoring() {
+    // Check if we've already opened this phone number (memory-based backup)
+    const alreadyOpened = openedCtmCallPhones.has(phoneNumber);
+    if (!skipEnabledCheck && alreadyOpened) {
+        console.log('[Service Worker] Already opened contact for this CTM call (from tracking)');
+        // Still update the tab group if call state changed (e.g., answered)
+        if (isAnswered && agentName) {
+            console.log('[Service Worker] Updating tab group for answered call');
+            await updateCtmTabGroup(phoneNumber, callerName, agentName, isAnswered, targetWindowId);
+        }
+
+        // Auto-open job card when call is answered by the rep
+        if (isAnswered) {
+            try {
+                const autoSearchSetting = await chrome.storage.sync.get({ ctm_auto_search: true });
+                if (autoSearchSetting.ctm_auto_search) {
+                    console.log('[Service Worker] Answered call - looking up phone in Supabase:', phoneNumber);
+                    const lookup = await lookupJobByPhoneSupabase(phoneNumber);
+                    if (lookup.found && lookup.jobs.length > 0) {
+                        const job = lookup.jobs[0];
+                        console.log('[Service Worker] Found job - auto-opening:', job.customer, job.jobUrl);
+
+                        const ctmQueryOpts = { url: '*://app.calltrackingmetrics.com/*' };
+                        if (targetWindowId) ctmQueryOpts.windowId = targetWindowId;
+                        const ctmTabs = await chrome.tabs.query(ctmQueryOpts);
+
+                        const createOpts = { url: job.jobUrl, active: true };
+                        if (ctmTabs.length > 0) {
+                            createOpts.windowId = ctmTabs[0].windowId;
+                            createOpts.index = ctmTabs[0].index + 1;
+                        }
+                        const newTab = await chrome.tabs.create(createOpts);
+
+                        // Group tabs if enabled
+                        const groupSetting = await chrome.storage.sync.get({ ctm_group_tabs: true });
+                        if (groupSetting.ctm_group_tabs && ctmTabs.length > 0) {
+                            try {
+                                const displayName = getDisplayName(callerName);
+                                const groupId = await chrome.tabs.group({
+                                    tabIds: [ctmTabs[0].id, newTab.id],
+                                    ...(ctmTabs[0].windowId ? { createProperties: { windowId: ctmTabs[0].windowId } } : {})
+                                });
+                                await chrome.tabGroups.update(groupId, {
+                                    title: displayName || 'Call',
+                                    color: 'cyan',
+                                    collapsed: false
+                                });
+                            } catch (groupErr) {
+                                console.warn('[Service Worker] Tab grouping failed:', groupErr);
+                            }
+                        }
+
+                        return { ok: true, reason: 'job_card_opened', jobId: job.job_id, tabId: newTab.id };
+                    } else {
+                        console.log('[Service Worker] No job found for phone:', phoneNumber);
+                    }
+                }
+            } catch (lookupErr) {
+                console.warn('[Service Worker] Auto-open job card failed:', lookupErr);
+            }
+        }
+
+        return { ok: true, reason: 'already_opened' };
+    }
+
+    // Check if CTM integration is enabled
+    if (!skipEnabledCheck) {
+        try {
+            const settings = await chrome.storage.sync.get({ ctm_enabled: false });
+            if (!settings.ctm_enabled) {
+                console.log('[Service Worker] CTM integration is disabled, skipping');
+                return { ok: false, reason: 'disabled' };
+            }
+        } catch (e) {
+            console.log('[Service Worker] Could not check CTM settings, assuming disabled');
+            return { ok: false, reason: 'settings_error' };
+        }
+    }
+
+    // Mark this phone as opened
+    openedCtmCallPhones.add(phoneNumber);
+
     try {
-        await chrome.alarms.clear(CALLRAIL_CHECK_ALARM);
-        console.log('[Service Worker] Stopped CallRail Lead Center monitoring');
-    } catch (e) {
-        console.error('[Service Worker] Error stopping CallRail monitoring:', e);
+        // Find the CTM tab to position the Roofr tab next to it
+        const ctmQueryOpts = { url: '*://app.calltrackingmetrics.com/*' };
+        if (targetWindowId) ctmQueryOpts.windowId = targetWindowId;
+        const ctmTabs = await chrome.tabs.query(ctmQueryOpts);
+
+        let ctmTabIndex = -1;
+        let ctmWindowId = null;
+        if (ctmTabs.length > 0) {
+            ctmTabIndex = ctmTabs[0].index;
+            ctmWindowId = ctmTabs[0].windowId;
+            console.log('[Service Worker] Found CTM tab at index:', ctmTabIndex);
+        }
+
+        // Auto-open job card when call is answered and phone is in Supabase
+        if (isAnswered) {
+            try {
+                const autoSearchSetting = await chrome.storage.sync.get({ ctm_auto_search: true });
+                if (autoSearchSetting.ctm_auto_search) {
+                    console.log('[Service Worker] Answered call - looking up phone in Supabase:', phoneNumber);
+                    const lookup = await lookupJobByPhoneSupabase(phoneNumber);
+                    if (lookup.found && lookup.jobs.length > 0) {
+                        const job = lookup.jobs[0];
+                        console.log('[Service Worker] Found job - auto-opening:', job.customer, job.jobUrl);
+
+                        const createOpts = { url: job.jobUrl, active: true };
+                        if (ctmWindowId) createOpts.windowId = ctmWindowId;
+                        if (ctmTabIndex >= 0) createOpts.index = ctmTabIndex + 1;
+                        const newTab = await chrome.tabs.create(createOpts);
+
+                        // Group tabs if enabled
+                        const groupSetting = await chrome.storage.sync.get({ ctm_group_tabs: true });
+                        if (groupSetting.ctm_group_tabs && ctmTabs.length > 0) {
+                            try {
+                                const displayName = getDisplayName(callerName);
+                                const groupId = await chrome.tabs.group({
+                                    tabIds: [ctmTabs[0].id, newTab.id],
+                                    ...(ctmWindowId ? { createProperties: { windowId: ctmWindowId } } : {})
+                                });
+                                await chrome.tabGroups.update(groupId, {
+                                    title: displayName || 'Call',
+                                    color: 'cyan',
+                                    collapsed: false
+                                });
+                            } catch (groupErr) {
+                                console.warn('[Service Worker] Tab grouping failed:', groupErr);
+                            }
+                        }
+
+                        return { ok: true, reason: 'job_card_opened', jobId: job.job_id, tabId: newTab.id };
+                    } else {
+                        console.log('[Service Worker] No job found for phone:', phoneNumber);
+                    }
+                }
+            } catch (lookupErr) {
+                console.warn('[Service Worker] Auto-open job card failed:', lookupErr);
+            }
+        }
+
+        console.log('[Service Worker] Call tracked:', phoneNumber);
+        return { ok: true, reason: 'tracked' };
+
+    } catch (error) {
+        console.error('[Service Worker] CTM Error:', error);
+        openedCtmCallPhones.delete(phoneNumber);
+        return { ok: false, error: error.message };
     }
 }
 
 // Listen for alarm events
 chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === CALLRAIL_CHECK_ALARM) {
-        console.log('[Service Worker] CallRail Lead Center check alarm triggered');
-        checkAndOpenCallRailLeadCenter();
-    }
-
     // Handle update check alarm
     if (alarm.name === UPDATE_CHECK_ALARM) {
         console.log('[Update] Periodic update check triggered');
@@ -855,47 +1099,81 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     }
 });
 
-// Listen for storage changes to start/stop monitoring when toggle changes
-chrome.storage.onChanged.addListener((changes, namespace) => {
-    if (namespace === 'sync' && changes.callrail_enabled) {
-        const enabled = changes.callrail_enabled.newValue;
-        console.log('[Service Worker] CallRail enabled changed to:', enabled);
-
-        if (enabled) {
-            startCallRailLeadCenterMonitoring();
-        } else {
-            stopCallRailLeadCenterMonitoring();
-        }
-    }
-});
-
-// Check on startup if monitoring should be running
+// Check on startup
 chrome.runtime.onStartup.addListener(async () => {
-    try {
-        const settings = await chrome.storage.sync.get({ callrail_enabled: false });
-        if (settings.callrail_enabled) {
-            console.log('[Service Worker] CallRail enabled on startup, starting monitoring');
-            startCallRailLeadCenterMonitoring();
-        }
-    } catch (e) {
-        console.error('[Service Worker] Error checking CallRail setting on startup:', e);
-    }
-
     // Start update checking on browser startup
     await startUpdateCheckAlarm();
     // Check for updates after a delay to not slow startup
     setTimeout(() => checkForUpdates(), 10000);
 });
 
-// Also check when service worker is activated (handles extension install/update)
-(async () => {
+// ========================================
+// AUTO-DIALER — message routing + window launch
+// ========================================
+// Two message channels:
+//   dialer.html  ──AD_TO_CTM──▶  SW  ──AUTODIALER_TO_BRIDGE──▶  CTM tab content script
+//   CTM tab      ──AUTODIALER_FROM_BRIDGE──▶ SW ──AD_FROM_CTM──▶ dialer.html (broadcast)
+
+const AUTODIALER_WINDOW_KEY = 'autodialer_window_id';
+
+async function findCtmTabId() {
+    const tabs = await chrome.tabs.query({ url: '*://app.calltrackingmetrics.com/*' });
+    return tabs.length > 0 ? tabs[0].id : null;
+}
+
+async function openAutoDialerWindow() {
     try {
-        const settings = await chrome.storage.sync.get({ callrail_enabled: false });
-        if (settings.callrail_enabled) {
-            console.log('[Service Worker] CallRail enabled, ensuring monitoring is active');
-            startCallRailLeadCenterMonitoring();
+        const stored = await chrome.storage.session.get(AUTODIALER_WINDOW_KEY);
+        const existingId = stored[AUTODIALER_WINDOW_KEY];
+        if (existingId) {
+            try {
+                const win = await chrome.windows.get(existingId);
+                if (win) { await chrome.windows.update(existingId, { focused: true }); return; }
+            } catch (_) {}
         }
-    } catch (e) {
-        console.error('[Service Worker] Error checking CallRail setting on activation:', e);
+    } catch (_) {}
+
+    const win = await chrome.windows.create({
+        url: chrome.runtime.getURL('dialer.html'),
+        type: 'popup',
+        width: 480,
+        height: 760,
+    });
+    try { await chrome.storage.session.set({ [AUTODIALER_WINDOW_KEY]: win.id }); } catch (_) {}
+}
+
+chrome.commands?.onCommand.addListener(async (command) => {
+    if (command === 'open-auto-dialer') await openAutoDialerWindow();
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg?.type === 'AD_TO_CTM') {
+        (async () => {
+            const tabId = await findCtmTabId();
+            if (!tabId) { sendResponse({ ok: false, error: 'no_ctm_tab' }); return; }
+            try {
+                await chrome.tabs.sendMessage(tabId, { type: 'AUTODIALER_TO_BRIDGE', payload: msg.payload });
+                sendResponse({ ok: true });
+            } catch (e) { sendResponse({ ok: false, error: e.message }); }
+        })();
+        return true;
     }
-})();
+    if (msg?.type === 'AUTODIALER_FROM_BRIDGE') {
+        try {
+            chrome.runtime.sendMessage({ type: 'AD_FROM_CTM', payload: msg.payload }).catch(() => {});
+        } catch (_) {}
+        sendResponse({ ok: true });
+        return false;
+    }
+    if (msg?.type === 'AD_PING_CTM') {
+        (async () => {
+            const tabId = await findCtmTabId();
+            sendResponse({ ok: true, ctmTabOpen: !!tabId, tabId });
+        })();
+        return true;
+    }
+    if (msg?.type === 'AD_OPEN_WINDOW') {
+        openAutoDialerWindow().then(() => sendResponse({ ok: true }));
+        return true;
+    }
+});

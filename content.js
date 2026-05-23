@@ -217,32 +217,157 @@ if (!window.__globalListenerAttached) {
 
 
 // ==================================================
-// START: CallRail Call Detection (Only runs on CallRail domains)
+// START: CTM (CallTrackingMetrics) Call Detection
 // ==================================================
-if (window.location.hostname.includes('callrail.com') && !window.__callrailBridgeLoaded) {
-  window.__callrailBridgeLoaded = true;
+if (window.location.hostname.includes('calltrackingmetrics.com') && !window.__ctmBridgeLoaded) {
+  window.__ctmBridgeLoaded = true;
 
-  console.log('[CallRail Extension] Checking if call detection is enabled...');
+  console.log('[CTM Extension] Checking if call detection is enabled...');
 
   // State tracking
-  let isCallActive = false;
-  let activeCallPhoneNumber = null;
-  let lastSearchedNumber = null;
-  let isFeatureEnabled = true; // Will be checked on init
-  let configuredCsr = ''; // The primary CSR name (display name or user name)
-  let configuredCsrUser = ''; // The selected CSR name from dropdown
-  let configuredCsrDisplay = ''; // Alternative display name if different in CallRail
-  let lastLoggedCallKey = null; // Prevents duplicate logging for same call
+  let isCtmCallActive = false;
+  let activeCtmCallPhoneNumber = null;
+  let lastCtmSearchedNumber = null;
+  let isCtmFeatureEnabled = true;
+
+  // Robust deduplication: Track recently sent popup requests with timestamps
+  // Prevents duplicate popups during transfers/agent changes
+  const recentCtmPopupPhones = new Map();  // phoneNumber -> timestamp
+  const CTM_POPUP_DEDUP_WINDOW_MS = 60000;  // 60 seconds - no duplicate popups within this window
+  let configuredCtmCsr = '';
+  let configuredCtmCsrUser = '';
+  let configuredCtmCsrDisplay = '';
+  // New CTM settings
+  let ctmAutoSearch = true;
+  let ctmShowNotifications = true;
+  let ctmShowActiveCalls = true;
+  let lastCtmLoggedCallKey = null;
+  let ctmContextInvalidated = false;
+
+  // Check if extension context is still valid
+  function isCtmExtensionContextValid() {
+    try {
+      return !!chrome.runtime?.id;
+    } catch {
+      return false;
+    }
+  }
+
+  // Handle context invalidation
+  function handleCtmContextInvalidation() {
+    if (ctmContextInvalidated) return;
+    ctmContextInvalidated = true;
+
+    const isCallsPage = window.location.href.includes('/calls');
+
+    if (!isCallsPage) {
+      console.warn('[CTM Extension] Extension context invalidated - please refresh the page manually');
+      return;
+    }
+
+    console.warn('[CTM Extension] Extension context invalidated - please refresh the page');
+  }
+
+  // Show a notification popup on the CTM page
+  function showCtmNotification(message, options = {}) {
+    const {
+      background = '#22c55e',  // Green for success/celebration
+      duration = 8000,
+      emoji = ''
+    } = options;
+
+    // Remove any existing notification
+    const existing = document.getElementById('ctm-extension-notification');
+    if (existing) existing.remove();
+
+    const notification = document.createElement('div');
+    notification.id = 'ctm-extension-notification';
+    notification.style.cssText = `
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: ${background};
+      color: white;
+      padding: 16px 24px;
+      border-radius: 12px;
+      font-family: system-ui, sans-serif;
+      font-size: 16px;
+      font-weight: 600;
+      z-index: 999999;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+      animation: ctm-notification-slide-in 0.3s ease-out;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    `;
+
+    // Add animation styles if not already present
+    if (!document.getElementById('ctm-notification-styles')) {
+      const style = document.createElement('style');
+      style.id = 'ctm-notification-styles';
+      style.textContent = `
+        @keyframes ctm-notification-slide-in {
+          from { transform: translateX(100%); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+        @keyframes ctm-notification-slide-out {
+          from { transform: translateX(0); opacity: 1; }
+          to { transform: translateX(100%); opacity: 0; }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    notification.innerHTML = `${emoji ? `<span style="font-size: 24px;">${emoji}</span>` : ''}${message}`;
+    document.body.appendChild(notification);
+
+    setTimeout(() => {
+      notification.style.animation = 'ctm-notification-slide-out 0.3s ease-in forwards';
+      setTimeout(() => notification.remove(), 300);
+    }, duration);
+  }
+
+  // Safe message sender
+  function ctmSafeSendMessage(message) {
+    if (!isCtmExtensionContextValid()) {
+      handleCtmContextInvalidation();
+      return Promise.reject(new Error('Extension context invalidated'));
+    }
+
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.runtime.sendMessage(message, response => {
+          if (chrome.runtime.lastError) {
+            const error = chrome.runtime.lastError.message || '';
+            if (error.includes('Extension context invalidated') ||
+                error.includes('message port closed')) {
+              handleCtmContextInvalidation();
+              reject(new Error('Extension context invalidated'));
+            } else {
+              reject(new Error(error));
+            }
+          } else {
+            resolve(response);
+          }
+        });
+      } catch (e) {
+        if (e.message?.includes('Extension context invalidated')) {
+          handleCtmContextInvalidation();
+        }
+        reject(e);
+      }
+    });
+  }
 
   // Normalize phone number to digits only
-  function normalizePhoneNumber(phone) {
+  function normalizeCtmPhoneNumber(phone) {
     if (!phone) return null;
     return phone.replace(/[^\d]/g, '');
   }
 
   // Format phone for display (XXX-XXX-XXXX)
-  function formatPhoneForDisplay(phone) {
-    const cleaned = normalizePhoneNumber(phone);
+  function formatCtmPhoneForDisplay(phone) {
+    const cleaned = normalizeCtmPhoneNumber(phone);
     if (!cleaned) return phone;
     if (cleaned.length === 10) {
       return `${cleaned.slice(0, 3)}-${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
@@ -253,873 +378,750 @@ if (window.location.hostname.includes('callrail.com') && !window.__callrailBridg
     return phone;
   }
 
-  // Extract phone number from an element
-  function extractPhoneFromElement(element) {
-    if (!element) return null;
-
-    // Try data attributes first
-    const dataPhone = element.getAttribute('data-phone') ||
-      element.getAttribute('data-phone-number');
-    if (dataPhone) return normalizePhoneNumber(dataPhone);
-
-    // Try href="tel:..." links
-    const telLink = element.querySelector('a[href^="tel:"]');
-    if (telLink) {
-      const href = telLink.getAttribute('href');
-      return normalizePhoneNumber(href.replace('tel:', ''));
-    }
-
-    // Try text content matching phone pattern (XXX-XXX-XXXX or similar)
-    const text = element.textContent || '';
-    const phoneMatch = text.match(/(\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})/);
-    if (phoneMatch) {
-      return normalizePhoneNumber(phoneMatch[1]);
-    }
-
-    return null;
-  }
-
-  // Nickname mappings - maps full names to nicknames and vice versa
-  const NICKNAME_MAP = {
+  // Nickname mappings for CSR name matching
+  const CTM_NICKNAME_MAP = {
     'madison': ['madi', 'maddie', 'maddy'],
-    'madi': ['madison'],
-    'maddie': ['madison'],
-    'maddy': ['madison'],
     'bronte': ['bronté'],
-    'bronté': ['bronte'],
     'robert': ['rob', 'bob', 'bobby'],
-    'rob': ['robert'],
-    'bob': ['robert'],
-    'bobby': ['robert'],
-    'william': ['will', 'bill', 'billy'],
-    'will': ['william'],
-    'bill': ['william'],
-    'billy': ['william'],
-    'michael': ['mike', 'mikey'],
-    'mike': ['michael'],
-    'mikey': ['michael'],
-    'christopher': ['chris'],
-    'chris': ['christopher'],
-    'jennifer': ['jen', 'jenny'],
-    'jen': ['jennifer'],
-    'jenny': ['jennifer'],
-    'elizabeth': ['liz', 'beth', 'lizzy'],
-    'liz': ['elizabeth'],
-    'beth': ['elizabeth'],
-    'lizzy': ['elizabeth'],
-    'katherine': ['kate', 'katie', 'kathy'],
-    'kate': ['katherine'],
-    'katie': ['katherine'],
-    'kathy': ['katherine'],
-    'nicholas': ['nick', 'nicky'],
-    'nick': ['nicholas'],
-    'nicky': ['nicholas'],
-    'alexander': ['alex'],
-    'alex': ['alexander', 'alexandra'],
-    'alexandra': ['alex'],
-    'benjamin': ['ben'],
-    'ben': ['benjamin'],
-    'daniel': ['dan', 'danny'],
-    'dan': ['daniel'],
-    'danny': ['daniel'],
-    'matthew': ['matt'],
-    'matt': ['matthew'],
-    'anthony': ['tony'],
-    'tony': ['anthony'],
-    'joseph': ['joe', 'joey'],
-    'joe': ['joseph'],
-    'joey': ['joseph'],
-    'joshua': ['josh'],
-    'josh': ['joshua'],
-    'andrew': ['andy', 'drew'],
-    'andy': ['andrew'],
-    'drew': ['andrew'],
     'timothy': ['tim', 'timmy'],
-    'tim': ['timothy'],
-    'timmy': ['timothy'],
-    'steven': ['steve'],
-    'steve': ['steven', 'stephen'],
-    'stephen': ['steve'],
-    'jonathan': ['jon', 'john'],
-    'jon': ['jonathan'],
     'jessica': ['jess', 'jessie'],
-    'jess': ['jessica'],
-    'jessie': ['jessica'],
-    'samantha': ['sam', 'sammy'],
-    'sam': ['samantha', 'samuel'],
-    'sammy': ['samantha', 'samuel'],
-    'samuel': ['sam', 'sammy'],
-    'rebecca': ['becca', 'becky'],
-    'becca': ['rebecca'],
-    'becky': ['rebecca'],
-    'patricia': ['pat', 'patty', 'tricia'],
-    'pat': ['patricia', 'patrick'],
-    'patty': ['patricia'],
-    'tricia': ['patricia'],
-    'patrick': ['pat'],
     'travis': ['trav'],
-    'trav': ['travis']
+    'jennifer': ['jen', 'jenny'],
+    'michael': ['mike', 'mikey'],
+    'william': ['will', 'bill', 'billy'],
+    'richard': ['rick', 'ricky', 'dick'],
+    'christopher': ['chris'],
+    'matthew': ['matt'],
+    'anthony': ['tony'],
+    'nicholas': ['nick', 'nicky'],
+    'jonathan': ['jon', 'jonny'],
+    'stephanie': ['steph'],
+    'elizabeth': ['liz', 'lizzy', 'beth'],
+    'katherine': ['kate', 'kathy', 'katie'],
+    'alexandria': ['alex', 'lexi'],
+    'alexander': ['alex'],
+    'benjamin': ['ben', 'benny'],
+    'daniel': ['dan', 'danny'],
+    'joseph': ['joe', 'joey'],
+    'david': ['dave', 'davey'],
+    'andrew': ['andy', 'drew'],
+    'samantha': ['sam', 'sammy'],
+    'samuel': ['sam', 'sammy'],
+    'victoria': ['vicky', 'tori'],
+    'patricia': ['pat', 'patty'],
+    'diva': ['diva'],
+    'nica': ['nica']
   };
 
-  // Remove accents from characters (Bronté → Bronte)
-  function removeAccents(str) {
+  function removeCtmAccents(str) {
     return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   }
 
-  // Normalize name for comparison (lowercase, remove extra spaces, remove accents)
-  function normalizeName(name) {
+  function getCtmFirstName(name) {
     if (!name) return '';
-    return removeAccents(name.toLowerCase().trim().replace(/\s+/g, ' '));
+    return removeCtmAccents(name.trim().split(/\s+/)[0].toLowerCase());
   }
 
-  // Check if two first names match (including nickname variations)
-  function firstNamesMatch(name1, name2) {
-    if (!name1 || !name2) return false;
-    const n1 = normalizeName(name1);
-    const n2 = normalizeName(name2);
-
-    // Direct match
-    if (n1 === n2) return true;
+  function ctmFirstNamesMatch(name1, name2) {
+    const first1 = getCtmFirstName(name1);
+    const first2 = getCtmFirstName(name2);
+    if (!first1 || !first2) return false;
+    if (first1 === first2) return true;
 
     // Check nickname mappings
-    const nicknames1 = NICKNAME_MAP[n1] || [];
-    const nicknames2 = NICKNAME_MAP[n2] || [];
-
-    // Check if n2 is a nickname of n1 or vice versa
-    if (nicknames1.includes(n2) || nicknames2.includes(n1)) return true;
-
-    // Check if one contains the other (for partial matches)
-    if (n1.includes(n2) || n2.includes(n1)) return true;
-
-    return false;
-  }
-
-  // Check if two names match (handles variations like "First Last" vs "Last, First" and nicknames)
-  function namesMatch(name1, name2) {
-    if (!name1 || !name2) return false;
-
-    const n1 = normalizeName(name1);
-    const n2 = normalizeName(name2);
-
-    // Direct match
-    if (n1 === n2) return true;
-
-    // Check if one contains the other
-    if (n1.includes(n2) || n2.includes(n1)) return true;
-
-    // Split into parts and check if all parts are present
-    const parts1 = n1.split(' ').filter(p => p.length > 1);
-    const parts2 = n2.split(' ').filter(p => p.length > 1);
-
-    // Check if all parts of the shorter name are in the longer name
-    const shorter = parts1.length <= parts2.length ? parts1 : parts2;
-    const longer = parts1.length <= parts2.length ? parts2 : parts1;
-
-    // For each part in shorter, check if it matches any part in longer (including nicknames)
-    const allPartsMatch = shorter.every(part =>
-      longer.some(lpart =>
-        lpart.includes(part) || part.includes(lpart) || firstNamesMatch(part, lpart)
-      )
-    );
-
-    if (allPartsMatch) return true;
-
-    // Also check if first names match via nickname (e.g., "Madison Meyers" vs "Madi Meyers")
-    if (parts1.length >= 1 && parts2.length >= 1) {
-      const firstName1 = parts1[0];
-      const firstName2 = parts2[0];
-      const lastName1 = parts1.length > 1 ? parts1[parts1.length - 1] : '';
-      const lastName2 = parts2.length > 1 ? parts2[parts2.length - 1] : '';
-
-      // If last names match and first names are nickname variations
-      if (lastName1 && lastName2 && lastName1 === lastName2 && firstNamesMatch(firstName1, firstName2)) {
+    for (const [fullName, nicknames] of Object.entries(CTM_NICKNAME_MAP)) {
+      const allNames = [fullName, ...nicknames];
+      if (allNames.includes(first1) && allNames.includes(first2)) {
         return true;
       }
     }
+    return false;
+  }
+
+  function ctmNamesMatch(name1, name2) {
+    if (!name1 || !name2) return false;
+    const normalized1 = removeCtmAccents(name1.toLowerCase().trim());
+    const normalized2 = removeCtmAccents(name2.toLowerCase().trim());
+    if (normalized1 === normalized2) return true;
+    if (ctmFirstNamesMatch(name1, name2)) return true;
+    return false;
+  }
+
+  // CTM-specific timer pattern: looks for "in progress" status with timer
+  const CTM_IN_PROGRESS_PATTERN = /in\s*progress/i;
+  const CTM_TIMER_PATTERN = /\b(\d{1,2}:\d{2})\b/;
+
+  // Extract phone from CTM call row
+  // CTM has data-number attribute on <tr>: data-number="+16026688360"
+  // Also format: (480) 690-4010 in text
+  function extractCtmPhoneFromRow(row) {
+    if (!row) return null;
+
+    // Primary method: Check data-number attribute on the row
+    const dataNumber = row.getAttribute('data-number');
+    if (dataNumber) {
+      const normalized = normalizeCtmPhoneNumber(dataNumber);
+      if (normalized && normalized.length >= 10) {
+        console.log('[CTM Extension] Found phone via data-number attr:', normalized);
+        return normalized;
+      }
+    }
+
+    // Secondary: Check tel: links
+    const telLink = row.querySelector('a[href^="tel:"]');
+    if (telLink) {
+      const href = telLink.getAttribute('href');
+      const normalized = normalizeCtmPhoneNumber(href.replace('tel:', ''));
+      if (normalized) {
+        console.log('[CTM Extension] Found phone via tel: link:', normalized);
+        return normalized;
+      }
+    }
+
+    // Fallback: Regex patterns in text
+    const phonePatterns = [
+      /\((\d{3})\)\s*(\d{3})[-.]?(\d{4})/,  // (480) 690-4010
+      /(\d{3})[-.](\d{3})[-.](\d{4})/        // 480-690-4010
+    ];
+
+    const text = row.textContent || '';
+    for (const pattern of phonePatterns) {
+      const match = text.match(pattern);
+      if (match) {
+        const normalized = match.slice(1).join('');
+        console.log('[CTM Extension] Found phone via text regex:', normalized);
+        return normalized;
+      }
+    }
+
+    console.log('[CTM Extension] Could not find phone in row');
+    return null;
+  }
+
+  // Extract caller name from CTM call row
+  // CTM structure: <a data-field="name" class="search callerid">andrew jones</a>
+  // Inside: <div class="caller-info-section">
+  function extractCtmCallerName(row) {
+    if (!row) return null;
+
+    // Primary method: Look for the specific caller ID link with data-field="name"
+    const callerLink = row.querySelector('a[data-field="name"], a.search.callerid, a.callerid');
+    if (callerLink) {
+      const name = callerLink.textContent.trim();
+      if (name && name.length > 1) {
+        // Capitalize first letter of each word (CTM stores as lowercase)
+        const formatted = name.split(' ')
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+          .join(' ');
+        console.log('[CTM Extension] Found caller name via a[data-field="name"]:', formatted);
+        return formatted;
+      }
+    }
+
+    // Secondary: Look for caller-info-section
+    const callerSection = row.querySelector('[class*="caller-info"], .caller-info-section');
+    if (callerSection) {
+      const nameLink = callerSection.querySelector('a');
+      if (nameLink) {
+        const name = nameLink.textContent.trim();
+        if (name && name.length > 1) {
+          const formatted = name.split(' ')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+            .join(' ');
+          console.log('[CTM Extension] Found caller name via caller-info-section:', formatted);
+          return formatted;
+        }
+      }
+    }
+
+    // Fallback: look for col-caller cell
+    const callerCell = row.querySelector('[class*="col-caller"]');
+    if (callerCell) {
+      const nameMatch = callerCell.textContent.match(/([A-Za-z]+\s+[A-Za-z]+)/);
+      if (nameMatch) {
+        const formatted = nameMatch[1].split(' ')
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+          .join(' ');
+        console.log('[CTM Extension] Found caller name via col-caller fallback:', formatted);
+        return formatted;
+      }
+    }
+
+    console.log('[CTM Extension] Could not find caller name in row');
+    return null;
+  }
+
+  // Check if call is answered (has agent assigned) vs ringing (set agent button)
+  // Returns: { isAnswered: boolean, agentName: string|null }
+  function extractCtmAgentInfo(row) {
+    if (!row) return { isAnswered: false, agentName: null };
+
+    // Check for "set agent" button - indicates unanswered/ringing call
+    const setAgentBtn = row.querySelector('[class*="set-agent"], button[class*="agent"], .set-agent');
+    const rowText = row.textContent || '';
+    const hasSetAgent = setAgentBtn || /set\s*agent/i.test(rowText);
+
+    // Primary method: Look for the specific agent-name link element
+    const agentLink = row.querySelector('a.agent-name, a.change-agent, [class*="agent-name"]');
+    if (agentLink) {
+      const name = agentLink.textContent.trim();
+      if (name && name.length > 1) {
+        console.log('[CTM Extension] Found agent name via a.agent-name:', name, '- Answered:', !hasSetAgent);
+        return { isAnswered: true, agentName: name };
+      }
+    }
+
+    // Secondary: Look for div.agent container
+    const agentDiv = row.querySelector('div.agent, [class="agent"]');
+    if (agentDiv) {
+      const nameLink = agentDiv.querySelector('a');
+      if (nameLink) {
+        const name = nameLink.textContent.trim();
+        if (name && name.length > 1) {
+          console.log('[CTM Extension] Found agent name via div.agent a:', name);
+          return { isAnswered: true, agentName: name };
+        }
+      }
+    }
+
+    // Fallback: look for any name in Routing-like column
+    const routingCell = row.querySelector('[class*="routing"], [class*="receiving"]');
+    if (routingCell) {
+      const nameMatch = routingCell.textContent.match(/([A-Z][a-z]+\s+[A-Z][a-z]+)/);
+      if (nameMatch) {
+        console.log('[CTM Extension] Found agent name via routing cell regex:', nameMatch[1]);
+        return { isAnswered: true, agentName: nameMatch[1] };
+      }
+    }
+
+    // No agent found - call is ringing/unanswered
+    console.log('[CTM Extension] No agent assigned yet - call is ringing');
+    return { isAnswered: false, agentName: null };
+  }
+
+  // Legacy wrapper for extractCtmAgentName (returns just the name)
+  function extractCtmAgentName(row) {
+    const info = extractCtmAgentInfo(row);
+    return info.agentName;
+  }
+
+  // Extract transfer information from CTM row
+  // Returns { transferFrom: string, transferTo: string, transferTime: string } or null
+  function extractCtmTransferInfo(row) {
+    if (!row) return null;
+
+    const text = row.textContent || '';
+
+    // Look for transfer patterns like "Transfer From X to Y @ TIME"
+    const transferMatch = text.match(/Transfer\s+(?:From|from)\s+([A-Za-z\s]+)\s+to\s+([A-Za-z\s]+)\s+@\s+([\d:]+)/i);
+    if (transferMatch) {
+      return {
+        transferFrom: transferMatch[1].trim(),
+        transferTo: transferMatch[2].trim(),
+        transferTime: transferMatch[3].trim()
+      };
+    }
+
+    // Look for simpler transfer pattern "Transferred to X"
+    const simpleTransferMatch = text.match(/Transferred?\s+to\s+([A-Za-z\s]+)/i);
+    if (simpleTransferMatch) {
+      return {
+        transferFrom: null,
+        transferTo: simpleTransferMatch[1].trim(),
+        transferTime: null
+      };
+    }
+
+    return null;
+  }
+
+  // Check if a row represents an active call
+  // CTM structure: <p>in progress</p> and <span class="duration">
+  function isCtmActiveCallRow(row) {
+    if (!row) return false;
+
+    const text = row.textContent || '';
+
+    // PRIORITY 1: Check for POSITIVE indicators of active calls FIRST
+    // These override any status words like "answered"
+
+    // Method 1 (PRIMARY): Look for literal <p>in progress</p> element
+    // This is the most reliable indicator of an active call
+    const inProgressP = row.querySelector('p');
+    if (inProgressP && /^\s*in\s*progress\s*$/i.test(inProgressP.textContent)) {
+      console.log('[CTM Extension] Found in-progress via <p> element');
+      return true;  // ✅ DEFINITIVE: This is an active call, even if "answered" appears
+    }
+
+    // Method 2: Look for span.duration with active timer AND "in progress" text
+    const durationSpan = row.querySelector('span.duration, [class*="duration"]');
+    if (durationSpan) {
+      const durationText = durationSpan.textContent.trim();
+      // Active calls show MM:SS format (duration timers)
+      if (CTM_TIMER_PATTERN.test(durationText)) {
+        // Verify "in progress" is present in the row
+        if (CTM_IN_PROGRESS_PATTERN.test(text)) {
+          console.log('[CTM Extension] Found in-progress via duration span + text');
+          return true;  // ✅ DEFINITIVE: Active call with live timer
+        }
+      }
+    }
+
+    // PRIORITY 2: Check for NEGATIVE indicators of historical calls
+    // These filters exclude completed calls from history
+
+    // Check for date indicators - historical calls have date stamps, active calls don't
+    // Matches: "Jan 22", "Thu Jan", "22nd", "21st", etc.
+    const hasDateIndicator = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2}/i.test(text) ||
+                             /\b\d{1,2}(st|nd|rd|th)\b/i.test(text);
+    if (hasDateIndicator) {
+      return false;  // Historical call with date stamp
+    }
+
+    // Check for AM/PM anywhere - timestamps have AM/PM, live duration timers don't
+    if (/\b(am|pm)\b/i.test(text)) {
+      return false;  // Has timestamp, not a live timer
+    }
+
+    // PRIORITY 3: Check for completed status words
+    // BUT only if "in progress" is NOT present (safeguard for edge cases)
+    // This prevents false negatives if the <p> element check fails for some reason
+    if (!CTM_IN_PROGRESS_PATTERN.test(text)) {
+      const completedStatuses = /\b(answered|busy|missed|completed|voicemail|no\s*answer|hung\s*up)\b/i;
+      if (completedStatuses.test(text)) {
+        return false;  // Completed call with no "in progress" indicator
+      }
+    }
+
+    // Method 3 (REMOVED): Text-based fallback was causing false positives
+    // Historical calls were being matched because timestamps like "08:44" matched timer pattern
+    // and "in progress" text from other page elements was bleeding through
 
     return false;
   }
 
-  // Extract the agent name who is handling the call from the call card
-  function extractAgentNameFromElement(element) {
-    if (!element) return null;
-
-    // Look for agent name in the Active section
-    // Based on CallRail UI: agent name appears as a link at the TOP of the call item
-    // The caller name appears BELOW the agent name
-
-    // Strategy 1: Look for the FIRST link element (typically the agent name)
-    const firstLink = element.querySelector('a');
-    if (firstLink) {
-      const text = firstLink.textContent?.trim();
-      // Agent names are typically 2+ words with capital letters, no numbers
-      if (text && text.match(/^[A-Z][a-z]+ [A-Z][a-z]+/) && !text.match(/\d/)) {
-        return text;
-      }
-    }
-
-    // Strategy 2: Look for spans with agent/user classes
-    const agentSpans = element.querySelectorAll('[class*="agent"], [class*="user"], span.segment');
-    for (const span of agentSpans) {
-      const text = span.textContent?.trim();
-      if (text && text.match(/^[A-Z][a-z]+ [A-Z][a-z]+/) && !text.match(/\d/)) {
-        return text;
-      }
-    }
-
-    // Strategy 3: Find all name-like text and take the first one (usually the agent)
-    const allText = element.textContent || '';
-    const nameMatches = allText.match(/[A-Z][a-z]+ [A-Z][a-z]+/g);
-    if (nameMatches && nameMatches.length > 0) {
-      // Filter out any that look like phone numbers or dates
-      for (const name of nameMatches) {
-        if (!name.match(/\d/) && !name.match(/Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec/i)) {
-          return name;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  // Extract customer phone from call list item - looks for phone displayed near timer
-  // This should be the customer's phone, NOT the tracking number
-  function extractCustomerPhoneFromCallItem(timerElement) {
-    // Walk up to find the call list item container
-    let container = timerElement.parentElement;
-    let depth = 0;
-
-    while (container && depth < 8) {
-      // Look for phone number displayed as text in this container's direct children/descendants
-      // The structure is: Agent Name, Customer Name, Customer Phone, Timer
-      // The phone should be a sibling element near the timer, not in a details panel
-
-      const childElements = container.querySelectorAll('*');
-      for (const child of childElements) {
-        // Skip if this element has many children (likely a container, not a text element)
-        if (child.children.length > 2) continue;
-
-        const text = child.textContent?.trim() || '';
-
-        // Look for phone number pattern (XXX-XXX-XXXX or similar)
-        // Must be a relatively short text (just the phone number)
-        if (text.length > 5 && text.length < 20) {
-          const phoneMatch = text.match(/^(\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})$/);
-          if (phoneMatch) {
-            // This looks like a standalone phone number display
-            return normalizePhoneNumber(phoneMatch[1]);
-          }
-        }
-      }
-
-      container = container.parentElement;
-      depth++;
-    }
-
-    return null;
-  }
-
-  // Find ALL active calls - uses CallRail's DOM class structure
-  // STRICT: Only returns calls with live elapsed timers (Xm Xs format like "17m 0s")
-  // Skips calls with timestamps (8:12 am) or dates (Dec 31)
-  function findAllActiveCalls() {
+  // Find all active calls in CTM interface
+  function findAllCtmActiveCalls() {
     const activeCalls = [];
-    const seenPhones = new Set();
+    console.log('[CTM Extension] findAllCtmActiveCalls() called');
 
-    // STRICT timer pattern: matches elapsed time formats:
-    // - "Xm Xs" format (e.g., "17m 0s", "5m 43s", "0m 12s") for calls >= 1 minute
-    // - "Xs" format (e.g., "6s", "59s") for calls < 1 minute
-    // Also allow no space: "17m0s"
-    const STRICT_TIMER_REGEX = /(\d+m\s*\d+s|\d+s)/;
+    // CTM shows calls in a table/list format
+    // DOM structure: <tr class="call call-row wide-call inbound..." data-number="+1...">
+    const rowSelectors = [
+      'tr.call-row',              // CTM specific: class="call call-row..."
+      'tr.call',                  // CTM specific: class="call..."
+      'tr[data-number]',          // Rows with data-number attribute
+      'tr[data-id]',              // Rows with data-id attribute
+      'tbody.main-list tr',       // Inside main-list tbody
+      'table tbody tr'            // Standard table rows
+    ];
 
-    // Find all phone number elements with the CallRail class
-    const phoneElements = document.querySelectorAll('[class*="list-item-number"]');
+    let rows = [];
+    for (const selector of rowSelectors) {
+      const found = document.querySelectorAll(selector);
+      console.log(`[CTM Extension] Selector "${selector}" found ${found.length} elements`);
+      if (found.length > 0 && rows.length === 0) {
+        rows = found;
+        console.log(`[CTM Extension] Using selector: ${selector}`);
+      }
+    }
 
-    for (const phoneEl of phoneElements) {
-      const phoneText = phoneEl.textContent?.trim() || '';
-      if (!phoneText) continue;
+    if (rows.length === 0) {
+      console.log('[CTM Extension] No call rows found with any selector');
+      // Debug: log what elements exist on the page
+      console.log('[CTM Extension] Page has', document.querySelectorAll('tr').length, 'tr elements');
+      console.log('[CTM Extension] Page has', document.querySelectorAll('table').length, 'table elements');
+      console.log('[CTM Extension] Page URL:', window.location.href);
+      return activeCalls;
+    }
 
-      // Extract phone number
-      const phoneMatch = phoneText.match(/(\d{3}[-.\s]?\d{3}[-.\s]?\d{4})/);
-      if (!phoneMatch) continue;
+    // Log first few rows for debugging
+    console.log('[CTM Extension] Sample row HTML (first 500 chars):', rows[0]?.outerHTML?.substring(0, 500));
 
-      const phone = normalizePhoneNumber(phoneMatch[1]);
-      if (!phone || phone.length < 10 || seenPhones.has(phone)) continue;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowText = row.textContent?.substring(0, 200) || '';
+      const hasInProgress = /in\s*progress/i.test(rowText);
 
-      // Get the container - IMPORTANT: Get the parent list-item div, not just list-item-contact
-      // The timer is in list-item-meta > list-item-date-time, which is a SIBLING of list-item-contact
-      const container = phoneEl.closest('[id^="list-item-"]') ||
-        phoneEl.closest('[class*="list-item u-"]') ||
-        phoneEl.closest('[class*="list-item-wrapper"]')?.parentElement ||
-        phoneEl.closest('[class*="list-item"]');
-
-      if (!container) continue;
-
-      const containerText = container.textContent || '';
-
-      // Also specifically look for the date-time element which contains the timer
-      const dateTimeEl = container.querySelector('[class*="list-item-date-time"], [class*="date-time"]');
-      const dateTimeText = dateTimeEl?.textContent?.trim() || '';
-
-      // Combine both for checking
-      const fullText = containerText + ' ' + dateTimeText;
-
-      // SKIP if it has am/pm timestamps - these are completed calls
-      if (/\d{1,2}:\d{2}\s*(am|pm)/i.test(fullText)) continue;
-
-      // SKIP if it has date like "Dec 31" - these are historical
-      if (/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}/i.test(fullText)) continue;
-
-      // STRICT CHECK: Must have a timer in "Xm Xs" format
-      const timerMatch = fullText.match(STRICT_TIMER_REGEX);
-      if (!timerMatch) {
-        // No timer found - skip this call
-        continue;
+      // Log details for first 3 rows
+      if (i < 3) {
+        console.log(`[CTM Extension] Row ${i}: hasInProgress=${hasInProgress}, text="${rowText.replace(/\s+/g, ' ').trim()}"`);
       }
 
-      // IMPORTANT: Skip calls that haven't been answered yet
-      // If "Answer" or "Decline" buttons are present, the call is still ringing
-      // The rep name shown might be from a previous interaction, not who's answering
-      const answerBtn = container.querySelector('button[class*="btn--primary"]');
-      const declineBtn = container.querySelector('button');
-      const hasAnswerButton = answerBtn && /answer/i.test(answerBtn.textContent || '');
-      const hasDeclineButton = declineBtn && /decline/i.test(declineBtn.textContent || '');
+      if (isCtmActiveCallRow(row)) {
+        // Include both inbound and outbound calls
+        const isOutbound = row.classList.contains('outbound') ||
+                          row.querySelector('.direction.outbound, [class*="outbound"], .font-phone-outgoing, [title*="Outbound"]') !== null;
 
-      if (hasAnswerButton || hasDeclineButton) {
-        // Call is still ringing/incoming - not answered yet, skip it
-        continue;
-      }
+        const phone = extractCtmPhoneFromRow(row);
+        const callerName = extractCtmCallerName(row);
+        const agentInfo = extractCtmAgentInfo(row);
+        const transferInfo = extractCtmTransferInfo(row);
 
-      const timer = timerMatch[1];
+        console.log(`[CTM Extension] Active ${isOutbound ? 'OUTBOUND' : 'INBOUND'} call found:`, {
+          phone: phone,
+          caller: callerName,
+          agent: agentInfo.agentName,
+          isAnswered: agentInfo.isAnswered,
+          transfer: transferInfo
+        });
 
-      // This is a verified active call with live timer (and answered)
-      seenPhones.add(phone);
-
-      // Extract names using specific DOM elements
-      let csrName = null;
-      let customerName = null;
-
-      // CSR/Agent name is in span.segment inside list-item-info
-      const infoEl = container.querySelector('[class*="list-item-info"]');
-      if (infoEl) {
-        const segmentEl = infoEl.querySelector('[class*="segment"], span');
-        if (segmentEl) {
-          csrName = segmentEl.textContent?.trim() || null;
+        if (phone) {
+          activeCalls.push({
+            phoneNumber: phone,
+            formattedPhone: formatCtmPhoneForDisplay(phone),
+            callerName: callerName,
+            agentName: agentInfo.agentName,
+            isAnswered: agentInfo.isAnswered,
+            transferInfo: transferInfo,
+            element: row
+          });
+        } else {
+          console.log('[CTM Extension] Active call row found but no phone number extracted');
         }
       }
+    }
 
-      // Customer name is in list-item-name
-      const nameEl = container.querySelector('[class*="list-item-name"]');
-      if (nameEl) {
-        customerName = nameEl.textContent?.trim() || null;
-      }
-
-      // Fallback to regex if DOM elements not found
-      if (!csrName || !customerName) {
-        const allNames = containerText.match(/[A-Z][a-z]+ [A-Z][a-z]+/g) || [];
-        if (!csrName && allNames.length >= 1) {
-          csrName = allNames[0];
-        }
-        if (!customerName && allNames.length >= 2) {
-          customerName = allNames[1];
-        } else if (!customerName && allNames.length === 1) {
-          customerName = allNames[0];
-        }
-      }
-
-      activeCalls.push({
-        phoneNumber: phone,
-        formattedPhone: formatPhoneForDisplay(phone),
-        timer: timer,
-        agentName: csrName,      // CSR handling the call (for filtering)
-        callerName: customerName  // Customer calling (for tab group title)
-      });
+    if (activeCalls.length === 0) {
+      console.log('[CTM Extension] No active calls detected in', rows.length, 'rows');
     }
 
     return activeCalls;
   }
 
-  // Find active/answered calls in the Active section
-  // STRICT: Only finds calls with live elapsed timers
-  function findActiveIncomingCall() {
-    // IMPORTANT: We are looking for CURRENTLY ACTIVE calls only
-    // Must have timer in "Xm Xs" format (e.g., "17m 0s", "5m 43s") or "Xs" format (e.g., "6s", "59s")
-
-    // STRICT timer pattern: matches elapsed time formats:
-    // - "Xm Xs" format for calls >= 1 minute
-    // - "Xs" format for calls < 1 minute
-    const STRICT_TIMER_REGEX = /(\d+m\s*\d+s|\d+s)/;
-
-    // Strategy 1: Use CallRail's DOM class structure
-    const phoneElements = document.querySelectorAll('[class*="list-item-number"]');
-
-    // DEBUG: Log how many phone elements found
-    if (phoneElements.length === 0) {
-      // Try alternate selectors
-      const altElements = document.querySelectorAll('[class*="phone"], [class*="number"], [class*="caller"]');
-      console.log('[CallRail Extension] DEBUG: No list-item-number elements found. Alt selectors found:', altElements.length);
-    }
-
-    for (const phoneEl of phoneElements) {
-      const phoneText = phoneEl.textContent?.trim() || '';
-      if (!phoneText) continue;
-
-      const phoneMatch = phoneText.match(/(\d{3}[-.\s]?\d{3}[-.\s]?\d{4})/);
-      if (!phoneMatch) continue;
-
-      const phone = normalizePhoneNumber(phoneMatch[1]);
-      if (!phone || phone.length < 10) continue;
-
-      // Get the container - IMPORTANT: Get the parent list-item div, not just list-item-contact
-      // The timer is in list-item-meta > list-item-date-time, which is a SIBLING of list-item-contact
-      // So we need the parent that contains BOTH (the main list-item div with id)
-      const container = phoneEl.closest('[id^="list-item-"]') ||
-        phoneEl.closest('[class*="list-item u-"]') ||
-        phoneEl.closest('[class*="list-item-wrapper"]')?.parentElement ||
-        phoneEl.closest('[class*="list-item"]');
-
-      if (!container) continue;
-
-      // Get text from the whole container including the date-time element
-      const containerText = container.textContent || '';
-
-      // Also specifically look for the date-time element which contains the timer
-      const dateTimeEl = container.querySelector('[class*="list-item-date-time"], [class*="date-time"]');
-      const dateTimeText = dateTimeEl?.textContent?.trim() || '';
-
-      // Combine both for checking
-      const fullText = containerText + ' ' + dateTimeText;
-
-      // Check for timer, timestamp, and date
-      const hasTimestamp = /\d{1,2}:\d{2}\s*(am|pm)/i.test(fullText);
-      const hasDate = /(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}/i.test(fullText);
-      const timerMatch = fullText.match(STRICT_TIMER_REGEX);
-
-      // SKIP if it has am/pm timestamps - these are completed calls
-      if (hasTimestamp) continue;
-
-      // SKIP if it has date like "Dec 31" - these are historical
-      if (hasDate) continue;
-
-      // STRICT CHECK: Must have a timer in "Xm Xs" format
-      if (!timerMatch) {
-        // No timer found - skip this call
-        continue;
-      }
-
-      // IMPORTANT: Skip calls that haven't been answered yet
-      // If "Answer" or "Decline" buttons are present, the call is still ringing
-      // The rep name shown might be from a previous interaction, not who's answering
-      const answerBtn = container.querySelector('button[class*="btn--primary"]');
-      const declineBtn = container.querySelector('button');
-      const hasAnswerButton = answerBtn && /answer/i.test(answerBtn.textContent || '');
-      const hasDeclineButton = declineBtn && /decline/i.test(declineBtn.textContent || '');
-
-      if (hasAnswerButton || hasDeclineButton) {
-        // Call is still ringing/incoming - not answered yet, skip it
-        continue;
-      }
-
-      // Extract names using specific DOM elements
-      let csrName = null;
-      let customerName = null;
-
-      // CSR/Agent name is in span.segment inside list-item-info
-      const infoEl = container.querySelector('[class*="list-item-info"]');
-      if (infoEl) {
-        const segmentEl = infoEl.querySelector('[class*="segment"], span');
-        if (segmentEl) {
-          csrName = segmentEl.textContent?.trim() || null;
-        }
-      }
-
-      // Customer name is in list-item-name
-      const nameEl = container.querySelector('[class*="list-item-name"]');
-      if (nameEl) {
-        customerName = nameEl.textContent?.trim() || null;
-      }
-
-      // Fallback to regex if DOM elements not found
-      if (!csrName || !customerName) {
-        const allNames = containerText.match(/[A-Z][a-z]+ [A-Z][a-z]+/g) || [];
-        if (!csrName && allNames.length >= 1) {
-          csrName = allNames[0];
-        }
-        if (!customerName && allNames.length >= 2) {
-          customerName = allNames[1];
-        } else if (!customerName && allNames.length === 1) {
-          customerName = allNames[0];
-        }
-      }
-
-      // Return agentName as CSR name (for filtering), callerName as customer (for tab group)
-      return {
-        phoneNumber: phone,
-        element: container,
-        agentName: csrName,      // CSR handling the call - used for filtering
-        callerName: customerName  // Customer - used for tab group title
-      };
-    }
-
-    // Strategy 2: Look for "Hangup", "End Call", "Mute", "Keypad" buttons
-    // These buttons appear ONLY when a call has been answered and is active.
-    // They are the most reliable indicator that the "Answer" phase is over and we are "In Call".
-    const potentialActiveButtons = document.querySelectorAll('button, [role="button"]');
-    for (const btn of potentialActiveButtons) {
-      const btnText = btn.textContent?.toLowerCase() || '';
-      const btnLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
-      const combinedText = btnText + ' ' + btnLabel;
-
-      // Check for common in-call button text/labels
-      const isInCallButton = combinedText.includes('hang up') ||
-        combinedText.includes('hangup') ||
-        combinedText.includes('end call') ||
-        combinedText.includes('mute') ||
-        combinedText.includes('keypad') ||
-        combinedText.includes('transfer') ||
-        combinedText.includes('hold');
-
-      if (isInCallButton) {
-        // This is likely an active call control
-        // Ignore if it looks like a decline button for an incoming call (rare, but possible overlap)
-        if (combinedText.includes('decline') || combinedText.includes('reject')) continue;
-
-        // Try to find customer phone from call list (use same logic as timer detection)
-        const phone = extractCustomerPhoneFromCallItem(btn);
-        if (phone && phone.length >= 10) {
-          // Walk up to find container for agent name
-          let container = btn.parentElement;
-          let depth = 0;
-          while (container && depth < 6) {
-            container = container.parentElement;
-            depth++;
-          }
-
-          const agentName = container ? extractAgentNameFromElement(container) : null;
-          console.log('[CallRail Extension] Found active call via In-Call button:', combinedText, 'Customer phone:', phone);
-          return { phoneNumber: phone, element: container, agentName };
-        }
-      }
-    }
-
-    // NO active call found - this is the expected state most of the time
-    return null;
+  // Find the first active incoming call
+  function findCtmActiveIncomingCall() {
+    const activeCalls = findAllCtmActiveCalls();
+    return activeCalls.length > 0 ? activeCalls[0] : null;
   }
 
   // Handle detected incoming call
-  function handleIncomingCall(callData) {
-    if (!callData || !callData.phoneNumber) return;
-
-    // Check if feature is still enabled
-    if (!isFeatureEnabled) {
-      return; // Silently skip - already logged in checkForCallStateChange
+  async function handleCtmDetectedCall(callData, isNewCall = true) {
+    if (!isCtmFeatureEnabled) {
+      console.log('[CTM Extension] Feature disabled, skipping');
+      return;
     }
 
-    const phone = callData.phoneNumber;
-    const csrName = callData.agentName;      // CSR handling the call (for filtering)
-    const customerName = callData.callerName; // Customer name (for tab group title)
+    const { phoneNumber, formattedPhone, callerName, agentName, isAnswered } = callData;
 
-    // Prevent duplicate processing for the same call
-    if (phone === activeCallPhoneNumber && isCallActive) {
-      return; // Already processed this call
-    }
-
-    // Mark this call as active to prevent reprocessing
-    isCallActive = true;
-    activeCallPhoneNumber = phone;
-
-    // Check if a CSR is configured and if the call's CSR matches
-    if (configuredCsr || configuredCsrUser) {
-      if (csrName) {
-        // Try matching against primary CSR name (display name or user name)
-        let isMatchingCsr = configuredCsr && namesMatch(csrName, configuredCsr);
-
-        // If display name was set but didn't match, also try the user name as fallback
-        if (!isMatchingCsr && configuredCsrUser && configuredCsrUser !== configuredCsr) {
-          isMatchingCsr = namesMatch(csrName, configuredCsrUser);
-        }
-
-        // Also try display name if it exists and is different from primary
-        if (!isMatchingCsr && configuredCsrDisplay && configuredCsrDisplay !== configuredCsr) {
-          isMatchingCsr = namesMatch(csrName, configuredCsrDisplay);
-        }
-
-        if (!isMatchingCsr) {
-          // Log once then return without searching - this call is for a different CSR
-          const namesConfigured = [configuredCsr, configuredCsrUser, configuredCsrDisplay].filter(n => n).join(' / ');
-          console.log('[CallRail Extension] Call handled by', csrName, '- not matching configured CSR:', namesConfigured);
-          return;
-        }
-        console.log('[CallRail Extension] Call handled by', csrName, '- matches configured CSR');
-      } else {
-        // Could not detect CSR name - do NOT proceed if a CSR is configured
-        // because we can't verify this is their call
-        console.log('[CallRail Extension] Could not detect CSR name, skipping (cannot verify if this is the configured CSR\'s call)');
+    // For ANSWERED calls: only process if agent matches configured CSR
+    // For UNANSWERED calls: always process (let all CSRs see incoming calls)
+    if (isAnswered && configuredCtmCsr && agentName) {
+      if (!ctmNamesMatch(agentName, configuredCtmCsr)) {
+        console.log(`[CTM Extension] Skipping answered call - agent "${agentName}" does not match CSR "${configuredCtmCsr}"`);
         return;
+      }
+      console.log(`[CTM Extension] Call answered by ${agentName} (matches configured CSR)`);
+    } else if (!isAnswered) {
+      console.log('[CTM Extension] Unanswered/ringing call - showing to all CSRs');
+    }
+
+    // ROBUST DEDUPLICATION: Prevent duplicate popups during transfers/agent changes
+    // This check applies regardless of isNewCall flag
+    const now = Date.now();
+    const lastPopupTime = recentCtmPopupPhones.get(phoneNumber);
+    if (lastPopupTime && (now - lastPopupTime) < CTM_POPUP_DEDUP_WINDOW_MS) {
+      console.log(`[CTM Extension] Skipping duplicate popup for ${phoneNumber} - last popup was ${Math.round((now - lastPopupTime) / 1000)}s ago (within ${CTM_POPUP_DEDUP_WINDOW_MS / 1000}s window)`);
+      return;
+    }
+
+    // Clean up old entries from the map (entries older than 2x the window)
+    const cleanupThreshold = now - (CTM_POPUP_DEDUP_WINDOW_MS * 2);
+    for (const [phone, timestamp] of recentCtmPopupPhones.entries()) {
+      if (timestamp < cleanupThreshold) {
+        recentCtmPopupPhones.delete(phone);
       }
     }
 
-    // Prevent duplicate searches for the same number
-    if (phone === lastSearchedNumber) {
-      return; // Already searched for this number recently
+    console.log('[CTM Extension] Processing call:', {
+      phone: phoneNumber,
+      caller: callerName,
+      agent: agentName || '(unanswered)',
+      isAnswered: isAnswered,
+      isNewCall: isNewCall
+    });
+
+    // Track this popup to prevent duplicates
+    recentCtmPopupPhones.set(phoneNumber, now);
+    lastCtmSearchedNumber = phoneNumber;
+
+    // Check if auto-search is enabled before sending message
+    if (!ctmAutoSearch) {
+      console.log('[CTM Extension] Auto-search disabled, skipping search for:', phoneNumber);
+      return;
     }
 
-    console.log('[CallRail Extension] Triggering Roofr contact search for:', phone, 'CSR:', csrName, 'Customer:', customerName);
-    lastSearchedNumber = phone;
-
-    // Send message to service worker to handle Roofr tab
     try {
-      chrome.runtime.sendMessage({
-        type: 'CALLRAIL_INCOMING_CALL',
-        phoneNumber: phone,
-        formattedPhone: formatPhoneForDisplay(phone),
-        callerName: customerName // Customer name for tab group title
+      await ctmSafeSendMessage({
+        type: 'CTM_INCOMING_CALL',
+        phoneNumber: phoneNumber,
+        formattedPhone: formattedPhone,
+        callerName: callerName || 'Unknown',
+        agentName: agentName || null,
+        isAnswered: isAnswered
       });
     } catch (e) {
-      console.warn('[CallRail Extension] Extension context invalidated - please refresh the CallRail page');
-      // Reset state since we couldn't send the message
-      isCallActive = false;
-      activeCallPhoneNumber = null;
+      console.error('[CTM Extension] Failed to send incoming call message:', e);
     }
   }
 
   // Handle call ended
-  function handleCallEnded() {
-    console.log('[CallRail Extension] Call ended for:', activeCallPhoneNumber);
+  function handleCtmCallEnded(phoneNumber) {
+    if (!phoneNumber) return;
 
-    // Notify service worker to clear tracking for this phone number
-    if (activeCallPhoneNumber) {
-      try {
-        chrome.runtime.sendMessage({
-          type: 'CALLRAIL_CALL_ENDED',
-          phoneNumber: activeCallPhoneNumber
-        });
-      } catch (e) {
-        // Extension context may be invalidated
+    console.log('[CTM Extension] Call ended:', phoneNumber);
+
+    // Clear deduplication tracking so future calls from this number will popup
+    recentCtmPopupPhones.delete(phoneNumber);
+
+    if (phoneNumber === lastCtmSearchedNumber) {
+      lastCtmSearchedNumber = null;
+    }
+
+    try {
+      ctmSafeSendMessage({
+        type: 'CTM_CALL_ENDED',
+        phoneNumber: phoneNumber
+      });
+    } catch (e) {
+      console.error('[CTM Extension] Failed to send call ended message:', e);
+    }
+  }
+
+  // Main check function — tracks ALL active calls by phone number
+  let previousActiveCalls = new Map(); // phone -> { ...callData, lastSeen: timestamp }
+  let lastCheckTimestamp = 0; // when the last successful DOM check ran
+  let ctmCheckCount = 0;
+  const CACHE_EXPIRY_MS = 30000; // expire cached calls after 30s without verification
+
+  function checkForCtmCallStateChange() {
+    // Skip DOM checks when tab is hidden — CTM's JS is throttled by Chrome,
+    // so the DOM is stale (ended calls still show "in progress"). Let cached
+    // entries expire naturally; visibilitychange handler will do a fresh check
+    // when the tab becomes active again.
+    if (document.hidden) return;
+
+    ctmCheckCount++;
+    if (ctmCheckCount % 20 === 1) {
+      console.log('[CTM Extension] Running call state check #' + ctmCheckCount);
+    }
+
+    const now = Date.now();
+    lastCheckTimestamp = now;
+
+    const currentCalls = findAllCtmActiveCalls();
+    const currentMap = new Map();
+    for (const call of currentCalls) {
+      if (call.phoneNumber) {
+        call.lastSeen = now;
+        currentMap.set(call.phoneNumber, call);
       }
     }
 
-    isCallActive = false;
-    activeCallPhoneNumber = null;
-    lastSearchedNumber = null; // Clear so if they call back immediately, we search again
-  }
-
-  // Check for call state changes
-  function checkForCallStateChange() {
-    if (!isFeatureEnabled) return;
-
-    const activeCall = findActiveIncomingCall();
-
-    if (activeCall) {
-      // Only log if this is a new/different call than what we last logged
-      const callKey = `${activeCall.phoneNumber}-${activeCall.agentName}`;
-      if (callKey !== lastLoggedCallKey) {
-        console.log('[CallRail Extension] Active call found:', {
-          phone: activeCall.phoneNumber,
-          agent: activeCall.agentName,
-          isNewCall: !isCallActive,
-          isDifferentCall: isCallActive && activeCall.phoneNumber !== activeCallPhoneNumber
-        });
-        lastLoggedCallKey = callKey;
+    // Detect NEW calls (in current but not in previous)
+    for (const [phone, callData] of currentMap) {
+      const prev = previousActiveCalls.get(phone);
+      if (!prev) {
+        // Brand new call
+        console.log('[CTM Extension] New active call detected:', phone);
+        isCtmCallActive = true;
+        activeCtmCallPhoneNumber = phone;
+        handleCtmDetectedCall(callData, true);
+      } else {
+        // Same call — check for state changes (answered, agent change)
+        if (!prev.isAnswered && callData.isAnswered) {
+          console.log('[CTM Extension] Call answered:', phone, 'by', callData.agentName);
+          handleCtmDetectedCall(callData, false);
+        } else if (prev.agentName !== callData.agentName && callData.agentName) {
+          console.log('[CTM Extension] Agent changed on', phone, ':', prev.agentName, '->', callData.agentName);
+          handleCtmDetectedCall(callData, false);
+        }
       }
-    } else if (lastLoggedCallKey) {
-      // Call ended, reset the logged call key
-      lastLoggedCallKey = null;
     }
 
-    if (activeCall && !isCallActive) {
-      // New active call detected
-      handleIncomingCall(activeCall);
-    } else if (activeCall && isCallActive && activeCall.phoneNumber !== activeCallPhoneNumber) {
-      // Different call detected (rare, but handle it)
-      handleIncomingCall(activeCall);
-    } else if (!activeCall && isCallActive) {
-      // Call appears to have ended (no longer in active section)
-      handleCallEnded();
+    // Detect ENDED calls (in previous but not in current)
+    for (const [phone] of previousActiveCalls) {
+      if (!currentMap.has(phone)) {
+        console.log('[CTM Extension] Call ended:', phone);
+        handleCtmCallEnded(phone);
+      }
     }
+
+    // Update global active state
+    isCtmCallActive = currentMap.size > 0;
+    if (!isCtmCallActive) activeCtmCallPhoneNumber = null;
+
+    previousActiveCalls = currentMap;
   }
 
-  // Debounce utility
-  function debounce(fn, ms) {
-    let timeout;
-    return (...args) => {
-      clearTimeout(timeout);
-      timeout = setTimeout(() => fn(...args), ms);
-    };
+  // Debounced check
+  let ctmCheckTimeout = null;
+  function debouncedCtmCheck() {
+    if (ctmCheckTimeout) clearTimeout(ctmCheckTimeout);
+    ctmCheckTimeout = setTimeout(checkForCtmCallStateChange, 300);
   }
 
-  const debouncedCheck = debounce(checkForCallStateChange, 300);
+  // Set up observer
+  function initCtmObserver() {
+    console.log('[CTM Extension] Setting up call detection observer');
 
-  // Set up MutationObserver to watch for incoming calls
-  function initObserver() {
-    // Find the best container to observe
-    const container = document.querySelector('[class*="lead-center"]') ||
-      document.querySelector('[class*="LeadCenter"]') ||
-      document.querySelector('[class*="lc-inbox"]') ||
-      document.querySelector('[class*="call-list"]') ||
-      document.querySelector('[class*="CallList"]') ||
-      document.querySelector('main') ||
-      document.body;
+    const observer = new MutationObserver((mutations) => {
+      debouncedCtmCheck();
+    });
 
-    const observer = new MutationObserver(debouncedCheck);
-
-    observer.observe(container, {
+    // Observe the entire body for changes
+    observer.observe(document.body, {
       childList: true,
       subtree: true,
-      attributes: true,
-      characterData: true,
-      attributeFilter: ['class', 'data-state', 'data-status', 'style']
+      characterData: true
     });
 
     // Initial check
-    checkForCallStateChange();
+    debouncedCtmCheck();
 
-    // Also set up a periodic check as backup (every 2 seconds)
-    // This catches any DOM changes the MutationObserver might miss
-    setInterval(() => {
-      if (isFeatureEnabled) {
-        checkForCallStateChange();
+    // Also check periodically in case mutations are missed
+    setInterval(debouncedCtmCheck, 5000);
+
+    // Force immediate recheck when tab becomes visible again (clears stale cache)
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        console.log('[CTM Extension] Tab visible again — forcing immediate call state check');
+        checkForCtmCallStateChange();
       }
-    }, 2000);
-
-    console.log('[CallRail Extension] Observer initialized on', container.tagName || 'container', '+ periodic check every 2s');
+    });
   }
 
-  // Handle messages from service worker
+  // Load settings and initialize
+  async function loadCtmSettings() {
+    try {
+      const response = await ctmSafeSendMessage({ type: 'GET_CTM_SETTINGS' });
+      if (response && response.success) {
+        isCtmFeatureEnabled = response.settings.ctm_enabled;
+        configuredCtmCsr = response.settings.ctm_csr || '';
+        configuredCtmCsrUser = response.settings.ctm_user || '';
+        configuredCtmCsrDisplay = response.settings.ctm_display_name || '';
+        // Load new CTM settings
+        ctmAutoSearch = response.settings.ctm_auto_search !== false;
+        ctmShowNotifications = response.settings.ctm_show_notifications !== false;
+        ctmShowActiveCalls = response.settings.ctm_show_active_calls !== false;
+        console.log('[CTM Extension] Settings loaded:', {
+          enabled: isCtmFeatureEnabled,
+          csr: configuredCtmCsr,
+          autoSearch: ctmAutoSearch,
+          showNotifications: ctmShowNotifications,
+          showActiveCalls: ctmShowActiveCalls
+        });
+      }
+    } catch (e) {
+      console.error('[CTM Extension] Failed to load settings:', e);
+      isCtmFeatureEnabled = false;
+    }
+  }
+
+  // Listen for settings changes
+  chrome.storage.onChanged.addListener((changes, namespace) => {
+    if (namespace === 'sync') {
+      if (changes.ctm_enabled) {
+        isCtmFeatureEnabled = changes.ctm_enabled.newValue;
+        console.log('[CTM Extension] Feature enabled changed:', isCtmFeatureEnabled);
+      }
+      if (changes.ctm_csr) {
+        configuredCtmCsr = changes.ctm_csr.newValue || '';
+        console.log('[CTM Extension] CSR changed:', configuredCtmCsr);
+      }
+      // Listen for new CTM settings changes
+      if (changes.ctm_auto_search) {
+        ctmAutoSearch = changes.ctm_auto_search.newValue !== false;
+        console.log('[CTM Extension] Auto-search changed:', ctmAutoSearch);
+      }
+      if (changes.ctm_show_notifications) {
+        ctmShowNotifications = changes.ctm_show_notifications.newValue !== false;
+        console.log('[CTM Extension] Show notifications changed:', ctmShowNotifications);
+      }
+      if (changes.ctm_show_active_calls) {
+        ctmShowActiveCalls = changes.ctm_show_active_calls.newValue !== false;
+        console.log('[CTM Extension] Show active calls changed:', ctmShowActiveCalls);
+      }
+    }
+  });
+
+  // Handle messages from popup (for active calls dropdown) and notifications
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg.type === 'CALLRAIL_PING') {
-      sendResponse({ ok: true, isCallActive, activeCallPhoneNumber, isFeatureEnabled });
-      return true;
-    }
-
-    if (msg.type === 'CALLRAIL_CLEAR_CALL_STATE') {
-      lastSearchedNumber = null;
-      sendResponse({ ok: true });
-      return true;
-    }
-
-    if (msg.type === 'CALLRAIL_SET_ENABLED') {
-      isFeatureEnabled = msg.enabled;
-      console.log('[CallRail Extension] Feature enabled state updated:', isFeatureEnabled);
-      sendResponse({ ok: true });
-      return true;
-    }
-
-    if (msg.type === 'GET_ACTIVE_CALLS') {
-      const activeCalls = findAllActiveCalls();
+    if (msg.type === 'GET_CTM_ACTIVE_CALLS') {
+      console.log('[CTM Extension] Received GET_CTM_ACTIVE_CALLS request');
+      // Check if show active calls is enabled
+      if (!ctmShowActiveCalls) {
+        console.log('[CTM Extension] Show active calls disabled, returning empty array');
+        sendResponse({ ok: true, calls: [] });
+        return true;
+      }
+      // If the tab is hidden/background, CTM's DOM may be stale — return cached calls, filtering out expired ones
+      if (document.hidden) {
+        const now = Date.now();
+        const cachedCalls = Array.from(previousActiveCalls.values())
+          .filter(c => (now - c.lastSeen) < CACHE_EXPIRY_MS)
+          .map(c => ({
+            phoneNumber: c.phoneNumber,
+            formattedPhone: c.formattedPhone,
+            callerName: c.callerName,
+            agentName: c.agentName,
+            isAnswered: c.isAnswered,
+            transferInfo: c.transferInfo
+          }));
+        const cacheAge = Math.round((now - lastCheckTimestamp) / 1000);
+        console.log('[CTM Extension] Tab is hidden — returning', cachedCalls.length, 'cached active calls (cache age:', cacheAge + 's)');
+        sendResponse({ ok: true, calls: cachedCalls, stale: true });
+        return true;
+      }
+      const activeCalls = findAllCtmActiveCalls();
+      console.log('[CTM Extension] Returning', activeCalls.length, 'active calls');
       sendResponse({ ok: true, calls: activeCalls });
+      return true;
+    }
+
+    // Handle notification messages from service worker
+    if (msg.type === 'SHOW_CTM_NOTIFICATION') {
+      console.log('[CTM Extension] Showing notification:', msg.message);
+      showCtmNotification(msg.message, {
+        background: msg.background || '#22c55e',
+        duration: msg.duration || 8000,
+        emoji: msg.emoji || ''
+      });
+      sendResponse({ ok: true });
       return true;
     }
 
     return false;
   });
 
-  // Listen for storage changes to update feature state in real-time
-  chrome.storage.onChanged.addListener((changes, areaName) => {
+  // Initialize
+  async function initCtmWithDelay() {
+    // Wait a bit for page to stabilize
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Notify service worker that page loaded
     try {
-      if (areaName === 'sync') {
-        if (changes.callrail_enabled) {
-          isFeatureEnabled = changes.callrail_enabled.newValue !== false;
-          console.log('[CallRail Extension] Feature enabled changed to:', isFeatureEnabled);
-        }
-        // Handle callrail_csr from popup modal "Start Calls" button
-        if (changes.callrail_csr) {
-          const newCsr = changes.callrail_csr.newValue || '';
-          // This is the primary CSR from the popup modal
-          configuredCsr = newCsr;
-          console.log('[CallRail Extension] Configured CSR changed to:', newCsr);
-        }
-        // Handle callrail_user from settings page
-        if (changes.callrail_user) {
-          configuredCsrUser = changes.callrail_user.newValue || '';
-          // Only update primary CSR if callrail_csr isn't set
-          if (!configuredCsr) {
-            configuredCsr = configuredCsrUser;
-          }
-          console.log('[CallRail Extension] Configured CSR user changed to:', configuredCsrUser);
-        }
-        if (changes.callrail_display_name) {
-          configuredCsrDisplay = changes.callrail_display_name.newValue || '';
-          console.log('[CallRail Extension] Configured CSR display name changed to:', configuredCsrDisplay);
-        }
-      }
+      await ctmSafeSendMessage({ type: 'CTM_PAGE_LOADED' });
     } catch (e) {
-      // Extension context may have been invalidated
-      console.warn('[CallRail Extension] Storage listener error (context may be invalidated)');
-    }
-  });
-
-  // Check if feature is enabled and initialize
-  async function checkAndInit() {
-    try {
-      // Load all settings via message to service worker (content scripts can't access storage directly in MV3)
-      const response = await chrome.runtime.sendMessage({ type: 'GET_CALLRAIL_SETTINGS' });
-      const settings = response?.settings || {
-        callrail_enabled: false,
-        callrail_csr: '',
-        callrail_user: '',
-        callrail_display_name: ''
-      };
-
-      isFeatureEnabled = settings.callrail_enabled !== false;
-      // Priority: callrail_csr (popup modal) > callrail_display_name > callrail_user (settings page)
-      configuredCsr = settings.callrail_csr || '';
-      configuredCsrUser = settings.callrail_user || '';
-      configuredCsrDisplay = settings.callrail_display_name || '';
-
-      console.log('[CallRail Extension] Settings loaded:', {
-        enabled: isFeatureEnabled,
-        primaryCsr: configuredCsr,
-        userFromSettings: configuredCsrUser,
-        displayName: configuredCsrDisplay
-      });
-
-      if (!isFeatureEnabled) {
-        console.log('[CallRail Extension] Feature is disabled in settings, not initializing');
-        return;
-      }
-
-      console.log('[CallRail Extension] Feature is enabled, initializing call detection...');
-      initObserver();
-    } catch (e) {
-      console.warn('[CallRail Extension] Could not check settings, initializing anyway:', e);
-      initObserver();
-    }
-  }
-
-  // Initialize after a delay to ensure DOM is ready
-  // Wait 3 seconds to allow CallRail to switch active calls from timestamp to timer format
-  async function initWithDelay() {
-    // Clear service worker tracking on page load/refresh (in case call was active before refresh)
-    try {
-      chrome.runtime.sendMessage({ type: 'CALLRAIL_PAGE_LOADED' });
-      console.log('[CallRail Extension] Notified service worker of page load');
-    } catch (e) {
-      // Extension context may be invalidated
+      console.warn('[CTM Extension] Could not notify page load:', e);
     }
 
-    // Wait 3 seconds for CallRail to fully render and switch timestamps to timers
-    await new Promise(r => setTimeout(r, 3000));
-    await checkAndInit();
+    // Load settings
+    await loadCtmSettings();
 
-    // Do a second check 2 seconds later as a safety net
-    // (catches calls that switched from timestamp to timer format after initial check)
-    setTimeout(() => {
-      if (isFeatureEnabled) {
-        console.log('[CallRail Extension] Running secondary check for active calls');
-        checkForCallStateChange();
-      }
-    }, 2000);
+    // Always initialize observer (check is gated by isCtmFeatureEnabled)
+    console.log('[CTM Extension] Initializing observer, feature enabled:', isCtmFeatureEnabled);
+    initCtmObserver();
   }
 
   if (document.readyState === 'complete') {
-    initWithDelay();
+    initCtmWithDelay();
   } else {
-    window.addEventListener('load', initWithDelay);
+    window.addEventListener('load', initCtmWithDelay);
   }
 }
 // ==================================================
-// END: CallRail Call Detection
+// END: CTM Call Detection
 // ==================================================
 
 
@@ -1134,7 +1136,7 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
-  // Inject phone number into contacts search input (for CallRail integration)
+  // Inject phone number into contacts search input (for CTM integration)
   async function injectContactSearch(phoneNumber) {
     console.log('[Roofr Extension] Injecting contact search for:', phoneNumber);
     console.log('[Roofr Extension] Current URL:', window.location.href);
@@ -1244,6 +1246,113 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     const clickResult = await autoClickSingleResult();
 
     return { ok: true, injectedValue: phoneNumber, inputValue: searchInput.value, autoClicked: clickResult };
+  }
+
+  // Inject job search into the Roofr jobs list page search input
+  async function injectJobSearch(addressString) {
+    console.log('[Roofr Extension] Injecting job search for:', addressString);
+    console.log('[Roofr Extension] Current URL:', window.location.href);
+
+    // Wait for page to be ready - give React time to render
+    await new Promise(r => setTimeout(r, 1500));
+
+    // Find the search input - try multiple selectors in priority order
+    // NOTE: Prioritize data-testid and placeholder attributes (stable). Avoid auto-generated IDs.
+    const selectors = [
+      '[data-testid="jobs-search-input"]',
+      '[data-testid*="jobs-search"]',
+      '[data-testid*="jobs"]  input[type="text"]',
+      '[data-testid*="search"]',
+      'input[placeholder*="Search"]',
+      'input[placeholder*="search"]',
+      'input[placeholder*="Filter"]',
+      'input[placeholder*="filter"]',
+      'input[placeholder*="Address"]',
+      'input[placeholder*="address"]',
+      'input[type="search"]',
+      'input[type="text"][class*="search"]',
+      'input[type="text"][class*="filter"]'
+    ];
+
+    let searchInput = null;
+    for (const selector of selectors) {
+      searchInput = document.querySelector(selector);
+      if (searchInput) {
+        console.log('[Roofr Extension] Found job search input with selector:', selector);
+        break;
+      }
+    }
+
+    // Last resort: find any visible text input on the page (prioritize inputs in the jobs list area)
+    if (!searchInput) {
+      // First try to find inputs in common container classes
+      const jobsAreaInputs = document.querySelectorAll('[class*="jobs"] input, [class*="list"] input, [class*="search"] input');
+      for (const input of jobsAreaInputs) {
+        if (input.type === 'text' || input.type === 'search' || !input.type) {
+          if (input.offsetParent !== null && input.offsetWidth > 0) {
+            searchInput = input;
+            console.log('[Roofr Extension] Using jobs area input as fallback');
+            break;
+          }
+        }
+      }
+
+      // Then try any visible text input
+      if (!searchInput) {
+        const allInputs = document.querySelectorAll('input[type="text"], input[type="search"], input:not([type])');
+        for (const input of allInputs) {
+          if (input.offsetParent !== null && input.offsetWidth > 0) {
+            searchInput = input;
+            console.log('[Roofr Extension] Using first visible text input as fallback');
+            break;
+          }
+        }
+      }
+    }
+
+    if (!searchInput) {
+      console.log('[Roofr Extension] Job search input not found after trying all selectors');
+      console.log('[Roofr Extension] Available inputs:', document.querySelectorAll('input').length);
+      const allInputs = Array.from(document.querySelectorAll('input'));
+      console.log('[Roofr Extension] Input types found:', allInputs.map(i => i.type || 'none'));
+      return { ok: false, error: 'Job search input not found' };
+    }
+
+    // Focus the input first
+    searchInput.focus();
+    await new Promise(r => setTimeout(r, 100));
+
+    // Clear existing value
+    searchInput.value = '';
+    searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 50));
+
+    // Set the address value using native setter (for React compatibility)
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, 'value'
+    ).set;
+    nativeInputValueSetter.call(searchInput, addressString);
+
+    // Trigger all necessary events for React to pick up the change
+    searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+    searchInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+    // Also simulate typing by triggering keydown/keyup for each character
+    for (const char of addressString) {
+      searchInput.dispatchEvent(new KeyboardEvent('keydown', { key: char, bubbles: true }));
+      searchInput.dispatchEvent(new KeyboardEvent('keyup', { key: char, bubbles: true }));
+    }
+
+    console.log('[Roofr Extension] Job search value injected:', addressString);
+    console.log('[Roofr Extension] Actual input value after injection:', searchInput.value);
+
+    // Wait for search results to load (give React time to filter)
+    await new Promise(r => setTimeout(r, 2500));
+
+    // Verify the value is still there
+    console.log('[Roofr Extension] Input value after wait:', searchInput.value);
+
+    return { ok: true, injectedValue: addressString, inputValue: searchInput.value };
   }
 
   // Auto-click the first contact if there's exactly one search result
@@ -1372,10 +1481,30 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     return { h, min };
   }
 
+  // Event type detection by background color
+  const EVENT_TYPE_COLORS = {
+    'rgb(254, 243, 234)': 'Dropoffs and pickups',  // Peach/Orange
+    'rgb(233, 246, 236)': 'Production',             // Light Green
+    'rgb(255, 250, 237)': 'Post-production',        // Light Yellow
+    'rgb(219, 234, 254)': 'Sales',                  // Light Blue
+    'rgb(243, 244, 246)': 'General',                // Gray
+    'rgb(254, 226, 226)': 'Unavailable'             // Light Pink
+  };
+
   function parseDateFromClass(cls) {
     const m = cls.match(/-(\d{2})-(\d{2})-(\d{4})--/);
     if (!m) return null;
     return new Date(+m[3], +m[2] - 1, +m[1]);
+  }
+
+  // Extract full date and time from class name
+  // Format: rbcalendar-event-{id}-{id}-DD-MM-YYYY--HH-MM-SS
+  function extractDateTimeFromClass(className) {
+    const match = className.match(/(\d{2})-(\d{2})-(\d{4})--(\d{2})-(\d{2})-(\d{2})/);
+    if (!match) return null;
+
+    const [_, day, month, year, hour, min, sec] = match;
+    return new Date(+year, +month - 1, +day, +hour, +min, +sec);
   }
 
   function parseTimeRange(str) {
@@ -1384,23 +1513,122 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     return [m[1], m[2]];
   }
 
+  function normalizeTimeToMinutes(timeText) {
+    if (!timeText) return null;
+    const parsed = parseTime12h(String(timeText).replace(/\s+/g, ' ').trim());
+    return parsed ? parsed.h * 60 + parsed.min : null;
+  }
+
+  function formatWindowLabel(startText, endText) {
+    if (!startText || !endText) return '';
+    return `${String(startText).trim()}-${String(endText).trim()}`;
+  }
+
+  function extractArrivalWindowFromText(text) {
+    if (!text) return null;
+    const match = text.match(/\bArrival\s*Window\s*:?\s*(\d{1,2}(?::\d{2})?\s*(?:AM|PM))\s*[–—-]\s*(\d{1,2}(?::\d{2})?\s*(?:AM|PM))/i);
+    if (!match) return null;
+    return {
+      startText: match[1],
+      endText: match[2],
+      startMinutes: normalizeTimeToMinutes(match[1]),
+      endMinutes: normalizeTimeToMinutes(match[2]),
+      label: formatWindowLabel(match[1], match[2])
+    };
+  }
+
+  // Comprehensive event extraction using color, class names, and content
+  function extractEventFromElement(el) {
+    // 1. Detect if all-day event using class
+    const isAllDay = el.classList.contains('rbc-event-allday');
+
+    // 2. Get event type from background color
+    const bgColor = window.getComputedStyle(el).backgroundColor;
+    const eventType = EVENT_TYPE_COLORS[bgColor] || 'Unknown';
+
+    // 3. Get text content
+    const text = el.textContent?.trim() || '';
+
+    // 4. Extract date/time from class name (most reliable method)
+    const startDateTime = extractDateTimeFromClass(el.className);
+
+    // 5. Parse time range from text content (for display)
+    const timeMatch = text.match(/(\d{1,2}:\d{2}\s*(?:AM|PM))\s*[–-]\s*(\d{1,2}:\d{2}\s*(?:AM|PM))/i);
+
+    // 6. Extract title (address/description)
+    let title = text;
+    if (timeMatch) {
+      // Remove time range from title
+      title = text.replace(timeMatch[0], '').trim();
+    }
+
+    // 7. Calculate end time if we have start time and duration from text
+    let endDateTime = null;
+    if (startDateTime && timeMatch) {
+      // Parse end time from text
+      const endTime = parseTime12h(timeMatch[2]);
+      if (endTime) {
+        endDateTime = new Date(
+          startDateTime.getFullYear(),
+          startDateTime.getMonth(),
+          startDateTime.getDate(),
+          endTime.h,
+          endTime.min
+        );
+      }
+    } else if (startDateTime && isAllDay) {
+      // All-day events span to end of day
+      endDateTime = new Date(
+        startDateTime.getFullYear(),
+        startDateTime.getMonth(),
+        startDateTime.getDate(),
+        23,
+        59
+      );
+    }
+
+    // Fallback: try old method if class-based extraction fails
+    if (!startDateTime) {
+      const date = parseDateFromClass(el.className);
+      if (date) {
+        if (isAllDay) {
+          return {
+            start: toLocalISO(new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0)),
+            end: toLocalISO(new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59)),
+            title: title,
+            eventType: eventType,
+            isAllDay: true
+          };
+        } else if (timeMatch) {
+          const s = parseTime12h(timeMatch[1]);
+          const e = parseTime12h(timeMatch[2]);
+          if (s && e) {
+            return {
+              start: toLocalISO(new Date(date.getFullYear(), date.getMonth(), date.getDate(), s.h, s.min)),
+              end: toLocalISO(new Date(date.getFullYear(), date.getMonth(), date.getDate(), e.h, e.min)),
+              title: title,
+              eventType: eventType,
+              isAllDay: false
+            };
+          }
+        }
+      }
+      return { start: null, end: null, title: title, eventType: eventType, isAllDay: isAllDay };
+    }
+
+    return {
+      start: toLocalISO(startDateTime),
+      end: endDateTime ? toLocalISO(endDateTime) : toLocalISO(startDateTime),
+      title: title,
+      eventType: eventType,
+      isAllDay: isAllDay
+    };
+  }
+
+  // Legacy function for backward compatibility
   function extractTimes(el) {
-    const title = el.getAttribute("title") || "";
-    const labelEl = el.querySelector(".rbc-event-label");
-    const label = labelEl ? labelEl.textContent.trim() : "";
-    const src = title || label;
-    const tr = parseTimeRange(src);
-    if (!tr) return { start: null, end: null };
-
-    const date = parseDateFromClass(el.className);
-    if (!date) return { start: null, end: null };
-
-    const s = parseTime12h(tr[0]), e = parseTime12h(tr[1]);
-    if (!s || !e) return { start: null, end: null };
-
-    const ds = new Date(date.getFullYear(), date.getMonth(), date.getDate(), s.h, s.min);
-    const de = new Date(date.getFullYear(), date.getMonth(), date.getDate(), e.h, e.min);
-    return { start: toLocalISO(ds), end: toLocalISO(de) };
+    const result = extractEventFromElement(el);
+    return { start: result.start, end: result.end, isAllDay: result.isAllDay };
   }
 
   function getTitle(el) {
@@ -1862,9 +2090,29 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       return true;
     }
 
-    // Handle contact search injection from CallRail integration
+    // Handle contact search injection from CTM integration
     if (msg.type === "INJECT_CONTACT_SEARCH") {
       injectContactSearch(msg.phoneNumber).then(result => {
+        sendResponse(result);
+      }).catch(err => {
+        sendResponse({ ok: false, error: err.message });
+      });
+      return true; // Async response
+    }
+
+    // Auto-click the job card on the current contact page (used by fast path)
+    if (msg.type === "AUTO_CLICK_JOB_CARD") {
+      autoClickSingleJobCard().then(result => {
+        sendResponse(result);
+      }).catch(err => {
+        sendResponse({ ok: false, error: err.message });
+      });
+      return true; // Async response
+    }
+
+    // Handle job search injection for address search
+    if (msg.type === "INJECT_JOB_SEARCH") {
+      injectJobSearch(msg.address).then(result => {
         sendResponse(result);
       }).catch(err => {
         sendResponse({ ok: false, error: err.message });
@@ -1881,9 +2129,8 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     if (msg.type === "EXTRACT_ROOFR_EVENTS") {
       const nodes = getAllEventNodes();
       const events = nodes.map(el => {
-        const { start, end } = extractTimes(el);
-        return { start, end, title: getTitle(el) };
-      }).filter(e => e.start && e.end);
+        return extractEventFromElement(el);
+      }).filter(e => e.start && e.end); // Keep all events that have valid dates
       sendResponse({ ok: true, events });
       return true;
     }
@@ -1978,6 +2225,12 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       return true;
     }
 
+    if (msg.type === "SELECT_PRODUCTION_EVENT_TYPES") {
+      const result = selectProductionEventTypes();
+      sendResponse(result);
+      return true;
+    }
+
     if (msg.type === "SELECT_ALL_TEAM_MEMBERS") {
       const result = selectAllTeamMembers();
       sendResponse(result);
@@ -2004,7 +2257,7 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     }
 
     if (msg.type === "BATCH_OPEN_JOB") {
-      batchOpenJobInNewTab(msg.address).then(result => {
+      batchOpenJobInNewTab(msg.address, msg).then(result => {
         sendResponse(result);
       }).catch(err => {
         sendResponse({ ok: false, error: err.message });
@@ -2030,6 +2283,242 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       return true;
     }
 
+    // Scan job card for paint job, lot/unit keywords, and report status
+    if (msg.type === "SCAN_JOB_CARD") {
+      (async () => {
+        try {
+          // Avoid reading an older injected banner as job-note text during a rescan.
+          const staleWarningBanner = document.getElementById('roofr-batch-warning-banner');
+          if (staleWarningBanner) staleWarningBanner.remove();
+
+          // Wait for the job card page to fully render (React app needs time)
+          let pageReady = false;
+          for (let waitAttempt = 0; waitAttempt < 15; waitAttempt++) {
+            await batchSleep(1000);
+            // Check for key elements that indicate the page has loaded
+            const hasHeading = document.querySelector('h1, h2, [class*="heading"], dialog heading');
+            const hasActivity = document.querySelector('[class*="activity"], [class*="Activity"], main');
+            const hasMeasurements = document.body.innerText?.includes('Measurements');
+            if (hasHeading && hasActivity && hasMeasurements) {
+              pageReady = true;
+              console.log('[Batch] Job card page ready after', (waitAttempt + 1), 'seconds');
+              break;
+            }
+          }
+          if (!pageReady) {
+            console.log('[Batch] Page may not be fully loaded, scanning anyway...');
+          }
+          await batchSleep(500); // Extra settle time
+
+          const result = {
+            isPaintJob: false,
+            reportStatus: 'none', // 'none', 'processing', 'complete'
+            hasLotUnit: false,
+            lotUnitContext: '',
+            hasAppointmentTimeMismatch: false,
+            scheduledWindow: '',
+            notesArrivalWindow: '',
+            timeMismatchContext: '',
+            jobTitle: ''
+          };
+
+          // 1. Get job title from page heading
+          const headings = document.querySelectorAll('h1, h2, [class*="heading"], dialog heading');
+          for (const h of headings) {
+            const text = h.textContent?.trim() || '';
+            if (text.length > 10 && (text.match(/\d+/) || text.toLowerCase().includes('paint') || text.toLowerCase().includes('job'))) {
+              result.jobTitle = text;
+              break;
+            }
+          }
+
+          // 2. Check for paint job — heading, calendar event text, or page content
+          const pageLower = document.body.innerText?.toLowerCase() || '';
+          if (result.jobTitle.toLowerCase().includes('paint')) {
+            result.isPaintJob = true;
+          }
+          // Also check calendar event entries on the job card
+          const allElements = document.querySelectorAll('*');
+          for (const el of allElements) {
+            if (el.children.length === 0) {
+              const text = el.textContent?.trim().toLowerCase() || '';
+              if (text.includes('paint job') || text.match(/^paint\s*[-–]/i)) {
+                result.isPaintJob = true;
+                break;
+              }
+            }
+          }
+
+          // 3. Check report status
+          const statusElements = document.querySelectorAll('[class*="badge"], [class*="status"], [class*="Badge"], [class*="Status"], span, div');
+          for (const el of statusElements) {
+            const text = el.textContent?.trim().toLowerCase() || '';
+            if (text === 'processing' || text === 'in progress') {
+              result.reportStatus = 'processing';
+              break;
+            }
+          }
+          if (result.reportStatus === 'none') {
+            // Check for "No reports" text
+            if (pageLower.includes('no reports')) {
+              result.reportStatus = 'none';
+            } else if (pageLower.includes('roofr report') && (pageLower.includes('complete') || pageLower.includes('delivered'))) {
+              result.reportStatus = 'complete';
+            }
+          }
+
+          // 4. Scan activity log for lot/unit keywords
+          // Use specific patterns to reduce false positives:
+          //   - "lot" requires number/# after (not "a lot of issues")
+          //   - "unit" requires a unit number, #, or single-letter unit after (not "AC unit" or "Unit Address")
+          //   - "building" only as abbreviation "bldg" (not "commercial building")
+          //   - "space"/"spc"/"pad"/"site" require number/# after
+          //   - "apt"/"suite"/"manufactured"/"trailer" are specific enough alone
+          //   - "mobile home"/"mobile park" as phrases
+          const lotUnitPatterns = [
+            /\blot\s*[#\d]/i,
+            /(?<!ac\s)(?<!air\s)(?<!hvac\s)(?<!rooftop\s)\bunit\s*(?:#\s*)?(?:\d+[A-Za-z]?|[A-Za-z]\b)/i,
+            /\b(?:space|spc)\s*[#\d]/i,
+            /\b(?:apt|apartment)\b/i,
+            /\bsuite\s*(?:#\s*)?(?:\d+[A-Za-z]?|[A-Za-z]\b)/i,
+            /\bbldg\b/i,
+            /\b(?:pad|site)\s*[#\d]/i,
+            /\bmanufactured\b/i,
+            /\btrailer\b/i,
+            /\bmobile\s*(?:home|park)/i
+          ];
+
+          // Collect customer note/activity text. Avoid scanning the whole page for lot/unit:
+          // Roofr page chrome can contain unrelated fields/labels that look like address units.
+          const noteElements = document.querySelectorAll('[class*="note"], [class*="Note"], [class*="activity-log"], [class*="ActivityLog"], [class*="timeline"], [class*="Timeline"], [class*="comment"], [class*="Comment"]');
+          let activityText = '';
+          for (const el of noteElements) {
+            if (el.id === 'roofr-batch-warning-banner' || el.closest('#roofr-batch-warning-banner')) continue;
+            activityText += ' ' + (el.textContent?.trim() || '');
+          }
+          const pageTextForAppointmentInfo = document.body.innerText || '';
+
+          // 5. Compare appointment notes arrival window to the scheduled calendar event time.
+          const scheduledStartMinutes = normalizeTimeToMinutes(msg.scheduledStartTime);
+          const scheduledEndMinutes = normalizeTimeToMinutes(msg.scheduledEndTime);
+          const notesWindow = extractArrivalWindowFromText(activityText) || extractArrivalWindowFromText(pageTextForAppointmentInfo);
+          if (notesWindow && scheduledStartMinutes !== null && scheduledEndMinutes !== null) {
+            result.scheduledWindow = formatWindowLabel(msg.scheduledStartTime, msg.scheduledEndTime);
+            result.notesArrivalWindow = notesWindow.label;
+            if (notesWindow.startMinutes !== scheduledStartMinutes || notesWindow.endMinutes !== scheduledEndMinutes) {
+              result.hasAppointmentTimeMismatch = true;
+              const idx = activityText.toLowerCase().indexOf('arrival window');
+              if (idx >= 0) {
+                const start = Math.max(0, idx - 40);
+                const end = Math.min(activityText.length, idx + 90);
+                result.timeMismatchContext = activityText.substring(start, end).trim();
+              }
+            }
+          }
+
+          // Test each pattern against the activity text
+          for (const pattern of lotUnitPatterns) {
+            const match = activityText.match(pattern);
+            if (match) {
+              const idx = activityText.toLowerCase().indexOf(match[0].toLowerCase());
+              if (idx >= 0) {
+                result.hasLotUnit = true;
+                const start = Math.max(0, idx - 40);
+                const end = Math.min(activityText.length, idx + match[0].length + 40);
+                result.lotUnitContext = activityText.substring(start, end).trim();
+                break;
+              }
+            }
+          }
+
+          console.log('[Batch] SCAN_JOB_CARD result:', result);
+          sendResponse(result);
+        } catch (err) {
+          console.error('[Batch] SCAN_JOB_CARD error:', err);
+          sendResponse({ error: err.message });
+        }
+      })();
+      return true;
+    }
+
+    // Inject a visual warning banner on the page
+    if (msg.type === "INJECT_WARNING_BANNER") {
+      try {
+        // Remove any existing banner first
+        const existing = document.getElementById('roofr-batch-warning-banner');
+        if (existing) existing.remove();
+
+        const banner = document.createElement('div');
+        banner.id = 'roofr-batch-warning-banner';
+        banner.style.cssText = `
+          position: fixed; top: 0; left: 0; right: 0; z-index: 999999;
+          background: ${msg.color || '#ef4444'}; color: white;
+          padding: 12px 20px; font-size: 15px; font-weight: 700;
+          text-align: center; font-family: system-ui, sans-serif;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+          display: flex; align-items: center; justify-content: center; gap: 10px;
+          animation: bannerPulse 2s ease-in-out infinite;
+        `;
+        banner.innerHTML = `
+          <span style="font-size: 20px;">${msg.emoji || '⚠️'}</span>
+          <span>${msg.message || 'Warning'}</span>
+          <button onclick="this.parentElement.remove()" style="
+            margin-left: 20px; background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.4);
+            color: white; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;
+          ">Dismiss</button>
+        `;
+
+        // Add pulse animation
+        const style = document.createElement('style');
+        style.textContent = `
+          @keyframes bannerPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.85; }
+          }
+        `;
+        document.head.appendChild(style);
+        document.body.prepend(banner);
+
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+      return true;
+    }
+
+    // Click the "Roofr report" button on the job card measurements section
+    if (msg.type === "CLICK_ROOFR_REPORT_BUTTON") {
+      (async () => {
+        try {
+          // Find the "Roofr report" button
+          const buttons = document.querySelectorAll('button');
+          let roofrBtn = null;
+          for (const btn of buttons) {
+            const text = btn.textContent?.trim().toLowerCase() || '';
+            if (text.includes('roofr report') && !text.includes('diy')) {
+              const rect = btn.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0) {
+                roofrBtn = btn;
+                break;
+              }
+            }
+          }
+
+          if (!roofrBtn) {
+            sendResponse({ ok: false, error: 'Roofr report button not found' });
+            return;
+          }
+
+          console.log('[Batch] Clicking Roofr report button');
+          roofrBtn.click();
+          sendResponse({ ok: true });
+        } catch (err) {
+          sendResponse({ ok: false, error: err.message });
+        }
+      })();
+      return true;
+    }
+
     return false;
   });
 
@@ -2040,6 +2529,43 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
   // Helper to wait
   function batchSleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // Wait for a DOM element to appear — returns the element or null on timeout
+  // selector: CSS selector string, OR a function that returns an element/null
+  // options: { timeout, interval, message }
+  function waitForEl(selector, options = {}) {
+    const timeout = options.timeout || 15000;
+    const interval = options.interval || 250;
+    const msg = options.message || selector;
+    return new Promise((resolve) => {
+      const start = Date.now();
+
+      const check = () => {
+        let el = null;
+        if (typeof selector === 'function') {
+          el = selector();
+        } else {
+          el = document.querySelector(selector);
+        }
+        if (el) {
+          const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+          // Optionally check visibility
+          if (!options.visible || (rect && rect.width > 0 && rect.height > 0)) {
+            console.log(`[Batch] waitForEl: "${msg}" found in ${Date.now() - start}ms`);
+            resolve(el);
+            return;
+          }
+        }
+        if (Date.now() - start >= timeout) {
+          console.log(`[Batch] waitForEl: "${msg}" timed out after ${timeout}ms`);
+          resolve(null);
+          return;
+        }
+        setTimeout(check, interval);
+      };
+      check();
+    });
   }
 
   // Close any open popup/modal on the calendar (optionally keep if matches address)
@@ -2102,27 +2628,15 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     }
     await batchSleep(500);
 
-    // Get all calendar events - be specific to avoid matching popups or other elements
-    // React Big Calendar uses .rbc-event for the event wrapper, but the clickable part is often a button inside
-    // We want the most specific element with the event content
-    let events = document.querySelectorAll('.rbc-event-content');
-
-    // If no rbc-event-content found, fall back to rbc-event buttons
-    if (events.length === 0) {
-      events = document.querySelectorAll('.rbc-event button, button.rbc-event');
+    const teamResult = selectAllTeamMembers();
+    if (teamResult?.clicked) {
+      console.log('[Batch] Selected all team members before event search');
+      await batchSleep(2500);
+    } else if (teamResult?.ok) {
+      console.log('[Batch] Team members already selected before event search');
+    } else {
+      console.log('[Batch] Could not confirm Select all before event search:', teamResult?.reason || 'unknown');
     }
-
-    // Final fallback to rbc-event but filter out things that look like popups
-    if (events.length === 0) {
-      const allEvents = document.querySelectorAll('.rbc-event');
-      events = Array.from(allEvents).filter(e => {
-        // Exclude if it's inside a popup/dialog
-        const isInPopup = e.closest('[class*="EventCard"]') || e.closest('[role="dialog"]') || e.closest('.modal');
-        return !isInPopup;
-      });
-    }
-
-    console.log('[Batch] Found', events.length, 'calendar events');
 
     // Extract address number for initial search (e.g., "10545" from "10545 E Fanfol Ln")
     const addressNumber = address.match(/^\d+/)?.[0] || '';
@@ -2131,17 +2645,52 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
 
     console.log('[Batch] Searching for address number:', addressNumber, 'street:', streetPart, 'city:', cityPart);
 
-    // First pass: Find events matching the address number
-    let matchingEvents = [];
-    for (const event of events) {
-      const eventText = event.textContent?.toLowerCase() || '';
+    const getCalendarEvents = () => {
+      let foundEvents = Array.from(document.querySelectorAll('.rbc-event-content'));
 
-      // Check if event contains the address number
-      if (addressNumber && eventText.includes(addressNumber)) {
-        matchingEvents.push({ event, text: eventText });
+      // If no rbc-event-content found, fall back to rbc-event buttons
+      if (foundEvents.length === 0) {
+        foundEvents = Array.from(document.querySelectorAll('.rbc-event button, button.rbc-event'));
       }
+
+      // Final fallback to rbc-event but filter out things that look like popups
+      if (foundEvents.length === 0) {
+        foundEvents = Array.from(document.querySelectorAll('.rbc-event')).filter(e => {
+          const isInPopup = e.closest('[class*="EventCard"]') || e.closest('[role="dialog"]') || e.closest('.modal');
+          return !isInPopup;
+        });
+      }
+
+      return foundEvents;
+    };
+
+    const findMatches = (candidateEvents) => {
+      const foundMatches = [];
+      for (const event of candidateEvents) {
+        const eventText = event.textContent?.toLowerCase() || '';
+        if (addressNumber && eventText.includes(addressNumber)) {
+          foundMatches.push({ event, text: eventText });
+        }
+      }
+      return foundMatches;
+    };
+
+    let events = [];
+    let matchingEvents = [];
+    let lastEventCount = -1;
+    for (let waitAttempt = 0; waitAttempt < 40; waitAttempt++) {
+      events = getCalendarEvents();
+      matchingEvents = findMatches(events);
+      if (matchingEvents.length > 0) break;
+
+      if (events.length !== lastEventCount || waitAttempt % 5 === 0) {
+        console.log('[Batch] Waiting for target event to load:', addressNumber, 'events visible:', events.length, 'attempt:', waitAttempt + 1);
+        lastEventCount = events.length;
+      }
+      await batchSleep(500);
     }
 
+    console.log('[Batch] Found', events.length, 'calendar events');
     console.log('[Batch] Found', matchingEvents.length, 'events with address number', addressNumber);
 
     // If multiple matches, narrow down using more of the address
@@ -2317,50 +2866,41 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       await batchSleep(100);
       clickTarget.click();
 
-      // Wait and check for popup with retries
+      // Wait for popup to appear — poll for the element instead of fixed sleep
       let popupAppeared = null;
       let isNewEventDialog = false;
 
-      for (let popupAttempt = 0; popupAttempt < 10; popupAttempt++) {
-        await batchSleep(300);
-
-        // Check if the "New event" dialog opened instead (wrong click target)
+      popupAppeared = await waitForEl(() => {
+        // Check if "New event" dialog opened (wrong click)
         const newEventDialog = document.querySelector('button[aria-label="Close this dialog"]')?.closest('[class*="EventCard"]');
         if (newEventDialog) {
           const dialogText = newEventDialog.textContent || '';
           if (dialogText.includes('New event') || dialogText.includes('Type...') || dialogText.includes('Add title')) {
-            console.log('[Batch] ERROR: "New event" dialog opened instead of event popup - wrong element clicked');
-            isNewEventDialog = true;
-
-            // Close it by clicking the close button
-            const closeBtn = document.querySelector('button[aria-label="Close this dialog"]');
-            if (closeBtn) {
-              closeBtn.click();
-              await batchSleep(300);
-            }
-            break;
+            return '__NEW_EVENT__'; // Signal to handle separately
           }
         }
-
-        // Check for the correct event popup (has the address button)
-        popupAppeared = document.querySelector('[data-testid="job-map-options-dropdown-trigger"]');
-        if (popupAppeared) {
-          console.log('[Batch] Correct event popup appeared on attempt', popupAttempt + 1);
-          break;
-        }
-
-        // Also check for EventCard that contains job info (not "New event")
+        // Check for correct event popup
+        const trigger = document.querySelector('[data-testid="job-map-options-dropdown-trigger"]');
+        if (trigger) return trigger;
+        // Fallback: EventCard with matching address
         const eventCard = document.querySelector('[class*="EventCard"]');
         if (eventCard) {
           const cardText = eventCard.textContent || '';
           if (!cardText.includes('New event') && !cardText.includes('Add title') && cardText.includes(addressNumber)) {
-            console.log('[Batch] Event popup (with matching address) appeared on attempt', popupAttempt + 1);
-            popupAppeared = eventCard;
-            break;
+            return eventCard;
           }
         }
+        return null;
+      }, { timeout: 8000, message: 'event popup' });
 
-        console.log('[Batch] Waiting for popup, attempt', popupAttempt + 1);
+      if (popupAppeared === '__NEW_EVENT__') {
+        isNewEventDialog = true;
+        popupAppeared = null;
+        console.log('[Batch] ERROR: "New event" dialog opened instead of event popup');
+        const closeBtn = document.querySelector('button[aria-label="Close this dialog"]');
+        if (closeBtn) { closeBtn.click(); await batchSleep(300); }
+      } else if (popupAppeared) {
+        console.log('[Batch] Event popup appeared');
       }
 
       // If we got the wrong dialog, we need to find and click the correct element
@@ -2450,6 +2990,8 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       if (i < 10) console.log(`  ${i}: ${e.textContent?.substring(0, 80)}`);
     });
 
+    console.log('[Batch] Event not found in currently visible calendar events');
+
     throw new Error(`Could not find event with address: ${address}`);
   }
 
@@ -2458,7 +3000,7 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
   // 1. Calendar event click opens a popup/card
   // 2. Inside popup, there's a button containing the address
   // 3. Clicking address button reveals a context menu with "Open job" link
-  async function batchOpenJobInNewTab(address) {
+  async function batchOpenJobInNewTab(address, msg = {}) {
     console.log('[Batch] Opening job in new tab:', address);
 
     // Helper to safely get className as string (defined early for use in popup detection)
@@ -2512,20 +3054,13 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       return null;
     };
 
-    // Wait for popup to appear with retry logic
-    let popup = null;
-    for (let attempt = 0; attempt < 8; attempt++) {
-      await batchSleep(500);
-      popup = findEventPopup();
-      if (popup) {
-        console.log('[Batch] Popup found on attempt', attempt + 1, ':', getClassName(popup).substring(0, 50));
-        break;
-      }
-      console.log('[Batch] Waiting for popup, attempt', attempt + 1);
-    }
+    // Wait for popup to appear — poll instead of fixed retries
+    let popup = await waitForEl(() => findEventPopup(), { timeout: 8000, message: 'event popup (open job)' });
 
     if (!popup) {
-      console.log('[Batch] Popup not found after 8 attempts, continuing with fallback...');
+      console.log('[Batch] Popup not found, continuing with fallback...');
+    } else {
+      console.log('[Batch] Popup found:', getClassName(popup).substring(0, 50));
     }
 
     // Extract address parts for matching
@@ -2656,45 +3191,26 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
 
     let openJobLink = null;
 
-    // Wait for dropdown with retry - the dropdown has data-testid="job-map-options-dropdown"
-    for (let attempt = 0; attempt < 10; attempt++) {
-      await batchSleep(300);
-
-      // BEST: Find by specific data-testid (from screenshot)
-      openJobLink = document.querySelector('[data-testid="job-map-options-dropdown-open-job"]');
-      if (openJobLink) {
-        console.log('[Batch] Found "Open job" link by data-testid on attempt', attempt + 1);
-        break;
-      }
-
-      // Also check for the dropdown container
+    // Wait for "Open job" link to appear in dropdown
+    openJobLink = await waitForEl(() => {
+      // BEST: Find by specific data-testid
+      const byTestId = document.querySelector('[data-testid="job-map-options-dropdown-open-job"]');
+      if (byTestId) return byTestId;
+      // Check dropdown container
       const dropdown = document.querySelector('[data-testid="job-map-options-dropdown"]');
       if (dropdown) {
-        console.log('[Batch] Found dropdown container, looking for Open job inside...');
-        // Find the Open job link inside
         const linkInDropdown = dropdown.querySelector('a[href*="/jobs/"]');
-        if (linkInDropdown) {
-          openJobLink = linkInDropdown;
-          console.log('[Batch] Found job link in dropdown');
-          break;
-        }
+        if (linkInDropdown) return linkInDropdown;
       }
-
-      // Fallback: any link with /jobs/details/ that's visible
+      // Fallback: visible link with "open" text and /jobs/details/ href
       const jobLinks = document.querySelectorAll('a[href*="/jobs/details/"]');
       for (const link of jobLinks) {
         const rect = link.getBoundingClientRect();
         const text = link.textContent?.toLowerCase() || '';
-        if (rect.width > 0 && rect.height > 0 && text.includes('open')) {
-          openJobLink = link;
-          console.log('[Batch] Found job link by href on attempt', attempt + 1);
-          break;
-        }
+        if (rect.width > 0 && rect.height > 0 && text.includes('open')) return link;
       }
-      if (openJobLink) break;
-
-      console.log('[Batch] Dropdown not yet visible, attempt', attempt + 1);
-    }
+      return null;
+    }, { timeout: 8000, visible: true, message: 'Open job link' });
 
     // If still not found, try additional strategies
     if (!openJobLink) {
@@ -2753,10 +3269,14 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       throw new Error('Could not find "Open job" link in context menu');
     }
 
-    // Extract job URL and open in new tab
+    // Extract job URL and open in new tab (or return URL only if backgroundMode)
     const jobUrl = openJobLink.href;
     if (jobUrl && jobUrl.includes('/jobs/')) {
-      console.log('[Batch] Opening job URL:', jobUrl);
+      console.log('[Batch] Job URL:', jobUrl);
+      if (msg.backgroundMode) {
+        // Don't open — let popup.js handle tab creation with active: false
+        return { ok: true, url: jobUrl, urlOnly: true };
+      }
       window.open(jobUrl, '_blank');
       await batchSleep(500);
       return { ok: true, needsTabLookup: true, url: jobUrl };
@@ -2773,6 +3293,9 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       const rect = link.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0 && link.href.includes('/jobs/details/')) {
         console.log('[Batch] Found job link after click:', link.href);
+        if (msg.backgroundMode) {
+          return { ok: true, url: link.href, urlOnly: true };
+        }
         window.open(link.href, '_blank');
         return { ok: true, needsTabLookup: true, url: link.href };
       }
@@ -2785,6 +3308,10 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
   async function batchEditEventAddRep(address, time, repName) {
     console.log('[Batch] Editing event to add rep:', repName);
 
+    // Track CSR removal for reporting back
+    window.__batchCsrsRemoved = 0;
+    window.__batchDetails = '';
+
     // Get CSR list from storage for checking if existing invitee is a CSR
     let csrList = [];
     try {
@@ -2795,17 +3322,83 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       console.log('[Batch] CSR list loaded:', csrList);
     } catch (e) {
       console.log('[Batch] Could not load CSR list from storage:', e.message);
-      // Fallback CSR list
-      csrList = ["bronté pisz", "diva shahpur", "madison meyers", "nica javier", "raven pelfrey", "travis jones"];
+      // Fallback CSR list (CSRs only, not reps)
+      csrList = ["bronté pisz", "diva shahpur", "madison meyers", "nica javier", "raven pelfrey"];
     }
 
     // First, find and click the event again
-    await batchFindAndClickEvent(address, time);
-    await batchSleep(800);
+    const findResult = await batchFindAndClickEvent(address, time);
+    if (!findResult || !findResult.ok) {
+      throw new Error(`Could not find event with address: ${address}`);
+    }
+    await batchSleep(1000);
 
-    // Find and click the Edit button
-    const editButton = Array.from(document.querySelectorAll('button'))
-      .find(btn => btn.textContent?.trim().toLowerCase() === 'edit');
+    // CHECK IF REP IS ALREADY ON THE CALENDAR (before clicking Edit)
+    // Look for invitees in the popup view - they show as text in the Invitees section
+    const inviteesSection = document.querySelector('[class*="Invitees"], [data-testid*="invitees"]');
+    const popupText = document.body.innerText || '';
+
+    // Check if rep name appears in the popup (near "Invitees" label)
+    const repNameLower = repName.toLowerCase();
+    const repFirstName = repName.split(' ')[0].toLowerCase();
+    const repLastName = repName.split(' ').slice(-1)[0].toLowerCase();
+
+    // Look for any element containing the rep name
+    const allTextElements = document.querySelectorAll('p, span, div');
+    let repAlreadyOnCalendar = false;
+
+    for (const el of allTextElements) {
+      const text = el.textContent?.toLowerCase() || '';
+      // Check if this element contains the rep name (not in a button or input)
+      if ((text.includes(repFirstName) && text.includes(repLastName)) || text === repNameLower) {
+        // Make sure it's not just in the Team selector area
+        const isInTeamSelector = el.closest('[class*="Team"]') || el.closest('[role="listbox"]');
+        const isInInviteesArea = el.closest('[class*="Invitee"]') || el.closest('[class*="invitee"]');
+
+        if (isInInviteesArea && !isInTeamSelector) {
+          console.log('[Batch] Rep already on calendar:', el.textContent);
+          repAlreadyOnCalendar = true;
+          break;
+        }
+      }
+    }
+
+    // Also check data-testid for invitee rows containing rep name
+    const existingInviteeRowsPreEdit = document.querySelectorAll('[data-testid*="calendar-card-invitees-row"]');
+    for (const row of existingInviteeRowsPreEdit) {
+      const rowText = row.textContent?.toLowerCase() || '';
+      const rowTestId = row.getAttribute('data-testid')?.toLowerCase() || '';
+      if (rowText.includes(repFirstName) || rowTestId.includes(repFirstName.replace(' ', '_'))) {
+        console.log('[Batch] Rep found in invitee row (pre-edit):', row.textContent);
+        repAlreadyOnCalendar = true;
+        break;
+      }
+    }
+
+    if (repAlreadyOnCalendar) {
+      console.log('[Batch] Rep is already on calendar, skipping edit');
+      window.__batchDetails = 'Rep already on calendar - skipped edit';
+
+      // Close the popup
+      const closeButton = document.querySelector('[data-testid="calendar-event-modal-close-button"]');
+      if (closeButton) {
+        closeButton.click();
+        await batchSleep(500);
+      } else {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+        await batchSleep(500);
+      }
+
+      console.log('[Batch] Skip complete — popup controller will reload calendar before the next edit');
+
+      return { ok: true, skipped: true, reason: 'Rep already on calendar' };
+    }
+
+    // Wait for Edit button to appear
+    let editButton = await waitForEl(() => {
+      return Array.from(document.querySelectorAll('button'))
+        .find(btn => btn.textContent?.trim().toLowerCase() === 'edit');
+    }, { timeout: 8000, visible: true, message: 'Edit button' });
 
     if (!editButton) {
       throw new Error('Could not find Edit button');
@@ -2813,11 +3406,24 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
 
     console.log('[Batch] Clicking Edit button');
     editButton.click();
-    await batchSleep(1000);
 
-    // Check for existing invitees BEFORE doing anything else
-    // Look for invitee rows (data-testid contains "calendar-card-invitees-row")
-    const existingInviteeRows = document.querySelectorAll('[data-testid*="calendar-card-invitees-row"]');
+    // Wait for edit form to load — poll for the invitees input or Save button
+    await waitForEl(() => {
+      return document.querySelector('[data-testid="calendar-card-invitees-selection"]') ||
+             document.querySelector('input[placeholder="Add guests"]') ||
+             Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim().toLowerCase() === 'save');
+    }, { timeout: 10000, message: 'edit form' });
+
+    // Check for existing invitees
+    let existingInviteeRows = document.querySelectorAll('[data-testid*="calendar-card-invitees-row"], [class*="InviteeRow"], .styled__InviteeRow-fpUyUm');
+
+    // If no rows found, short wait and retry (they may still be rendering)
+    if (existingInviteeRows.length === 0) {
+      console.log('[Batch] No invitee rows found, waiting briefly...');
+      await batchSleep(500);
+      existingInviteeRows = document.querySelectorAll('[data-testid*="calendar-card-invitees-row"], [class*="InviteeRow"], .styled__InviteeRow-fpUyUm');
+    }
+
     console.log('[Batch] Found', existingInviteeRows.length, 'existing invitee row(s)');
 
     if (existingInviteeRows.length > 0) {
@@ -2842,25 +3448,8 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
             await batchSleep(500);
           }
 
-          // Roofr bug: after canceling, calendar doesn't show all events
-          // Fix: click "Select all" twice to refresh (deselect then reselect)
-          console.log('[Batch] Refreshing calendar by toggling Select all...');
+          console.log('[Batch] Rep already assigned — closing edit dialog');
           await batchSleep(300);
-          const selectAllCheckbox = document.querySelector('input[name="team-select-all"]') ||
-                                   document.querySelector('[data-testid*="select-all"]') ||
-                                   document.querySelector('input[type="checkbox"][id*="select"]');
-          if (selectAllCheckbox) {
-            // Click 1: Deselect all
-            selectAllCheckbox.click();
-            console.log('[Batch] Clicked Select all (deselect)');
-            await batchSleep(800);
-            // Click 2: Select all again to reload events
-            selectAllCheckbox.click();
-            console.log('[Batch] Clicked Select all (reselect)');
-            await batchSleep(1000);
-          } else {
-            console.log('[Batch] Could not find Select all checkbox');
-          }
 
           return { ok: true, skipped: true, reason: 'Rep already assigned' };
         }
@@ -2875,37 +3464,154 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
           return inviteeNameNormalized.includes(csrNormalized) || csrNormalized.includes(inviteeNameNormalized);
         });
 
+        // If invitee is NOT a CSR and NOT the target rep — FLAG it, leave dialog open
+        if (!isCsr) {
+          console.log('[Batch] ⚠ FLAG: Invitee "' + inviteeName + '" is NOT a CSR — leaving edit dialog open for review');
+
+          // Highlight the invitee row in red so it's obvious
+          try {
+            row.style.cssText += 'background: #fecaca !important; border: 2px solid #ef4444 !important; border-radius: 4px; padding: 4px;';
+          } catch (e) {}
+
+          // Inject a warning banner on the page (above the dialog)
+          try {
+            const banner = document.createElement('div');
+            banner.id = 'roofr-batch-invitee-warning';
+            banner.style.cssText = `
+              position: fixed; top: 0; left: 0; right: 0; z-index: 999999;
+              background: #dc2626; color: white;
+              padding: 14px 20px; font-size: 15px; font-weight: 700;
+              text-align: center; font-family: system-ui, sans-serif;
+              box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            `;
+            banner.innerHTML = '⚠️ Non-CSR invitee "<strong>${inviteeName}</strong>" found — fix manually, then close this dialog'.replace('${inviteeName}', inviteeName);
+            document.body.prepend(banner);
+          } catch (e) {}
+
+          // DON'T close the dialog — leave it open so Travis can see and fix it
+          return {
+            ok: false,
+            stopAll: true,
+            reason: `Non-CSR invitee "${inviteeName}" found on calendar — edit dialog left open for review`,
+            inviteeName: inviteeName
+          };
+        }
+
         if (isCsr) {
           console.log('[Batch] Existing invitee is a CSR:', inviteeName, '- removing them first...');
 
-          // Find the remove button - try multiple approaches
-          let removeButton = row.querySelector('[data-testid="calendar-card-invitees-item-remove"]');
+          // Hover over the row to ensure button is visible
+          row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+          row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+          await batchSleep(300);
 
-          if (!removeButton) {
-            // Try finding any button in the row
-            removeButton = row.querySelector('button');
-            console.log('[Batch] Fallback: found button in row:', removeButton?.className);
+          // Find the remove button - it's INSIDE the row with class flex-shrink-0
+          // DOM structure: InviteeRow contains both the name div and the remove button
+          let removeButton = null;
+
+          // Strategy 1: Button with flex-shrink-0 class inside the row (correct structure)
+          removeButton = row.querySelector('button.flex-shrink-0');
+          if (removeButton) {
+            console.log('[Batch] Found remove button via flex-shrink-0 class');
           }
 
+          // Strategy 2: Any button inside the row
           if (!removeButton) {
-            // Try finding globally near the invitee name
-            const allRemoveButtons = document.querySelectorAll('[data-testid="calendar-card-invitees-item-remove"]');
-            console.log('[Batch] Found', allRemoveButtons.length, 'remove buttons globally');
-            if (allRemoveButtons.length > 0) {
-              removeButton = allRemoveButtons[0]; // Take the first one (should be the visible one)
+            removeButton = row.querySelector('button');
+            if (removeButton) console.log('[Batch] Found remove button as any button in row');
+          }
+
+          // Strategy 3: Button with SVG X icon (has line elements forming X)
+          if (!removeButton) {
+            const buttons = row.querySelectorAll('button');
+            for (const btn of buttons) {
+              const svg = btn.querySelector('svg');
+              if (svg && svg.querySelector('line')) {
+                removeButton = btn;
+                console.log('[Batch] Found remove button via SVG X icon');
+                break;
+              }
             }
           }
 
+          // Strategy 4: Search by InviteeRow class pattern
+          if (!removeButton) {
+            const inviteeRows = document.querySelectorAll('[class*="InviteeRow"]');
+            for (const invRow of inviteeRows) {
+              if (invRow.textContent?.includes(inviteeName)) {
+                removeButton = invRow.querySelector('button.flex-shrink-0') || invRow.querySelector('button');
+                if (removeButton) {
+                  console.log('[Batch] Found remove button via InviteeRow class search');
+                  break;
+                }
+              }
+            }
+          }
+
+          // Strategy 5: Use the user-provided method
+          if (!removeButton) {
+            const rows = document.querySelectorAll('.styled__InviteeRow-fpUyUm, [class*="InviteeRow"]');
+            for (const r of rows) {
+              if (r.textContent?.includes(inviteeName)) {
+                removeButton = r.querySelector('button.flex-shrink-0') || r.querySelector('button');
+                if (removeButton) {
+                  console.log('[Batch] Found remove button via styled InviteeRow search');
+                  break;
+                }
+              }
+            }
+          }
+
+          // Log what we found for debugging
+          console.log('[Batch] Remove button found:', !!removeButton);
+          if (!removeButton) {
+            console.log('[Batch] Row classes:', row.className);
+            console.log('[Batch] Row HTML:', row.outerHTML?.substring(0, 500));
+          }
+
           if (removeButton) {
-            console.log('[Batch] Clicking remove button for CSR:', removeButton.className);
+            console.log('[Batch] Clicking remove button for CSR:', inviteeName);
+            window.__batchDetails += `Removing CSR: ${inviteeName}. `;
+
+            // Use multiple click methods to ensure it registers
+            removeButton.focus();
+            removeButton.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+            removeButton.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
             removeButton.click();
-            await batchSleep(800);
-            console.log('[Batch] CSR removed, waiting for UI update...');
+
+            await batchSleep(1000);
+            console.log('[Batch] CSR remove clicked, waiting for UI update...');
+
+            // Check if removal was successful
+            const rowsAfter = document.querySelectorAll('[data-testid*="calendar-card-invitees-row"]');
+            const stillPresent = Array.from(rowsAfter).some(r =>
+              r.textContent?.toLowerCase().includes(inviteeName.toLowerCase().split(' ')[0])
+            );
+
+            if (!stillPresent) {
+              window.__batchCsrsRemoved++;
+              window.__batchDetails += `Removed successfully. `;
+              console.log('[Batch] CSR removed successfully');
+            } else {
+              window.__batchDetails += `Removal may have failed. `;
+              console.log('[Batch] CSR may still be present after removal attempt');
+            }
+
             await batchSleep(500);
+
+            // Verify the CSR was actually removed
+            const remainingRows = document.querySelectorAll('[data-testid*="calendar-card-invitees-row"]');
+            console.log('[Batch] Remaining invitee rows after removal:', remainingRows.length);
           } else {
             console.log('[Batch] Could not find remove button for CSR');
-            // Log the row HTML for debugging
-            console.log('[Batch] Row HTML:', row.innerHTML?.substring(0, 300));
+            console.log('[Batch] Row outerHTML:', row.outerHTML?.substring(0, 300));
+            console.log('[Batch] Parent outerHTML:', parent?.outerHTML?.substring(0, 300));
+
+            // Log all buttons in the area for debugging
+            const allButtons = document.querySelectorAll('button');
+            console.log('[Batch] Total buttons on page:', allButtons.length);
+            const removeButtons = document.querySelectorAll('[data-testid*="remove"]');
+            console.log('[Batch] Buttons with "remove" in testid:', removeButtons.length);
           }
         } else {
           console.log('[Batch] Invitee is NOT a CSR:', inviteeName);
@@ -2963,7 +3669,7 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     console.log('[Batch] Found invitees input:', inviteesInput.placeholder, inviteesInput.id);
 
     await addInviteeAndSave(inviteesInput, repName);
-    return { ok: true };
+    return { ok: true, csrsRemoved: window.__batchCsrsRemoved || 0, details: window.__batchDetails || '' };
   }
 
   // Helper to add invitee and save
@@ -2999,18 +3705,33 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     input.dispatchEvent(new Event('input', { bubbles: true }));
     await batchSleep(200);
 
-    // Type character by character
-    console.log('[Batch] Typing rep name:', repName);
-    for (const char of repName) {
-      input.value += char;
+    // Paste the name in one shot using execCommand('insertText') for React compatibility
+    console.log('[Batch] Pasting rep name:', repName);
+    input.focus();
+    document.execCommand('insertText', false, repName);
+    // Fallback: if execCommand didn't work, set value + fire events
+    if (!input.value.includes(repName)) {
+      console.log('[Batch] execCommand fallback — setting value directly');
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      nativeInputValueSetter.call(input, repName);
       input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: char, bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keyup', { key: char, bubbles: true }));
-      await batchSleep(100);
+      input.dispatchEvent(new Event('change', { bubbles: true }));
     }
-    await batchSleep(1500); // Wait for dropdown to filter
+    // Wait for dropdown to filter — poll for an option matching the rep name
+    const repLower = repName.toLowerCase();
+    await waitForEl(() => {
+      const options = document.querySelectorAll('[data-floating-ui-portal] div, [role="option"], [class*="dropdown"] > div');
+      for (const opt of options) {
+        const text = opt.textContent?.trim().toLowerCase() || '';
+        if (text === repLower || (text.includes(repLower) && text.length < repLower.length + 20)) {
+          const rect = opt.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) return opt;
+        }
+      }
+      return null;
+    }, { timeout: 8000, message: `dropdown option "${repName}"` });
 
-    console.log('[Batch] Typed rep name, looking for dropdown option...');
+    console.log('[Batch] Looking for dropdown option...');
 
     // Step 3: Find and click the rep name in the dropdown
     let foundAndClicked = false;
@@ -3136,9 +3857,18 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       if (!saveButton.disabled) {
         console.log('[Batch] Clicking Save button');
         saveButton.click();
-        // Wait for save to complete and page to reload
-        await batchSleep(4000);
-        console.log('[Batch] Save completed, waiting for page refresh...');
+        // Wait for save to complete — poll until the edit form/save button disappears
+        await waitForEl(() => {
+          const stillOpen = Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim().toLowerCase() === 'save');
+          return stillOpen ? null : document.body; // Returns body (truthy) when save button is gone
+        }, { timeout: 10000, message: 'save completion' });
+        console.log('[Batch] Save completed');
+
+        // After save, wait for the modal to settle. The popup controller reloads
+        // the calendar tab before the next edit; blindly toggling "Select all"
+        // here can leave Roofr filtered to an empty/partial team state.
+        console.log('[Batch] Save complete — waiting for calendar to settle...');
+        await batchSleep(500);
       } else {
         console.warn('[Batch] Save button is disabled - invitee may not be properly selected');
       }
@@ -3754,12 +4484,21 @@ async function checkTeamMembers(names) {
 
 // Select Sales event type
 function selectSalesEventType() {
+  // Only run on calendar pages
+  if (!window.location.pathname.includes('/calendar')) {
+    return { ok: false, clicked: false, reason: 'Not on calendar page' };
+  }
+
   console.log('[Roofr Extension] Looking for Sales checkbox...');
 
-  // Strategy 1: Find the Sales row in Event types section
+  // Strategy 1: Look for the sidebar/filter section first to narrow the search
+  const filterSection = document.querySelector('.rbc-calendar, [class*="sidebar"], [class*="filter"], [class*="legend"]');
+  const searchRoot = filterSection || document.body;
+
+  // Strategy 2: Find the Sales row in Event types section
   // The UI shows colored boxes next to event type names
   // Look for elements that contain "Sales" text and have a checkbox nearby
-  const allElements = document.querySelectorAll('*');
+  const allElements = searchRoot.querySelectorAll('*');
 
   for (const el of allElements) {
     // Check if this element's direct text content is "Sales"
@@ -3866,8 +4605,180 @@ function selectSalesEventType() {
   return { ok: false, clicked: false, reason: 'Could not find Sales checkbox' };
 }
 
+// Helper function to check an event type (make it selected)
+function checkEventType(eventTypeName) {
+  if (!window.location.pathname.includes('/calendar')) {
+    return { ok: false, clicked: false, reason: 'Not on calendar page' };
+  }
+
+  console.log(`[Roofr Extension] Looking for ${eventTypeName} checkbox to check...`);
+
+  const filterSection = document.querySelector('.rbc-calendar, [class*="sidebar"], [class*="filter"], [class*="legend"]');
+  const searchRoot = filterSection || document.body;
+  const allElements = searchRoot.querySelectorAll('*');
+
+  for (const el of allElements) {
+    const directText = Array.from(el.childNodes)
+      .filter(n => n.nodeType === Node.TEXT_NODE)
+      .map(n => n.textContent.trim())
+      .join('');
+
+    if (directText === eventTypeName || el.textContent?.trim() === eventTypeName) {
+      let current = el;
+      for (let i = 0; i < 5; i++) {
+        const parent = current.parentElement;
+        if (!parent) break;
+
+        const checkbox = parent.querySelector('input[type="checkbox"]');
+        if (checkbox) {
+          const isChecked = checkbox.checked;
+          console.log(`[Roofr Extension] Found ${eventTypeName} checkbox, checked:`, isChecked);
+          if (!isChecked) {
+            checkbox.click();
+            return { ok: true, clicked: true, wasAlreadyChecked: false };
+          }
+          return { ok: true, clicked: false, wasAlreadyChecked: true };
+        }
+
+        if (parent.classList.contains('cursor-pointer') ||
+          parent.style.cursor === 'pointer' ||
+          parent.onclick ||
+          parent.getAttribute('role') === 'checkbox') {
+          const hasColorBox = parent.querySelector('[style*="background"]') ||
+            parent.querySelector('[class*="color"]') ||
+            parent.querySelector('[class*="badge"]');
+          if (hasColorBox) {
+            console.log(`[Roofr Extension] Found ${eventTypeName} row, clicking...`);
+            parent.click();
+            return { ok: true, clicked: true, wasAlreadyChecked: false };
+          }
+        }
+
+        current = parent;
+      }
+
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        console.log(`[Roofr Extension] Clicking ${eventTypeName} element directly`);
+        el.click();
+        return { ok: true, clicked: true, wasAlreadyChecked: false };
+      }
+    }
+  }
+
+  console.log(`[Roofr Extension] Could not find ${eventTypeName} checkbox`);
+  return { ok: false, clicked: false, reason: `Could not find ${eventTypeName} checkbox` };
+}
+
+// Helper function to uncheck an event type (make it deselected)
+function uncheckEventType(eventTypeName) {
+  if (!window.location.pathname.includes('/calendar')) {
+    return { ok: false, clicked: false, reason: 'Not on calendar page' };
+  }
+
+  console.log(`[Roofr Extension] Looking for ${eventTypeName} checkbox to uncheck...`);
+
+  const filterSection = document.querySelector('.rbc-calendar, [class*="sidebar"], [class*="filter"], [class*="legend"]');
+  const searchRoot = filterSection || document.body;
+  const allElements = searchRoot.querySelectorAll('*');
+
+  for (const el of allElements) {
+    const directText = Array.from(el.childNodes)
+      .filter(n => n.nodeType === Node.TEXT_NODE)
+      .map(n => n.textContent.trim())
+      .join('');
+
+    if (directText === eventTypeName || el.textContent?.trim() === eventTypeName) {
+      let current = el;
+      for (let i = 0; i < 5; i++) {
+        const parent = current.parentElement;
+        if (!parent) break;
+
+        const checkbox = parent.querySelector('input[type="checkbox"]');
+        if (checkbox) {
+          const isChecked = checkbox.checked;
+          console.log(`[Roofr Extension] Found ${eventTypeName} checkbox, checked:`, isChecked);
+          if (isChecked) {
+            checkbox.click();
+            return { ok: true, clicked: true, wasAlreadyChecked: true };
+          }
+          return { ok: true, clicked: false, wasAlreadyChecked: false };
+        }
+
+        if (parent.classList.contains('cursor-pointer') ||
+          parent.style.cursor === 'pointer' ||
+          parent.onclick ||
+          parent.getAttribute('role') === 'checkbox') {
+          const hasColorBox = parent.querySelector('[style*="background"]') ||
+            parent.querySelector('[class*="color"]') ||
+            parent.querySelector('[class*="badge"]');
+          if (hasColorBox) {
+            console.log(`[Roofr Extension] Found ${eventTypeName} row, clicking...`);
+            parent.click();
+            return { ok: true, clicked: true, wasAlreadyChecked: true };
+          }
+        }
+
+        current = parent;
+      }
+
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        console.log(`[Roofr Extension] Clicking ${eventTypeName} element directly`);
+        el.click();
+        return { ok: true, clicked: true, wasAlreadyChecked: true };
+      }
+    }
+  }
+
+  console.log(`[Roofr Extension] Could not find ${eventTypeName} checkbox`);
+  return { ok: false, clicked: false, reason: `Could not find ${eventTypeName} checkbox` };
+}
+
+// Select production event types (Dropoffs and pickups, Production, Post-production)
+function selectProductionEventTypes() {
+  if (!window.location.pathname.includes('/calendar')) {
+    return { ok: false, reason: 'Not on calendar page' };
+  }
+
+  console.log('[Roofr Extension] Selecting production event types...');
+
+  const eventTypes = ['Dropoffs and pickups', 'Production', 'Post-production'];
+  const results = {};
+
+  // Uncheck Sales first
+  results.salesUnchecked = uncheckEventType('Sales');
+
+  // Check each production type
+  for (const eventType of eventTypes) {
+    results[eventType] = checkEventType(eventType);
+  }
+
+  console.log('[Roofr Extension] Production event types selection results:', results);
+  return { ok: true, results };
+}
+
 // Select all team members
 function selectAllTeamMembers() {
+  const isCheckedLike = (el) => {
+    if (!el) return null;
+    const ariaChecked = el.getAttribute?.('aria-checked');
+    if (ariaChecked === 'true') return true;
+    if (ariaChecked === 'false') return false;
+    const ariaPressed = el.getAttribute?.('aria-pressed');
+    if (ariaPressed === 'true') return true;
+    if (ariaPressed === 'false') return false;
+    const dataState = el.getAttribute?.('data-state') || el.dataset?.state;
+    if (dataState === 'checked' || dataState === 'selected') return true;
+    if (dataState === 'unchecked' || dataState === 'unselected') return false;
+    if (el.classList?.contains('checked') || el.classList?.contains('selected')) return true;
+    const nestedChecked = el.querySelector?.('input[type="checkbox"]:checked, [aria-checked="true"], [data-state="checked"]');
+    if (nestedChecked) return true;
+    const nestedUnchecked = el.querySelector?.('input[type="checkbox"]:not(:checked), [aria-checked="false"], [data-state="unchecked"]');
+    if (nestedUnchecked) return false;
+    return null;
+  };
+
   // Look for "Select all" checkbox/button in Team section
   const selectAllLabels = document.querySelectorAll('label, span, div, button');
 
@@ -3888,21 +4799,32 @@ function selectAllTeamMembers() {
 
         // Try clicking the element directly (could be a button or custom checkbox)
         const clickable = parent.querySelector('[role="checkbox"]') || el;
+        const checkedState = isCheckedLike(clickable) ?? isCheckedLike(parent);
+        if (checkedState === true) {
+          return { ok: true, clicked: false, wasAlreadyChecked: true };
+        }
         clickable.click();
-        return { ok: true, clicked: true };
+        return { ok: true, clicked: true, wasAlreadyChecked: false, checkedState };
       }
 
-      // Try clicking the element directly
+      const checkedState = isCheckedLike(el);
+      if (checkedState === true) {
+        return { ok: true, clicked: false, wasAlreadyChecked: true };
+      }
       el.click();
-      return { ok: true, clicked: true };
+      return { ok: true, clicked: true, wasAlreadyChecked: false, checkedState };
     }
   }
 
   // Fallback: look for checkbox by aria-label or data attribute
   const selectAllCheckbox = document.querySelector('[aria-label*="select all" i], [data-testid*="select-all"]');
   if (selectAllCheckbox) {
+    const checkedState = isCheckedLike(selectAllCheckbox);
+    if (checkedState === true) {
+      return { ok: true, clicked: false, wasAlreadyChecked: true };
+    }
     selectAllCheckbox.click();
-    return { ok: true, clicked: true };
+    return { ok: true, clicked: true, wasAlreadyChecked: false, checkedState };
   }
 
   return { ok: false, clicked: false, reason: 'Could not find Select all option' };

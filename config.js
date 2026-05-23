@@ -2,8 +2,10 @@
 // This file contains the static configuration and business logic for the Roofr extension.
 
 export const CONFIG = {
-  // The API Key is a constant for the application.
-  apiKey: "AIzaSyAUU9vrRIAepLUJedcIrmmfJDyVKjGhINI",
+  // Deprecated: this key was revoked. Sheets reads now go through the proxy
+  // at https://az-roofers-tech-scheduler.vercel.app/api/sheets (service-account auth).
+  // Field kept as a non-empty placeholder so legacy `if (!apiKey)` guards still pass.
+  apiKey: "DEPRECATED_USE_PROXY",
 
   ranges: {
     phxRange: "I2:Q9",
@@ -35,7 +37,20 @@ export const CONFIG = {
     FLAGSTAFF: ["WILLIAMS","MUNDS PARK"],
     PAYSON: ["STAR VALLEY","PINE","STRAWBERRY"],
   },
-  
+
+  // Check if a city is adjacent to a target city
+  isAdjacentTo(city, targetCity) {
+    if (!city || !targetCity) return false;
+    const adjacents = this.CITY_ADJACENCY[targetCity.toUpperCase()] || [];
+    return adjacents.includes(city.toUpperCase());
+  },
+
+  // Get all adjacent cities for a given city
+  getAdjacentCities(city) {
+    if (!city) return [];
+    return this.CITY_ADJACENCY[city.toUpperCase()] || [];
+  },
+
   // Geographically sorted list of cities from West to East for logistical planning.
   CITY_SORT_ORDER: [
     // Far West
@@ -75,16 +90,34 @@ export const CONFIG = {
       apnField: "APN_DASH",
       ownerField: "OWNER_NAME",
       detailUrl: "https://mcassessor.maricopa.gov/mcs/?q=",
+      propertyFields: {
+        yearBuilt: "CONST_YEAR",
+        sqft: "LIVING_SPACE",
+        stories: "FLOOR",
+        subdivision: "SUBNAME",
+        propertyValue: "FCV_CUR",
+        salePrice: "SALE_PRICE",
+        saleDate: "SALE_DATE",
+      },
       cities: new Set(["PHOENIX","SCOTTSDALE","TEMPE","MESA","CHANDLER","GILBERT","GLENDALE","PEORIA","SURPRISE","AVONDALE","GOODYEAR","BUCKEYE","QUEEN CREEK","APACHE JUNCTION","FOUNTAIN HILLS","PARADISE VALLEY","CAVE CREEK","CAREFREE","ANTHEM","EL MIRAGE","YOUNGTOWN","LITCHFIELD PARK","TOLLESON","WADDELL","SUN CITY","SUN CITY WEST","NEW RIVER","AHWATUKEE","SUN LAKES","GOLD CANYON","QUEEN VALLEY","WITTMANN","WICKENBURG","MORRISTOWN","LAVEEN","CONGRESS","GLOBE"])
     },
     PINAL: {
       name: "Pinal County",
       queryUrl: "https://rogue.casagrandeaz.gov/arcgis/rest/services/Pinal_County/Pinal_County_Assessor_Info/FeatureServer/0/query",
-      addressField: "SITEADDRESS",
+      addressField: "PSTLADDRESS",
       apnField: "PARCELID",
       ownerField: "OWNERNME1",
       detailUrl: "https://app1.pinal.gov/Search/Parcel-Details.aspx?parcel_ID=",
       formatApnForUrl: (apn) => apn.replace(/-/g, ''),
+      propertyFields: {
+        yearBuilt: "RESYRBLT",
+        sqft: "RESFLRAREA",
+        stories: "FLOORCOUNT",
+        subdivision: "CNVYNAME",
+        propertyValue: "CNTASSDVAL",
+        salePrice: "SALEPRICE",
+        saleDate: "SALEDATE",
+      },
       cities: new Set(["MARICOPA","CASA GRANDE","FLORENCE","SAN TAN VALLEY","ARIZONA CITY","ELOY","COOLIDGE","STANFIELD"])
     },
     PIMA: {
@@ -94,6 +127,9 @@ export const CONFIG = {
       apnField: "PARCEL",
       ownerField: null, // Owner info not available in this layer
       detailUrl: "https://gis.pima.gov/maps/detail.cfm?parcel=",
+      propertyFields: {
+        propertyValue: "FCV",
+      },
       cities: new Set(["TUCSON","SOUTH TUCSON","MARANA","ORO VALLEY","SAHUARITA","GREEN VALLEY","VAIL","SADDLEBROOKE","RED ROCK","ORACLE"])
     },
     GILA: {
@@ -103,15 +139,20 @@ export const CONFIG = {
       apnField: "APN",
       ownerField: "Owner1",
       detailUrl: "https://assessor.gilacountyaz.gov/assessor/taxweb/search.jsp",
+      // No property detail fields available in this GIS layer
+      propertyFields: {},
       cities: new Set(["PAYSON","GLOBE","PINE","STRAWBERRY","STAR VALLEY"])
     },
     YAVAPAI: {
       name: "Yavapai County",
-      queryUrl: "https://gis.yavapaiaz.gov/ArcGIS/rest/services/Property/MapServer/0/query",
-      addressField: "SITUS",
-      apnField: "APN",
-      ownerField: "OWNER",
+      queryUrl: "https://gis.yavapaiaz.gov/ArcGIS/rest/services/Parcels/MapServer/0/query",
+      addressField: "SITUS_ADD_DOR",
+      apnField: "PARCEL_ID",
+      ownerField: "NAME",
       detailUrl: "https://gis.yavapaiaz.gov/v4/search.aspx#",
+      propertyFields: {
+        subdivision: "SUBNAME",
+      },
       cities: new Set(["PRESCOTT","PRESCOTT VALLEY","SEDONA","COTTONWOOD","CAMP VERDE","CHINO VALLEY","DEWEY","CLARKDALE","VILLAGE OF OAK CREEK","MAYER"])
     },
     COCONINO: {
@@ -120,7 +161,9 @@ export const CONFIG = {
       addressField: "SITUS",
       apnField: "APN",
       ownerField: "OWNER",
-      detailUrl: "https://eagleassessor.coconino.az.gov:444/assessor/taxweb/search.jsp",
+      detailUrl: "https://gismaps.coconino.az.gov/parcelviewer/?apn=",
+      // Server frequently unreachable; no property detail fields confirmed
+      propertyFields: {},
       cities: new Set(["FLAGSTAFF","WILLIAMS","MUNDS PARK"])
     }
   },
@@ -148,15 +191,35 @@ export const CONFIG = {
 
     try {
       // Extract street address for search (first part before city/state)
-      const streetPart = address.split(',')[0].trim().toUpperCase();
+      let streetPart = address.split(',')[0].trim().toUpperCase();
 
-      // Build query - search for addresses containing the street
+      // Extract house number and street name start for flexible matching
+      // This helps with variations like "Street" vs "ST", "Avenue" vs "AVE"
+      const houseNumMatch = streetPart.match(/^(\d+)\s+(.+)/);
+      if (houseNumMatch) {
+        const houseNum = houseNumMatch[1];
+        const streetWords = houseNumMatch[2].split(/\s+/);
+        // Get first significant street word (skip directional prefixes)
+        const directions = ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW', 'NORTH', 'SOUTH', 'EAST', 'WEST'];
+        let streetName = streetWords[0];
+        if (directions.includes(streetWords[0]) && streetWords.length > 1) {
+          streetName = streetWords[0] + '%' + streetWords[1];
+        }
+        streetPart = houseNum + '%' + streetName;
+      }
+
+      // Build query - search for addresses containing the street pattern
       const whereClause = `${county.addressField} LIKE '%${streetPart.replace(/'/g, "''")}%'`;
 
-      // Include owner field if available
+      // Include owner field and all property data fields
       let outFields = `${county.apnField},${county.addressField}`;
       if (county.ownerField) {
         outFields += `,${county.ownerField}`;
+      }
+      // Add all property detail fields for this county
+      if (county.propertyFields) {
+        const extraFields = Object.values(county.propertyFields).join(',');
+        outFields += `,${extraFields}`;
       }
 
       const params = new URLSearchParams({
@@ -194,14 +257,74 @@ export const CONFIG = {
           detailUrl += apn;
         }
 
-        console.log(`[APN Lookup] Found APN: ${apn}, Owner: ${ownerName || 'N/A'}`);
+        // Helper: parse a value that may be a number or a formatted string like "   1,446"
+        const parseNum = (val) => {
+          if (val === null || val === undefined || val === '') return null;
+          if (typeof val === 'number') return val;
+          const cleaned = String(val).replace(/[,\s$]/g, '');
+          const num = Number(cleaned);
+          return isNaN(num) ? null : num;
+        };
+
+        // Extract property data using the county's field mapping
+        const propertyData = {};
+        if (county.propertyFields) {
+          for (const [key, fieldName] of Object.entries(county.propertyFields)) {
+            const val = feature.attributes[fieldName];
+            if (val !== null && val !== undefined && val !== '' && val !== 0) {
+              propertyData[key] = val;
+            }
+          }
+        }
+
+        // Normalize numeric fields (Maricopa returns some as formatted strings)
+        const numericKeys = ['yearBuilt', 'sqft', 'stories', 'propertyValue', 'salePrice'];
+        for (const key of numericKeys) {
+          if (propertyData[key] !== undefined) {
+            const num = parseNum(propertyData[key]);
+            if (num !== null) propertyData[key] = num;
+          }
+        }
+
+        // Format sale date if present (handle both epoch timestamps and date strings)
+        if (propertyData.saleDate) {
+          if (typeof propertyData.saleDate === 'number') {
+            propertyData.saleDate = new Date(propertyData.saleDate).toLocaleDateString('en-US');
+          } else if (typeof propertyData.saleDate === 'string' && propertyData.saleDate.includes('-')) {
+            // Handle "2021-07-01" format from Pinal
+            propertyData.saleDate = new Date(propertyData.saleDate + 'T00:00:00').toLocaleDateString('en-US');
+          }
+          // Otherwise keep as-is (e.g., "08/01/2010" from Maricopa)
+        }
+
+        // Format property value as currency if present
+        if (propertyData.propertyValue && typeof propertyData.propertyValue === 'number') {
+          propertyData.propertyValueFormatted = '$' + propertyData.propertyValue.toLocaleString();
+        }
+        if (propertyData.salePrice && typeof propertyData.salePrice === 'number') {
+          propertyData.salePriceFormatted = '$' + propertyData.salePrice.toLocaleString();
+        }
+
+        // Calculate roof age if year built is available
+        if (propertyData.yearBuilt && typeof propertyData.yearBuilt === 'number') {
+          const currentYear = new Date().getFullYear();
+          propertyData.roofAge = currentYear - propertyData.yearBuilt;
+        }
+
+        // Format sqft with commas
+        if (propertyData.sqft && typeof propertyData.sqft === 'number') {
+          propertyData.sqftFormatted = propertyData.sqft.toLocaleString();
+        }
+
+        console.log(`[APN Lookup] Found APN: ${apn}, Owner: ${ownerName || 'N/A'}, Property data:`, propertyData);
         return {
           success: true,
           apn: apn,
           owner: ownerName,
           county: county.name,
           matchedAddress: matchedAddress,
-          detailUrl: detailUrl
+          detailUrl: detailUrl,
+          propertyData: propertyData
         };
       }
 
@@ -216,13 +339,25 @@ export const CONFIG = {
 
   // --- Logic Functions ---
   
+  // April 6 2026: schedule changes from old blocks to new blocks
+  SCHEDULE_CUTOVER: new Date(2026, 3, 6), // months are 0-indexed, so 3 = April
+
   blockWindowForDate(date) {
     const y = date.getFullYear(), m = date.getMonth(), d = date.getDate();
+    const useNew = date >= this.SCHEDULE_CUTOVER;
+    if (useNew) {
+      return [
+        { key:"B1", label:"8am-10am",  start:new Date(y,m,d,8,0),  end:new Date(y,m,d,10,0) },
+        { key:"B2", label:"11am-1pm",  start:new Date(y,m,d,11,0), end:new Date(y,m,d,13,0) },
+        { key:"B3", label:"2pm-4pm",   start:new Date(y,m,d,14,0), end:new Date(y,m,d,16,0) },
+        { key:"B4", label:"5pm-7pm",   start:new Date(y,m,d,17,0), end:new Date(y,m,d,19,0) },
+      ];
+    }
     return [
-      { key:"B1", label:"7:30am-9am", start:new Date(y,m,d,7,30), end:new Date(y,m,d,9,0) },
-      { key:"B2", label:"10am-12pm", start:new Date(y,m,d,10,0), end:new Date(y,m,d,12,0) },
-      { key:"B3", label:"1pm-3pm",  start:new Date(y,m,d,13,0), end:new Date(y,m,d,15,0) },
-      { key:"B4", label:"4pm-6pm",  start:new Date(y,m,d,16,0), end:new Date(y,m,d,18,0) },
+      { key:"B1", label:"7:30am-10am", start:new Date(y,m,d,7,30), end:new Date(y,m,d,10,0) },
+      { key:"B2", label:"10am-1pm",    start:new Date(y,m,d,10,0), end:new Date(y,m,d,13,0) },
+      { key:"B3", label:"1pm-4pm",     start:new Date(y,m,d,13,0), end:new Date(y,m,d,16,0) },
+      { key:"B4", label:"4pm-7pm",     start:new Date(y,m,d,16,0), end:new Date(y,m,d,19,0) },
     ];
   },
 
@@ -698,8 +833,23 @@ export const CONFIG = {
 };
 
 export const PEOPLE_DATA = {
-    REPS: ["Ashkan Etemadi", "Brett Jackson", "Chandler Duffy", "Christian Noren", "Cole Ludewig", "Joseph Simms", "Justin Parker", "Kyle Ludewig", "London Smith", "Nick Williams", "Oliver Johnson", "Orlando Chavarria", "Richard Hadsall", "William Ludewig", "William Yost"].sort(),
-    MGMT: ["Andrew Clark", "Anthony Bonomo", "Bradley Crohurst", "Brenda Ochoa", "Yousef Ayad"].sort(),
-    CSRS: ["Bronté Pisz", "Diva Shahpur", "Madison Meyers", "Nica Javier", "Raven Pelfrey", "Travis Jones"].sort(),
+    REPS: ["Chandler Duffy", "Christian Noren", "Connor Hamby", "Jonathan Marino", "Josh Jewett", "Justin Parker", "London Smith", "Nick Williams", "Orlando Chavarria", "Richard Hadsall", "Stephen Chaidez", "Tanner Broadbent"].sort(),
+    MGMT: ["Andrew Clark", "Anthony Bonomo", "Bradley Crohurst", "Brenda Ochoa", "Nikolas Pagoulatos", "Yousef Ayad"].sort(),
+    CSRS: ["Alex Tillotson", "Bronté Pisz", "Diva Shahpur", "Khamilah Valles", "Madison Meyers", "Nica Javier", "Raven Pelfrey", "Travis Jones"].sort(),
     PRODUCTION: ["Jayda Fairfield", "Justin Saiz"].sort(),
+
+    // CTM multi_agents user IDs — used to build per-rep CTM calls URLs
+    CTM_USER_IDS: {
+        "Travis Jones": "USR3C843ED7AB9B4711B0713552F9CF37DB",
+        "Diva Shahpur": "USR3C843ED7AB9B471161CFE46CA61534DB",
+        "Madison Meyers": "USR3C843ED7AB9B4711F9903DED76AC22FF",
+        "Bronté Pisz": "USR3C843ED7AB9B471104E5442C4FF87F90",
+        "Alex Tillotson": "USRB5384A8A5D54C211ABA4C4FF265EA00F",
+        "Nica Javier": "USRC30FF30726A9F646577F250938765D31",
+        "Khamilah Valles": "USRC30FF30726A9F646BB8E4B63EF5677D9",
+        "Caite": "USR3C843ED7AB9B47118D66E874FF6151FD",
+        "Anthony Espinosa": "USRC30FF30726A9F646798C58AF597D98E0",
+        "Aaron Munz": "USR3C843ED7AB9B4711D25580F0C1D45997",
+        "Raven Pelfrey": "USR3C843ED7AB9B4711C939E32294BA3ECC",
+    },
 };

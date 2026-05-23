@@ -36,7 +36,11 @@
       "Bash(npm install:*)",
       "Bash(node scripts/build-crx.cjs:*)",
       "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" release upload v2.0.5 \"releases/roofr-calendar-scraper.crx\" --clobber)",
-      "Bash(node scripts/get-crx-id.cjs:*)"
+      "Bash(node scripts/get-crx-id.cjs:*)",
+      "Bash(move:*)",
+      "Bash(cmd /c move \"c:\\\\Users\\\\atrav\\\\Downloads\\\\copy-of-roofr-calendar-assistant \\(36\\)\\\\extension.pem\" \"c:\\\\Users\\\\atrav\\\\Downloads\\\\extension.pem.backup\")",
+      "Bash(curl:*)",
+      "mcp__chrome-devtools__list_pages"
     ],
     "deny": [],
     "ask": []

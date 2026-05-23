@@ -1,11 +1,13 @@
 {
-  "version": "2.0.5",
+  "version": "2.0.6",
   "minimum_chrome_version": "116",
-  "release_date": "2026-01-08T21:14:53.102Z",
+  "release_date": "2026-05-23T00:00:00.000Z",
   "changelog": [
-    "Bug fixes and improvements",
-    "Enhanced popup functionality"
+    "Security: rotated CRX signing key (previous key was exposed in public git history)",
+    "Security: removed unauthenticated postMessage debug bridge from content script",
+    "Security: scoped host_permissions to specific domains instead of <all_urls>",
+    "Note: this release requires a one-time manual reinstall — the new extension has a different ID"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.5/roofr-calendar-scraper-v2.0.5.zip",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.5"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.6/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.6"
 }

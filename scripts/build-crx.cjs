@@ -18,7 +18,13 @@ const extensionFiles = [
     'options.js',
     'config.js',
     'themes.js',
-    'metadata.json'
+    'metadata.json',
+    'batch-dashboard.html',
+    'dialer.html',
+    'dialer.js',
+    'dialer-bridge.js',
+    'dialer-bridge-main.js',
+    'dialer-sources.js'
 ];
 
 function generatePrivateKey() {

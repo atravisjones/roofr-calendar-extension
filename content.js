@@ -318,7 +318,15 @@ if (window.location.hostname.includes('calltrackingmetrics.com') && !window.__ct
       document.head.appendChild(style);
     }
 
-    notification.innerHTML = `${emoji ? `<span style="font-size: 24px;">${emoji}</span>` : ''}${message}`;
+    if (emoji) {
+      const emojiSpan = document.createElement('span');
+      emojiSpan.style.fontSize = '24px';
+      emojiSpan.textContent = emoji;
+      notification.appendChild(emojiSpan);
+    }
+    const messageSpan = document.createElement('span');
+    messageSpan.textContent = message;
+    notification.appendChild(messageSpan);
     document.body.appendChild(notification);
 
     setTimeout(() => {
@@ -2459,14 +2467,20 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
           display: flex; align-items: center; justify-content: center; gap: 10px;
           animation: bannerPulse 2s ease-in-out infinite;
         `;
-        banner.innerHTML = `
-          <span style="font-size: 20px;">${msg.emoji || '⚠️'}</span>
-          <span>${msg.message || 'Warning'}</span>
-          <button onclick="this.parentElement.remove()" style="
-            margin-left: 20px; background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.4);
-            color: white; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;
-          ">Dismiss</button>
-        `;
+        const emojiSpan = document.createElement('span');
+        emojiSpan.style.fontSize = '20px';
+        emojiSpan.textContent = msg.emoji || '⚠️';
+        banner.appendChild(emojiSpan);
+
+        const messageSpan = document.createElement('span');
+        messageSpan.textContent = msg.message || 'Warning';
+        banner.appendChild(messageSpan);
+
+        const dismissBtn = document.createElement('button');
+        dismissBtn.style.cssText = 'margin-left: 20px; background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.4); color: white; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;';
+        dismissBtn.textContent = 'Dismiss';
+        dismissBtn.addEventListener('click', () => banner.remove());
+        banner.appendChild(dismissBtn);
 
         // Add pulse animation
         const style = document.createElement('style');
@@ -3484,7 +3498,11 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
               text-align: center; font-family: system-ui, sans-serif;
               box-shadow: 0 4px 12px rgba(0,0,0,0.3);
             `;
-            banner.innerHTML = '⚠️ Non-CSR invitee "<strong>${inviteeName}</strong>" found — fix manually, then close this dialog'.replace('${inviteeName}', inviteeName);
+            banner.appendChild(document.createTextNode('⚠️ Non-CSR invitee "'));
+            const nameStrong = document.createElement('strong');
+            nameStrong.textContent = inviteeName;
+            banner.appendChild(nameStrong);
+            banner.appendChild(document.createTextNode('" found — fix manually, then close this dialog'));
             document.body.prepend(banner);
           } catch (e) {}
 

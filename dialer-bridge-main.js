@@ -227,6 +227,17 @@
 
     postToRelay({ type: "bridge-ready", hasEmbed: true, ts: Date.now() });
     log("hooked ctm-phone-embed, subscribed to", CTM_EVENTS.length, "events");
+
+    // Re-broadcast bridge-ready every 2s while we have an embed. Idempotent;
+    // dialer ignores after first. Handles the race where the dialer opens
+    // AFTER the one-shot ready event already fired.
+    if (!window.__autoDialerBridgeReadyTimer) {
+      window.__autoDialerBridgeReadyTimer = setInterval(() => {
+        if (phoneEmbed) {
+          postToRelay({ type: "bridge-ready", hasEmbed: true, ts: Date.now() });
+        }
+      }, 2000);
+    }
   }
 
   function pollForEmbed() {
@@ -256,6 +267,9 @@
     if (msg.dir !== "from-relay") return;
 
     if (msg.type === "ping") {
+      // Re-broadcast bridge-ready so a dialer that opened AFTER initial load
+      // can pick up our state instead of waiting forever.
+      postToRelay({ type: "bridge-ready", hasEmbed: !!phoneEmbed, ts: Date.now() });
       postToRelay({ type: "pong", hasEmbed: !!phoneEmbed, ts: Date.now() });
       return;
     }

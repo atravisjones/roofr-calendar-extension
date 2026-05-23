@@ -178,10 +178,16 @@
       out.push({ ...l, _tier: tier });
     }
     out.sort((a, b) => {
+      // Test rows always first within the queue
+      const aTest = /\btest\b/i.test(a.name || "");
+      const bTest = /\btest\b/i.test(b.name || "");
+      if (aTest !== bTest) return aTest ? -1 : 1;
       if (a._tier !== b._tier) return a._tier - b._tier;
       const aAtt = parseInt(a.attemptCount) || 0;
       const bAtt = parseInt(b.attemptCount) || 0;
-      return aAtt - bAtt;
+      if (aAtt !== bAtt) return aAtt - bAtt;
+      // Stable tiebreak by name so the queue doesn't depend on Object key order
+      return (a.name || "").localeCompare(b.name || "");
     });
     return out.filter(l => !l._skip).concat(out.filter(l => l._skip));
   }
@@ -502,10 +508,13 @@
     if (msg?.type !== "AD_FROM_CTM") return;
     const p = msg.payload;
     if (!p) return;
-    if (p.type === "bridge-ready") {
-      bridgeReady = true;
-      updateBridgeStatus();
-      log("bridge ready");
+    if (p.type === "bridge-ready" || (p.type === "pong" && p.hasEmbed)) {
+      if (!bridgeReady) {
+        bridgeReady = true;
+        updateBridgeStatus();
+        setPhase(phase); // re-enable buttons
+        log("bridge ready");
+      }
       return;
     }
     if (p.type === "ctm-event") {
@@ -567,14 +576,23 @@
         updateBridgeStatus();
         setPhase(phase);
       }
-      // Re-ping bridge so we know if it's alive
+      // Re-ping bridge so we know if it's alive. Log failures so chain
+      // breaks surface (instead of silent waiting forever).
       if (open && !bridgeReady) {
-        sendToCtm({ type: "ping" });
+        const resp = await sendToCtm({ type: "ping" });
+        if (!resp.ok) {
+          log(`ping failed: ${resp.error || "unknown"} — relay or content script may not be loaded`, "err");
+        }
       }
-    }, POLL_BRIDGE_MS);
+    }, 2000);   // Poll every 2s — cheap, keeps bridge state fresh
 
     // First bridge ping
-    if (ctmTabOpen) sendToCtm({ type: "ping" });
+    if (ctmTabOpen) {
+      const resp = await sendToCtm({ type: "ping" });
+      if (!resp.ok) {
+        log(`initial ping failed: ${resp.error || "unknown"}`, "err");
+      }
+    }
   }
 
   init();

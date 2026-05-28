@@ -1,10 +1,10 @@
 {
-  "version": "2.0.64",
+  "version": "2.0.65",
   "minimum_chrome_version": "116",
-  "release_date": "2026-05-28T19:41:13.367Z",
+  "release_date": "2026-05-28T19:42:19.993Z",
   "changelog": [
-    "Scanner: D2D Sales appointment is now auto-unchecked after Sales group selection so D2D bookings aren't scraped alongside the regular Sales pipeline"
+    "Scanner: multi-rep events are now deduped by eventId — when Roofr assigns 3 reps to one appointment it renders 3 rows in agenda, but the scanner now treats them as 1 event so capacity isn't triple-counted. Rep initials are collected as event.attendees so 'who's on it' is preserved."
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.64/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.64"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.65/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.65"
 }

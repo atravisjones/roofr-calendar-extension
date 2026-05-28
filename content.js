@@ -2197,9 +2197,33 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
 
     if (msg.type === "EXTRACT_ROOFR_EVENTS") {
       const nodes = getAllEventNodes();
-      const events = nodes.map(el => {
-        return extractEventFromElement(el);
-      }).filter(e => e.start && e.end); // Keep all events that have valid dates
+      // Multi-rep events render as one DOM row per assigned rep (same
+      // address, same time, different rep initials). Roofr's class name
+      // encodes both — `rbcalendar-event-{eventId}-{personId}-...` — so
+      // we can dedupe by eventId. The first occurrence wins; subsequent
+      // occurrences are merged in as additional attendees on the same
+      // event record so reps can still see who's on it.
+      const byEventId = new Map();
+      const orphans = []; // events with no parseable eventId — kept as-is
+      for (const el of nodes) {
+        const event = extractEventFromElement(el);
+        if (!event.start || !event.end) continue;
+        const m = (el.className || '').match(/rbcalendar-event-(\d+)-(\d+)/);
+        const eventId = m ? m[1] : null;
+        const repInitials = (el.querySelector('[class*="Avatar"]')?.textContent || '').trim();
+        if (!eventId) { orphans.push(event); continue; }
+        if (byEventId.has(eventId)) {
+          const existing = byEventId.get(eventId);
+          if (repInitials && !existing.attendees.includes(repInitials)) {
+            existing.attendees.push(repInitials);
+          }
+          continue;
+        }
+        event.eventId = eventId;
+        event.attendees = repInitials ? [repInitials] : [];
+        byEventId.set(eventId, event);
+      }
+      const events = [...byEventId.values(), ...orphans];
       sendResponse({ ok: true, events });
       return true;
     }

@@ -1,12 +1,12 @@
 {
-  "version": "2.0.59",
+  "version": "2.0.60",
   "minimum_chrome_version": "116",
-  "release_date": "2026-05-28T18:36:37.607Z",
+  "release_date": "2026-05-28T18:42:28.239Z",
   "changelog": [
-    "Scanner: 'Scan Page' now switches the Roofr calendar to the new Agenda view (vertical month-at-a-glance) instead of the Weekly grid",
-    "Scanner: agenda items (AgendaItemWrapper) are now picked up by the scrape selectors alongside the old .rbc-event nodes",
-    "View detection: getCurrentCalendarView() now reads localStorage['crm.calendar.view'] and DOM presence to recognize agenda"
+    "Scanner: fix 'Could not detect dates on page' on Agenda view — extract dates from rbcalendar-event class names directly when AgendaContainer is present",
+    "Scanner: extract all-day flag from the agenda 'All day' text and event-type color from the inner EventColorBar (agenda items have no bg color on the wrapper)",
+    "Scanner: accept agenda/weekly/daily as scrape-in-place views — only force-switch from monthly to agenda"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.59/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.59"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.60/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.60"
 }

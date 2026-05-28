@@ -1547,15 +1547,25 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
 
   // Comprehensive event extraction using color, class names, and content
   function extractEventFromElement(el) {
-    // 1. Detect if all-day event using class
-    const isAllDay = el.classList.contains('rbc-event-allday');
-
-    // 2. Get event type from background color
-    const bgColor = window.getComputedStyle(el).backgroundColor;
-    const eventType = EVENT_TYPE_COLORS[bgColor] || 'Unknown';
-
-    // 3. Get text content
+    // 3. Get text content (used by all-day detection below too)
     const text = el.textContent?.trim() || '';
+
+    // 1. Detect all-day event. Weekly/Monthly: rbc-event-allday class. Agenda: the
+    // EventTime span literally says "All day" — no class for it.
+    const isAgendaItem = (el.className || '').toString().includes('AgendaItemWrapper');
+    const isAllDay = el.classList.contains('rbc-event-allday')
+      || (isAgendaItem && /\ball\s*day\b/i.test(
+          el.querySelector('[class*="EventTime"]')?.textContent || ''
+         ));
+
+    // 2. Get event type from background color. Weekly/Monthly: bg is on the
+    // event element itself. Agenda: bg is on the inner EventColorBar.
+    let bgColor = window.getComputedStyle(el).backgroundColor;
+    if (isAgendaItem) {
+      const colorBar = el.querySelector('[class*="EventColorBar"]');
+      if (colorBar) bgColor = window.getComputedStyle(colorBar).backgroundColor;
+    }
+    const eventType = EVENT_TYPE_COLORS[bgColor] || 'Unknown';
 
     // 4. Extract date/time from class name (most reliable method)
     const startDateTime = extractDateTimeFromClass(el.className);
@@ -1678,6 +1688,18 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
   // This is the primary, robust function for finding all visible dates on the calendar.
   function getVisibleDatesISO() {
     const dates = new Set();
+
+    // Strategy 0 (Agenda view): every event wrapper carries a class like
+    // `rbcalendar-event-{id}-{id}-DD-MM-YYYY--HH-MM-SS` that encodes its date.
+    // Pull dates straight from those — no day-header parsing needed, and works
+    // for the entire month visible in agenda.
+    if (document.querySelector('[class*="AgendaContainer"]')) {
+      document.querySelectorAll('[class*="rbcalendar-event-"]').forEach(el => {
+        const m = (el.className || '').match(/-(\d{2})-(\d{2})-(\d{4})--/);
+        if (m) dates.add(`${m[3]}-${m[2]}-${m[1]}`);
+      });
+      if (dates.size > 0) return Array.from(dates).sort();
+    }
 
     // Strategy 1: Try multiple selectors for Weekly view data-date attributes
     const selectors = [

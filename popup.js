@@ -3905,16 +3905,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Small wait to allow calendar to update events if needed
             await new Promise(r => setTimeout(r, 500));
 
-            // 0.5 Check view - only switch if Monthly (preserve Daily view for single-day scans)
+            // 0.5 Check view. Accept agenda/weekly/daily as-is — all three are
+            // scrapable. Only force-switch from monthly (which renders summary
+            // pills, not full event details) to agenda.
             const viewResult = await sendFindCommand({ type: "GET_CALENDAR_VIEW" });
             if (viewResult && viewResult.ok) {
-                if (viewResult.view === 'monthly') {
-                    addLog("Monthly view detected, switching to Weekly...");
-                    await sendFindCommand({ type: "SWITCH_TO_WEEKLY_VIEW" });
-                    // Wait for view transition
+                const v = viewResult.view;
+                if (v === 'agenda' || v === 'weekly' || v === 'daily') {
+                    addLog(`${v} view active, scanning...`);
+                } else {
+                    addLog(`${v} view detected, switching to Agenda...`);
+                    await sendFindCommand({ type: "SWITCH_TO_AGENDA_VIEW" });
+                    // Wait for view transition + agenda render
                     await new Promise(r => setTimeout(r, 1500));
-                } else if (viewResult.view === 'daily') {
-                    addLog("Daily view detected, scanning single day...");
                 }
             }
 
@@ -4070,25 +4073,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function setupCalendarForScan(tabId, forceWeekly = true) {
         addLog("Setting up calendar for scan...");
 
-        // Step 1: Check current view and switch to agenda if needed
+        // Step 1: Check current view.
+        // - If navigating to calendar (forceWeekly=true): land on Agenda (default).
+        // - If already on calendar: accept agenda/weekly/daily and scrape in place.
+        //   Only force a switch when the user is on monthly (which doesn't have
+        //   per-event details).
         const viewResult = await sendCommandToTab(tabId, { type: "GET_CALENDAR_VIEW" });
         if (viewResult?.ok) {
             addLog(`Current view: ${viewResult.view}`);
-            // If forceWeekly is true (navigating to calendar), always switch to agenda unless already agenda
-            // If forceWeekly is false (already on calendar), only switch when in a per-day/week/month grid
-            const shouldSwitch = forceWeekly
-                ? (viewResult.view !== 'agenda')
-                : (viewResult.view !== 'agenda');
+            const v = viewResult.view;
+            const scrapeableNow = (v === 'agenda' || v === 'weekly' || v === 'daily');
+            const shouldSwitch = forceWeekly ? (v !== 'agenda') : !scrapeableNow;
 
             if (shouldSwitch) {
-                addLog(`Switching to Agenda view (forceWeekly: ${forceWeekly})...`);
+                addLog(`Switching to Agenda view...`);
                 const switchResult = await sendCommandToTab(tabId, { type: "SWITCH_TO_AGENDA_VIEW" });
                 if (switchResult?.ok) {
                     addLog(switchResult.alreadyAgenda ? "Already in Agenda view" : "Switched to Agenda view");
                 } else {
                     addLog(`Warning: agenda switch returned: ${switchResult?.error || 'unknown'}`, "WARN");
                 }
-                await new Promise(r => setTimeout(r, 2000)); // Wait for view to render the full month
+                await new Promise(r => setTimeout(r, 2000)); // Wait for view to render
             }
         }
 

@@ -1,11 +1,11 @@
 {
-  "version": "2.0.56",
+  "version": "2.0.57",
   "minimum_chrome_version": "116",
-  "release_date": "2026-05-28T17:31:27.454Z",
+  "release_date": "2026-05-28T17:45:35.154Z",
   "changelog": [
-    "Fix: rep name 'Madison Meyers' now migrates to 'Madi Meyers' automatically — fixes dispositions being saved as 'unknown' when Madi was dialing",
-    "Identity normalization: dialer.js, service_worker.js force any Madison/Maddison/CTM user ID match to resolve to Madi"
+    "Dialer: live-update rep name when Call Handler Selection > CSR changes in options — no longer requires reopening the dialer tab",
+    "Refactor: rep-name resolution extracted into resolveRepName() so init + storage-listener share the same Madison->Madi normalization + first-name extraction"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.56/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.56"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.57/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.57"
 }

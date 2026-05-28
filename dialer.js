@@ -1646,33 +1646,45 @@
     syncThemeFromParent();
     // Re-sync periodically in case parent toggles theme
     setInterval(syncThemeFromParent, 2000);
-    // Load rep name + preferences from extension settings
-    try {
-      const s = await chrome.storage.sync.get([
-        "ctm_csr", "ctm_user", "ctm_display_name",
-        "dialer_test_mode", "dialer_session_limit",
-      ]);
-      let fullName = s.ctm_csr || s.ctm_display_name || s.ctm_user || "unknown";
-      // Identity normalization for the Madison -> Madi migration. Forces any
-      // legacy "Madison" / "Maddison" identifier (or her CTM user ID) to
-      // resolve to "Madi Meyers" — needed because /api/sheet-dispositions
-      // only recognizes "Madi" and would otherwise mark her as unknown.
-      const MADI_USER_ID = "USR3C843ED7AB9B4711F9903DED76AC22FF";
+    // Resolve repName from the Call Handler Selection > CSR setting
+    // (chrome.storage.sync.ctm_csr) with two fallbacks. Subscribed to
+    // storage changes below so updates in options propagate live — no need
+    // to close/reopen the dialer for the next disposition to log the
+    // correct rep.
+    const MADI_USER_ID = "USR3C843ED7AB9B4711F9903DED76AC22FF";
+    function resolveRepName(values, { silent = false } = {}) {
+      let fullName = values.ctm_csr || values.ctm_display_name || values.ctm_user || "unknown";
+      // Madison -> Madi identity normalization. /api/sheet-dispositions
+      // only recognizes "Madi" — without this, legacy stored values or
+      // raw CTM user IDs would log as unknown/Maddison.
       if (
         fullName === MADI_USER_ID ||
         /\bMad(d)?ison\b/i.test(fullName)
       ) {
         fullName = "Madi Meyers";
       }
-      repName = fullName.split(" ")[0] || fullName;
+      let next = fullName.split(" ")[0] || fullName;
       // Safeguard: never let the first-name extraction emit "Madison".
-      if (/^Mad(d)?ison$/i.test(repName)) repName = "Madi";
-      els.repName.textContent = `Rep: ${repName}`;
+      if (/^Mad(d)?ison$/i.test(next)) next = "Madi";
+      const changed = next !== repName;
+      repName = next;
+      if (els.repName) els.repName.textContent = `Rep: ${repName}`;
+      if (silent) return changed;
       if (repName === "unknown") {
         log("rep name not set — open ⚙ to set ctm_csr in options", "err", "init");
       } else {
         log(`rep identified as: ${repName}`, "info", "init");
       }
+      return changed;
+    }
+
+    // Load rep name + preferences from extension settings
+    try {
+      const s = await chrome.storage.sync.get([
+        "ctm_csr", "ctm_user", "ctm_display_name",
+        "dialer_test_mode", "dialer_session_limit",
+      ]);
+      resolveRepName(s);
       testMode = !!s.dialer_test_mode;
       els.testModeToggle.checked = testMode;
       if (testMode) log("TEST MODE active on startup", "warn", "init");
@@ -1681,6 +1693,21 @@
       els.sessionLimitInput.value = sessionLimit;
       els.sessionLimitDisplay.textContent = sessionLimit;
     } catch (_) {}
+
+    // Live-update repName when the Call Handler Selection (or fallback keys)
+    // changes in options. Without this, a rep who changes their CSR while the
+    // dialer tab is open would still log dispositions under the old/empty
+    // value until they reload the tab.
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "sync") return;
+      const watch = ["ctm_csr", "ctm_display_name", "ctm_user"];
+      if (!watch.some(k => k in changes)) return;
+      chrome.storage.sync.get(watch, (s) => {
+        const prev = repName;
+        const changed = resolveRepName(s, { silent: true });
+        if (changed) log(`rep updated: ${prev} -> ${repName}`, "info", "init");
+      });
+    });
 
     // Load filter preferences before first fetch
     await loadFilterPrefs();

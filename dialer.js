@@ -684,24 +684,39 @@
   }
 
   // ── Sheet API ──
-  async function fetchLeads() {
-    log("fetching leads from sheet…", "info", "queue");
-    try {
-      const r = await fetch(DISPOSITIONS_URL);
-      const data = await r.json();
-      if (!data.configured) {
-        log(`leads API not configured: ${data.error || ""}`, "err", "queue");
-        return;
+  // Debounce so two refresh triggers (pause-time + advanceToNext, or a
+  // background tick that happens to fire near a dial completion) don't both
+  // hit the API. force=true bypasses the debounce — used by manual Refresh
+  // button + advanceToNext where freshness is required.
+  const FETCH_DEBOUNCE_MS = 3000;
+  let _lastFetchAt = 0;
+  let _inflightFetch = null;
+  async function fetchLeads({ force = false } = {}) {
+    const now = Date.now();
+    if (!force && (now - _lastFetchAt) < FETCH_DEBOUNCE_MS) return;
+    // Coalesce concurrent callers onto a single in-flight request.
+    if (_inflightFetch) return _inflightFetch;
+    _lastFetchAt = now;
+    _inflightFetch = (async () => {
+      log("fetching leads from sheet…", "info", "queue");
+      try {
+        const r = await fetch(DISPOSITIONS_URL);
+        const data = await r.json();
+        if (!data.configured) {
+          log(`leads API not configured: ${data.error || ""}`, "err", "queue");
+          return;
+        }
+        queue = classifyAndSort(data);
+        const t1 = queue.filter(l => l._tier === 1).length;
+        const t2 = queue.filter(l => l._tier === 2).length;
+        const t3 = queue.filter(l => l._tier === 3).length;
+        log(`queue loaded: ${queue.length} leads (NEW=${t1} TODAY=${t2} WIP=${t3})`, "ok", "queue");
+        renderQueue();
+      } catch (e) {
+        log(`fetch leads failed: ${e.message}`, "err", "queue");
       }
-      queue = classifyAndSort(data);
-      const t1 = queue.filter(l => l._tier === 1).length;
-      const t2 = queue.filter(l => l._tier === 2).length;
-      const t3 = queue.filter(l => l._tier === 3).length;
-      log(`queue loaded: ${queue.length} leads (NEW=${t1} TODAY=${t2} WIP=${t3})`, "ok", "queue");
-      renderQueue();
-    } catch (e) {
-      log(`fetch leads failed: ${e.message}`, "err", "queue");
-    }
+    })();
+    try { await _inflightFetch; } finally { _inflightFetch = null; }
   }
 
   async function claimLead(phone, rowIndex) {
@@ -836,8 +851,10 @@
     }
 
     setPhase("fetching");
-    // Re-fetch queue occasionally so locks from other reps + new leads are visible
-    await fetchLeads();
+    // Re-fetch queue so locks from other reps + new leads are visible. Force
+    // bypasses the debounce — pre-dial freshness is non-negotiable, even if
+    // the pause-time fetch (a few seconds ago) was already recent.
+    await fetchLeads({ force: true });
 
     // Find next claimable lead
     let lead = null;
@@ -1402,7 +1419,7 @@
     els.refreshBtn.disabled = true;
     els.refreshBtn.textContent = "↻ Refreshing…";
     try {
-      await fetchLeads();
+      await fetchLeads({ force: true });
     } finally {
       els.refreshBtn.textContent = "↻ Refresh";
       els.refreshBtn.disabled = false;
@@ -1818,15 +1835,26 @@
     // Initial queue fetch
     await fetchLeads();
 
-    // Background queue refresh: pull every 30s so the visible queue stays
-    // in sync with other reps' progress (claimed leads disappear, freshly
-    // dispositioned leads drop out via the same-day filter). Skipped during
-    // dialing/ringing/connected so we don't thrash the API while a call is
-    // in flight; resumes during idle, wrap-up, and the inter-call pause.
+    // Background queue refresh: pull every 60s so the visible queue stays
+    // in sync with other reps' progress. Skipped during:
+    // - dialing/ringing/connected — no need to thrash the API mid-call
+    // - document hidden (tab not focused) — rep isn't watching, save the request
+    // Combined with fetchLeads()' 3-second debounce, redundant fetches near
+    // a dial-completion cycle are coalesced into a single request.
     setInterval(() => {
       if (phase === "dialing" || phase === "ringing" || phase === "connected") return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       fetchLeads().catch(() => {});
-    }, 30000);
+    }, 60000);
+
+    // When the rep tabs back into the dialer after being away, refresh
+    // immediately so they don't stare at a stale queue waiting for the next
+    // 60s tick. The fetchLeads debounce still gates back-to-back fires.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") return;
+      if (phase === "dialing" || phase === "ringing" || phase === "connected") return;
+      fetchLeads().catch(() => {});
+    });
 
     // Poll CTM tab status (in case user opens/closes the tab)
     setInterval(async () => {

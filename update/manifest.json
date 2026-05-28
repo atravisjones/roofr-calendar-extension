@@ -1,10 +1,13 @@
 {
-  "version": "2.0.68",
+  "version": "2.0.69",
   "minimum_chrome_version": "116",
-  "release_date": "2026-05-28T20:08:20.984Z",
+  "release_date": "2026-05-28T20:13:19.506Z",
   "changelog": [
-    "Dialer queue: phone numbers are now clickable links that open CTM filtered to that number (https://app.calltrackingmetrics.com/calls/desk#filter={digits}). Reuses an existing CTM tab if open. Cmd/Ctrl/middle-click opens a new tab. Lead name still copies to clipboard on click."
+    "Dialer fetch budget: 3-second debounce on fetchLeads() coalesces back-to-back triggers near a dial-completion cycle (pause-time + advanceToNext = 1 actual request, not 2)",
+    "Dialer fetch budget: background refresh interval bumped 30s -> 60s; skipped when the dialer tab is hidden (document.visibilityState)",
+    "Dialer fetch budget: visibilitychange listener refreshes once when rep tabs back in, so they don't stare at stale queue waiting for next interval",
+    "Dialer fetch budget: advanceToNext + manual Refresh button bypass the debounce via force:true — pre-dial freshness preserved"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.68/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.68"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.69/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.69"
 }

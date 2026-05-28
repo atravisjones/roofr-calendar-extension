@@ -1,11 +1,11 @@
 {
-  "version": "2.0.66",
+  "version": "2.0.67",
   "minimum_chrome_version": "116",
-  "release_date": "2026-05-28T20:00:00.678Z",
+  "release_date": "2026-05-28T20:04:33.400Z",
   "changelog": [
-    "Dialer cadence: first-time callers get next contact = today + 3 hours (with time, e.g. '5/28/2026 1:32 PM'). All subsequent attempts get next contact = tomorrow (date only).",
-    "Dialer queue: leads already attempted twice or more today are skipped from today's queue entirely — picked up tomorrow. First-time→3-hour callback flow still works because that lead's attempts is only 1."
+    "Dialer queue: visible queue now refreshes during the inter-call pause AND on a 30-second background timer when idle — keeps multiple reps from seeing the same lead in their lists",
+    "Multi-rep coordination: combined with the existing pre-dial re-fetch + server-side lock claim + same-day skip filter, reps no longer dial each other's already-handled leads"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.66/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.66"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.67/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.67"
 }

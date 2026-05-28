@@ -1126,6 +1126,12 @@
     els.current.classList.remove("empty");
     let remaining = Math.ceil(INTER_CALL_PAUSE_MS / 1000);
     els.current.innerHTML = `<div style="text-align:center;color:var(--muted);padding:10px;"><div style="font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;">${remaining}s</div><div style="font-size:11px;margin-top:4px;">Next call in...</div></div>`;
+    // Fresh-pull the queue during the inter-call pause so the visible list
+    // reflects what other reps have done since the previous fetch. This is
+    // additive — advanceToNext also re-fetches before claiming, this just
+    // makes the queue UI accurate during the pause so reps see leads
+    // disappear in real time as other reps complete them.
+    fetchLeads().catch(() => {});
     const countdown = setInterval(() => {
       remaining--;
       if (remaining <= 0 || mode !== "running") {
@@ -1789,6 +1795,16 @@
 
     // Initial queue fetch
     await fetchLeads();
+
+    // Background queue refresh: pull every 30s so the visible queue stays
+    // in sync with other reps' progress (claimed leads disappear, freshly
+    // dispositioned leads drop out via the same-day filter). Skipped during
+    // dialing/ringing/connected so we don't thrash the API while a call is
+    // in flight; resumes during idle, wrap-up, and the inter-call pause.
+    setInterval(() => {
+      if (phase === "dialing" || phase === "ringing" || phase === "connected") return;
+      fetchLeads().catch(() => {});
+    }, 30000);
 
     // Poll CTM tab status (in case user opens/closes the tab)
     setInterval(async () => {

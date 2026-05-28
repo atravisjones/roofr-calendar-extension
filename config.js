@@ -833,9 +833,9 @@ export const CONFIG = {
 };
 
 export const PEOPLE_DATA = {
-    REPS: ["Chandler Duffy", "Christian Noren", "Connor Hamby", "Jonathan Marino", "Josh Jewett", "Justin Parker", "London Smith", "Nick Williams", "Orlando Chavarria", "Richard Hadsall", "Stephen Chaidez", "Tanner Broadbent"].sort(),
+    REPS: ["Christian Noren", "Connor Hamby", "Jonathan Marino", "Josh Jewett", "Justin Parker", "London Smith", "Orlando Chavarria", "Richard Hadsall", "Stephen Chaidez", "Tanner Broadbent"].sort(),
     MGMT: ["Andrew Clark", "Anthony Bonomo", "Bradley Crohurst", "Brenda Ochoa", "Nikolas Pagoulatos", "Yousef Ayad"].sort(),
-    CSRS: ["Alex Tillotson", "Bronté Pisz", "Diva Shahpur", "Khamilah Valles", "Madi Meyers", "Nica Javier", "Raven Pelfrey", "Travis Jones"].sort(),
+    CSRS: ["Alex Tillotson", "Bronté Pisz", "Diva Shahpur", "Khamilah Valles", "Madi Meyers", "Nica Javier", "Travis Jones"].sort(),
     PRODUCTION: ["Jayda Fairfield", "Justin Saiz"].sort(),
 
     // CTM multi_agents user IDs — used to build per-rep CTM calls URLs

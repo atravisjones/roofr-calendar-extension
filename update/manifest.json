@@ -1,13 +1,11 @@
 {
-  "version": "2.0.69",
+  "version": "2.0.70",
   "minimum_chrome_version": "116",
-  "release_date": "2026-05-28T20:13:19.506Z",
+  "release_date": "2026-05-28T20:19:26.585Z",
   "changelog": [
-    "Dialer fetch budget: 3-second debounce on fetchLeads() coalesces back-to-back triggers near a dial-completion cycle (pause-time + advanceToNext = 1 actual request, not 2)",
-    "Dialer fetch budget: background refresh interval bumped 30s -> 60s; skipped when the dialer tab is hidden (document.visibilityState)",
-    "Dialer fetch budget: visibilitychange listener refreshes once when rep tabs back in, so they don't stare at stale queue waiting for next interval",
-    "Dialer fetch budget: advanceToNext + manual Refresh button bypass the debounce via force:true — pre-dial freshness preserved"
+    "Roster: removed Nick Williams and Chandler Duffy from the Sales Reps list",
+    "Roster: removed Raven Pelfrey from the CSRs list"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.69/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.69"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.70/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.70"
 }

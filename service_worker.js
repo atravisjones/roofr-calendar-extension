@@ -10,9 +10,9 @@ const SEED_DEFAULTS = {
     AVAIL_RANGE_SOUTH: "I10:Q17",
 
     // People Lists (Comma separated defaults)
-    PEOPLE_REPS: "Chandler Duffy, Christian Noren, Connor Hamby, Jonathan Marino, Josh Jewett, Justin Parker, London Smith, Nick Williams, Orlando Chavarria, Richard Hadsall, Stephen Chaidez, Tanner Broadbent",
+    PEOPLE_REPS: "Christian Noren, Connor Hamby, Jonathan Marino, Josh Jewett, Justin Parker, London Smith, Orlando Chavarria, Richard Hadsall, Stephen Chaidez, Tanner Broadbent",
     PEOPLE_MGMT: "Andrew Clark, Anthony Bonomo, Bradley Crohurst, Brenda Ochoa, Yousef Ayad",
-    PEOPLE_CSRS: "Bronté Pisz, Diva Shahpur, Layla Fairfield, Madi Meyers, Nica Javier, Raven Pelfrey, Travis Jones",
+    PEOPLE_CSRS: "Bronté Pisz, Diva Shahpur, Layla Fairfield, Madi Meyers, Nica Javier, Travis Jones",
     PEOPLE_PRODUCTION: "Jayda Fairfield, Justin Saiz",
 
     // =====================

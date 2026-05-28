@@ -3446,7 +3446,7 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     } catch (e) {
       console.log('[Batch] Could not load CSR list from storage:', e.message);
       // Fallback CSR list (CSRs only, not reps)
-      csrList = ["bronté pisz", "diva shahpur", "madi meyers", "nica javier", "raven pelfrey"];
+      csrList = ["bronté pisz", "diva shahpur", "madi meyers", "nica javier"];
     }
 
     // First, find and click the event again

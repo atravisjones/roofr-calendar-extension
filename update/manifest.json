@@ -1,11 +1,12 @@
 {
-  "version": "2.0.57",
+  "version": "2.0.58",
   "minimum_chrome_version": "116",
-  "release_date": "2026-05-28T17:45:35.154Z",
+  "release_date": "2026-05-28T17:54:57.691Z",
   "changelog": [
-    "Dialer: live-update rep name when Call Handler Selection > CSR changes in options — no longer requires reopening the dialer tab",
-    "Refactor: rep-name resolution extracted into resolveRepName() so init + storage-listener share the same Madison->Madi normalization + first-name extraction"
+    "Dialer queue: each row now shows the lead's current status as a color-coded pill (Attempted, Follow-Up, Lost, etc.)",
+    "Dialer queue: each row now shows the most recent note (truncated to 90 chars, full text on hover)",
+    "Refactor: status-pill colors moved into a shared STATUS_PILL_COLORS map used by both the queue and the Done list"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.57/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.57"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.58/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.58"
 }

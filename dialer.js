@@ -314,6 +314,29 @@
     return `<span class="src-pill src-unk">${escapeHtml(short)}</span>`;
   }
 
+  // Status pill — color-coded by disposition. Shared by renderQueue +
+  // renderCompleted so the same palette appears everywhere.
+  const STATUS_PILL_COLORS = {
+    "attempted":       "#92400e",
+    "follow - up":     "#1e40af",
+    "follow-up":       "#1e40af",
+    "follow up":       "#1e40af",
+    "booked":          "#065f46",
+    "sold":            "#065f46",
+    "new":             "var(--accent-hi)",
+    "lost":            "#991b1b",
+    "bad leads":       "#991b1b",
+    "do not service":  "#991b1b",
+    "repeat":          "#6b7280",
+    "looking for work":"#6b7280",
+  };
+  function statusPillHtml(status) {
+    const raw = (status || "").trim();
+    if (!raw) return "";
+    const color = STATUS_PILL_COLORS[raw.toLowerCase()] || "var(--muted)";
+    return `<span class="tier" style="background:transparent;color:${color};border:1px solid currentColor;">${escapeHtml(raw)}</span>`;
+  }
+
   function renderQueue() {
     els.queue.innerHTML = "";
     // Show ALL queued leads (was capped at 8 — Travis: "why is there always 8?").
@@ -332,9 +355,16 @@
       const doubleTapBadge = (attemptsNow === 0)
         ? `<span class="tier" style="background:var(--accent-light);color:var(--accent-hi);margin-left:2px;">×2 double-tap</span>`
         : "";
+      const noteText = (lead.notes || "").trim();
+      // Truncate long notes so a chatty lead doesn't bloat the row height.
+      const noteShort = noteText.length > 90 ? noteText.slice(0, 87) + "…" : noteText;
+      const noteHtml = noteText
+        ? `<div class="row3" style="font-size:11px;color:var(--muted);margin-top:2px;line-height:1.3;" title="${escapeHtml(noteText)}">📝 ${escapeHtml(noteShort)}</div>`
+        : "";
       leftEl.innerHTML = `
         <div class="row1"><span class="tier t${tier}">${tierLabel}</span><strong class="name copyable" data-copy="${escapeHtml(lead.name || "")}">${escapeHtml(lead.name || "(no name)")}</strong></div>
-        <div class="row2"><span class="copyable" data-copy="${escapeHtml(lead.phone)}">${escapeHtml(lead.phone)}</span> ${sourcePillHtml(lead.source)}${doubleTapBadge}</div>
+        <div class="row2"><span class="copyable" data-copy="${escapeHtml(lead.phone)}">${escapeHtml(lead.phone)}</span> ${sourcePillHtml(lead.source)}${statusPillHtml(lead.status)}${doubleTapBadge}</div>
+        ${noteHtml}
       `;
       const metaEl = document.createElement("span");
       metaEl.className = "meta";
@@ -1155,16 +1185,11 @@
       return;
     }
     el.innerHTML = completedThisSession.slice().reverse().map(c => {
-      const statusColor = {
-        "Attempted": "#92400e", "Follow - Up": "#1e40af",
-        "Booked": "#065f46", "SOLD": "#065f46",
-        "Lost": "#991b1b", "Bad Leads": "#991b1b", "Do Not Service": "#991b1b",
-      }[c.status] || "var(--muted)";
       return `<li>
         <span style="color:var(--success);font-weight:600;">✓</span>
         <span class="name">${escapeHtml(c.name || "(no name)")}</span>
         <span class="meta">${escapeHtml(c.phone)}</span>
-        <span class="tier" style="background:transparent;color:${statusColor};border:1px solid currentColor;">${escapeHtml(c.status)}</span>
+        ${statusPillHtml(c.status)}
       </li>`;
     }).join("");
   }

@@ -1,11 +1,10 @@
 {
-  "version": "2.0.70",
+  "version": "2.0.71",
   "minimum_chrome_version": "116",
-  "release_date": "2026-05-28T20:19:26.585Z",
+  "release_date": "2026-05-28T21:21:47.186Z",
   "changelog": [
-    "Roster: removed Nick Williams and Chandler Duffy from the Sales Reps list",
-    "Roster: removed Raven Pelfrey from the CSRs list"
+    "Links menu: added Leads Form, Missed Calls (Speed to Leads), and LSA's (LeadTruffle) to the footer Links dropdown"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.70/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.70"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.71/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.71"
 }

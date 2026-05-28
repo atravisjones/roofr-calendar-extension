@@ -62,11 +62,13 @@ if (fs.existsSync(updateManifestPath)) {
     updateManifest.version = newVersion;
     updateManifest.release_date = new Date().toISOString();
 
-    // Update download URLs with new version
+    // Update download URLs with new version. Rewrite only the /download/vX.Y.Z/
+    // path segment so this works for both .crx and .zip filenames (and any
+    // future asset names).
     if (updateManifest.download_url) {
         updateManifest.download_url = updateManifest.download_url.replace(
-            /v[\d.]+\/roofr-calendar-scraper-v[\d.]+\.zip/,
-            `v${newVersion}/roofr-calendar-scraper-v${newVersion}.zip`
+            /\/download\/v[\d.]+\//,
+            `/download/v${newVersion}/`
         );
     }
     if (updateManifest.release_notes_url) {
@@ -80,11 +82,16 @@ if (fs.existsSync(updateManifestPath)) {
     console.log(`Updated update/manifest.json: ${newVersion}`);
 }
 
-// Read and update updates.xml (for enterprise Chrome updates)
+// Read and update updates.xml (for enterprise Chrome updates).
+// Scope the replacement to the <updatecheck> tag's version attribute — do NOT
+// touch the XML declaration's version='1.0' attr.
 const updatesXmlPath = path.join(rootDir, 'updates.xml');
 if (fs.existsSync(updatesXmlPath)) {
     let xmlContent = fs.readFileSync(updatesXmlPath, 'utf8');
-    xmlContent = xmlContent.replace(/version='[\d.]+'/g, `version='${newVersion}'`);
+    xmlContent = xmlContent.replace(
+        /(<updatecheck\b[^>]*\bversion=['"])[\d.]+(['"])/,
+        `$1${newVersion}$2`
+    );
     fs.writeFileSync(updatesXmlPath, xmlContent);
     console.log(`Updated updates.xml: ${newVersion}`);
 }

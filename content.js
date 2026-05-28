@@ -1771,7 +1771,15 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
   }
 
   function getAllEventNodes() {
-    return Array.from(document.querySelectorAll(".rbc-event"));
+    // Weekly/Monthly/Daily: .rbc-event. Agenda: AgendaItemWrapper.
+    // Both have a `rbcalendar-event-{id}-{id}-DD-MM-YYYY--HH-MM-SS` class, so a
+    // single CSS attribute match catches both, then dedupe by element identity.
+    const set = new Set([
+      ...document.querySelectorAll('.rbc-event'),
+      ...document.querySelectorAll('[class*="AgendaItemWrapper"]'),
+      ...document.querySelectorAll('[class*="rbcalendar-event-"]'),
+    ]);
+    return Array.from(set);
   }
 
   function clearAllHighlights() {
@@ -2193,6 +2201,15 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
 
     if (msg.type === "SWITCH_TO_DAILY_VIEW") {
       switchToDailyView().then(result => {
+        sendResponse(result);
+      }).catch(err => {
+        sendResponse({ ok: false, error: err.message });
+      });
+      return true;
+    }
+
+    if (msg.type === "SWITCH_TO_AGENDA_VIEW") {
+      switchToAgendaView().then(result => {
         sendResponse(result);
       }).catch(err => {
         sendResponse({ ok: false, error: err.message });
@@ -2673,6 +2690,12 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
           const isInPopup = e.closest('[class*="EventCard"]') || e.closest('[role="dialog"]') || e.closest('.modal');
           return !isInPopup;
         });
+      }
+
+      // Agenda view fallback: AgendaItemWrapper. Match by class attr so the
+      // styled-component hash suffix doesn't matter across deployments.
+      if (foundEvents.length === 0) {
+        foundEvents = Array.from(document.querySelectorAll('[class*="AgendaItemWrapper"]'));
       }
 
       return foundEvents;
@@ -3900,15 +3923,27 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
   }
 }
 
-// Detect current calendar view (Monthly, Weekly, or Daily)
+// Detect current calendar view (Monthly, Weekly, Daily, or Agenda)
 function getCurrentCalendarView() {
-  // Check for view selector dropdown or buttons
-  // Look for active view indicator in the toolbar
+  // Strategy 0: Roofr persists the choice in localStorage. Most reliable.
+  try {
+    const raw = localStorage.getItem('crm.calendar.view');
+    if (raw) {
+      const v = JSON.parse(raw);
+      if (v === 'agenda' || v === 'week' || v === 'day' || v === 'month') {
+        return { agenda: 'agenda', week: 'weekly', day: 'daily', month: 'monthly' }[v];
+      }
+    }
+  } catch (_) {}
+
+  // Strategy 0b: AgendaContainer present in DOM = agenda view, regardless of dropdown text.
+  if (document.querySelector('[class*="AgendaContainer"]')) return 'agenda';
 
   // Strategy 1: Check for dropdown menu text showing current view
   const dropdownBtn = document.querySelector('[class*="dropdown"] button, button[aria-haspopup="listbox"]');
   if (dropdownBtn) {
     const text = dropdownBtn.textContent?.trim().toLowerCase();
+    if (text === 'agenda') return 'agenda';
     if (text === 'weekly') return 'weekly';
     if (text === 'monthly') return 'monthly';
     if (text === 'daily') return 'daily';
@@ -4075,6 +4110,71 @@ function clickWeeklyOption() {
 }
 
 // Switch to Daily view
+// Switch to Agenda view (Roofr's vertical list view that shows the full month).
+// Two-pronged approach: write the persisted view to localStorage AND click the
+// dropdown option, so it works whether the calendar React state has rendered
+// yet or not.
+async function switchToAgendaView() {
+  console.log('[Roofr Extension] Switching to Agenda view...');
+
+  const currentView = getCurrentCalendarView();
+  if (currentView === 'agenda') {
+    console.log('[Roofr Extension] Already in Agenda view');
+    return { ok: true, clicked: false, alreadyAgenda: true };
+  }
+
+  // Persist the choice so Roofr will land on agenda next mount too.
+  try { localStorage.setItem('crm.calendar.view', JSON.stringify('agenda')); } catch (_) {}
+
+  // Find the view dropdown button (whatever it currently displays).
+  const allButtons = document.querySelectorAll('button');
+  for (const btn of allButtons) {
+    const text = (btn.textContent || '').trim().toLowerCase();
+    if (text.startsWith('weekly') || text.startsWith('monthly') ||
+        text.startsWith('daily')  || text.startsWith('agenda')) {
+      console.log('[Roofr Extension] Found view dropdown button:', text);
+      btn.click();
+
+      for (const delay of [400, 700, 1000]) {
+        await new Promise(r => setTimeout(r, delay));
+        if (await clickAgendaOption()) {
+          await new Promise(r => setTimeout(r, 300));
+          return { ok: true, clicked: true };
+        }
+        // Dropdown might have closed — try re-opening.
+        btn.click();
+      }
+    }
+  }
+
+  return { ok: false, error: 'Could not switch to Agenda view' };
+}
+
+// Click the "Agenda" item in the open view-switcher dropdown.
+async function clickAgendaOption() {
+  // Roofr's dropdown items use these class hooks (verified by DOM inspection).
+  const selectorBatches = [
+    '.roofr-dropdown-item, [class*="roofr-dropdown-item"]',
+    'button[class*="WrapperButton"], button[class*="styled__WrapperButton"]',
+    '[data-value="agenda"], button[data-value="agenda"]',
+    '[role="option"], [role="menuitem"]',
+    '[class*="dropdown-item"], [class*="roofr-dropdown"]',
+  ];
+  for (const sel of selectorBatches) {
+    for (const el of document.querySelectorAll(sel)) {
+      if ((el.textContent || '').trim() === 'Agenda') {
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          console.log('[Roofr Extension] Clicked Agenda via', sel);
+          el.click();
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 async function switchToDailyView() {
   console.log('[Roofr Extension] Switching to Daily view...');
 

@@ -4062,32 +4062,33 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    // Setup calendar: switch to weekly view, select Sales, select all team members
-    // forceWeekly: true when opening/switching to calendar tab (not already on it)
+    // Setup calendar: switch to AGENDA view, select Sales, select all team members.
+    // Agenda is Roofr's vertical-list view that shows the full month at once, so
+    // the scanner can surface today through end-of-month in one pass.
+    // (Parameter name kept as forceWeekly for backwards-compatibility with callers;
+    // semantics now mean "force switch when navigating to calendar".)
     async function setupCalendarForScan(tabId, forceWeekly = true) {
         addLog("Setting up calendar for scan...");
 
-        // Step 1: Check current view and switch to weekly if needed
+        // Step 1: Check current view and switch to agenda if needed
         const viewResult = await sendCommandToTab(tabId, { type: "GET_CALENDAR_VIEW" });
         if (viewResult?.ok) {
             addLog(`Current view: ${viewResult.view}`);
-            // If forceWeekly is true (navigating to calendar), always switch to weekly unless already weekly
-            // If forceWeekly is false (already on calendar), only switch from monthly
+            // If forceWeekly is true (navigating to calendar), always switch to agenda unless already agenda
+            // If forceWeekly is false (already on calendar), only switch when in a per-day/week/month grid
             const shouldSwitch = forceWeekly
-                ? (viewResult.view !== 'weekly')
-                : (viewResult.view === 'monthly');
+                ? (viewResult.view !== 'agenda')
+                : (viewResult.view !== 'agenda');
 
             if (shouldSwitch) {
-                addLog(`Switching to weekly view (forceWeekly: ${forceWeekly})...`);
-                const switchResult = await sendCommandToTab(tabId, { type: "SWITCH_TO_WEEKLY_VIEW" });
-                // If dropdown was clicked, wait for the dropdown to open, Weekly to be clicked, and view to change
-                if (switchResult?.dropdown) {
-                    addLog("Dropdown opened, waiting for Weekly selection...");
-                    await new Promise(r => setTimeout(r, 1000)); // Wait for dropdown animation and Weekly click
+                addLog(`Switching to Agenda view (forceWeekly: ${forceWeekly})...`);
+                const switchResult = await sendCommandToTab(tabId, { type: "SWITCH_TO_AGENDA_VIEW" });
+                if (switchResult?.ok) {
+                    addLog(switchResult.alreadyAgenda ? "Already in Agenda view" : "Switched to Agenda view");
+                } else {
+                    addLog(`Warning: agenda switch returned: ${switchResult?.error || 'unknown'}`, "WARN");
                 }
-                await new Promise(r => setTimeout(r, 2000)); // Wait for view to fully change and render
-            } else if (viewResult.view === 'daily' && !forceWeekly) {
-                addLog("Daily view detected, scanning single day...");
+                await new Promise(r => setTimeout(r, 2000)); // Wait for view to render the full month
             }
         }
 

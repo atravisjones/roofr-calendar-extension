@@ -1,12 +1,12 @@
 {
-  "version": "2.0.58",
+  "version": "2.0.59",
   "minimum_chrome_version": "116",
-  "release_date": "2026-05-28T17:54:57.691Z",
+  "release_date": "2026-05-28T18:36:37.607Z",
   "changelog": [
-    "Dialer queue: each row now shows the lead's current status as a color-coded pill (Attempted, Follow-Up, Lost, etc.)",
-    "Dialer queue: each row now shows the most recent note (truncated to 90 chars, full text on hover)",
-    "Refactor: status-pill colors moved into a shared STATUS_PILL_COLORS map used by both the queue and the Done list"
+    "Scanner: 'Scan Page' now switches the Roofr calendar to the new Agenda view (vertical month-at-a-glance) instead of the Weekly grid",
+    "Scanner: agenda items (AgendaItemWrapper) are now picked up by the scrape selectors alongside the old .rbc-event nodes",
+    "View detection: getCurrentCalendarView() now reads localStorage['crm.calendar.view'] and DOM presence to recognize agenda"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.58/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.58"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.59/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.59"
 }

@@ -1,11 +1,10 @@
 {
-  "version": "2.0.67",
+  "version": "2.0.68",
   "minimum_chrome_version": "116",
-  "release_date": "2026-05-28T20:04:33.400Z",
+  "release_date": "2026-05-28T20:08:20.984Z",
   "changelog": [
-    "Dialer queue: visible queue now refreshes during the inter-call pause AND on a 30-second background timer when idle — keeps multiple reps from seeing the same lead in their lists",
-    "Multi-rep coordination: combined with the existing pre-dial re-fetch + server-side lock claim + same-day skip filter, reps no longer dial each other's already-handled leads"
+    "Dialer queue: phone numbers are now clickable links that open CTM filtered to that number (https://app.calltrackingmetrics.com/calls/desk#filter={digits}). Reuses an existing CTM tab if open. Cmd/Ctrl/middle-click opens a new tab. Lead name still copies to clipboard on click."
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.67/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.67"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.68/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.68"
 }

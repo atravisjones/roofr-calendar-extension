@@ -363,7 +363,7 @@
         : "";
       leftEl.innerHTML = `
         <div class="row1"><span class="tier t${tier}">${tierLabel}</span><strong class="name copyable" data-copy="${escapeHtml(lead.name || "")}">${escapeHtml(lead.name || "(no name)")}</strong></div>
-        <div class="row2"><span class="copyable" data-copy="${escapeHtml(lead.phone)}">${escapeHtml(lead.phone)}</span> ${sourcePillHtml(lead.source)}${statusPillHtml(lead.status)}${doubleTapBadge}</div>
+        <div class="row2"><a class="phone-link copyable" data-copy="${escapeHtml(lead.phone)}" data-ctm-digits="${escapeHtml(lead.phone10 || (lead.phone || '').replace(/\D/g,'').slice(-10))}" href="https://app.calltrackingmetrics.com/calls/desk#filter=${escapeHtml(lead.phone10 || (lead.phone || '').replace(/\D/g,'').slice(-10))}" title="Click to open CTM filtered to this number">${escapeHtml(lead.phone)}</a> ${sourcePillHtml(lead.source)}${statusPillHtml(lead.status)}${doubleTapBadge}</div>
         ${noteHtml}
       `;
       const metaEl = document.createElement("span");
@@ -1366,6 +1366,28 @@
   });
 
   els.queue.addEventListener("click", (e) => {
+    // Phone-number clicks open CTM filtered to that number, reusing the
+    // existing CTM tab if one is open. Cmd/Ctrl/shift/middle-click still
+    // honors the <a href> default (new tab).
+    const phoneLink = e.target.closest(".phone-link");
+    if (phoneLink && !e.metaKey && !e.ctrlKey && !e.shiftKey && e.button === 0) {
+      e.preventDefault();
+      const url = phoneLink.getAttribute("href");
+      try {
+        chrome.tabs.query({ url: "https://app.calltrackingmetrics.com/*" }, (tabs) => {
+          if (chrome.runtime.lastError) { window.open(url, "_blank"); return; }
+          if (tabs && tabs.length > 0) {
+            chrome.tabs.update(tabs[0].id, { active: true, url });
+            chrome.windows.update(tabs[0].windowId, { focused: true });
+          } else {
+            chrome.tabs.create({ url });
+          }
+        });
+      } catch (_) {
+        window.open(url, "_blank");
+      }
+      return;
+    }
     const el = e.target.closest(".copyable");
     if (!el || !el.dataset.copy) return;
     navigator.clipboard.writeText(el.dataset.copy).then(() => {

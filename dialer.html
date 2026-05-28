@@ -189,6 +189,10 @@
     #queue .name { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #queue .copyable { cursor: pointer; }
     #queue .copyable:hover { text-decoration: underline; }
+    /* Phone-number links inherit the row's text color so they don't render as
+       loud default-blue. The hover underline (from .copyable) still applies. */
+    #queue a.phone-link { color: inherit; text-decoration: none; }
+    #queue a.phone-link:hover { text-decoration: underline; }
     #queue .x-btn {
       background: transparent; border: 0; color: var(--light); cursor: pointer;
       padding: 2px 6px; border-radius: 4px; font-size: 14px; line-height: 1;

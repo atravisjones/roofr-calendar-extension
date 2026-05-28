@@ -476,7 +476,18 @@
         continue;
       }
 
-      // 3-hour gap: if last call was within MIN_GAP_MS, skip from queue for now
+      // Same-day repeat skip: once a lead has been attempted TWICE today (or
+      // more), drop them out of today's queue entirely — pick them up
+      // tomorrow per the new cadence. First-time→second-callback same-day
+      // flow still works because attempts will be 1 (not >=2) at that point.
+      const lastIsToday = l.lastContactDate && sameAzDate(l.lastContactDate, todayAz);
+      if (lastIsToday && attempts >= 2) {
+        skipped3hr++;
+        continue;
+      }
+
+      // 3-hour gap: if last call was within MIN_GAP_MS, skip from queue for now.
+      // This is what produces the "first-time callback after ~3 hours" flow.
       if (l.lastContactDate) {
         const lastMs = Date.parse(l.lastContactDate);
         if (lastMs && (nowMs - lastMs) < MIN_GAP_MS) {
@@ -537,23 +548,14 @@
   // Cadence:
   //   Day 1: attempts 1+2 (double-tap morning) + 3 (afternoon)
   //   Day 2: attempt 4
-  //   Day 3: attempt 5
-  //   Day 5: attempt 6 (every other day from here)
-  //   Day 7: attempt 7
-  //   Day 9: attempt 8 → after this, auto-Lost
-  // Returns M/D/YYYY string for the sheet's H column.
+  // First-time caller (attempts === 1): "today + 3 hours" WITH time, so the
+  // rep can see exactly when the callback is due ("5/28/2026 1:32 PM").
+  // Subsequent attempts (2 through MAX_ATTEMPTS-1): tomorrow, date only.
+  // 8+ attempts: null → auto-Lost.
   function computeNextContactDate(attemptsAfterCall) {
-    const daysOut = (() => {
-      if (attemptsAfterCall <= 2) return 0;       // double-tap done, afternoon today
-      if (attemptsAfterCall === 3) return 1;      // day 2
-      if (attemptsAfterCall === 4) return 1;      // day 3
-      if (attemptsAfterCall === 5) return 2;      // day 5
-      if (attemptsAfterCall === 6) return 2;      // day 7
-      if (attemptsAfterCall === 7) return 2;      // day 9
-      return null;                                 // 8+ → no future call
-    })();
-    if (daysOut === null) return null;
-    return azDatePlus(daysOut);
+    if (attemptsAfterCall >= MAX_ATTEMPTS) return null;
+    if (attemptsAfterCall <= 1) return azDateTimePlusHours(3);
+    return azDatePlus(1);
   }
 
   function azDatePlus(days) {
@@ -565,6 +567,24 @@
     const d = +azParts.find(p => p.type === "day").value;
     const t = new Date(y, m, d + days);
     return `${t.getMonth() + 1}/${t.getDate()}/${t.getFullYear()}`;
+  }
+
+  // Returns an AZ-local timestamp `hoursAhead` hours from now, formatted as
+  // "M/D/YYYY h:mm AM/PM" — the canonical Google Sheets datetime format.
+  function azDateTimePlusHours(hoursAhead) {
+    const target = new Date(Date.now() + hoursAhead * 60 * 60 * 1000);
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Phoenix",
+      year: "numeric", month: "numeric", day: "numeric",
+      hour: "numeric", minute: "2-digit", hour12: true,
+    }).formatToParts(target);
+    const m = parts.find(p => p.type === "month").value;
+    const d = parts.find(p => p.type === "day").value;
+    const y = parts.find(p => p.type === "year").value;
+    const h = parts.find(p => p.type === "hour").value;
+    const min = parts.find(p => p.type === "minute").value;
+    const ampm = parts.find(p => p.type === "dayPeriod").value.toUpperCase();
+    return `${m}/${d}/${y} ${h}:${min} ${ampm}`;
   }
 
   // ── Quiet hours ──

@@ -1689,36 +1689,45 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
   function getVisibleDatesISO() {
     const dates = new Set();
 
-    // Strategy 0 (Agenda view): synthesize TODAY through end-of-current-month.
+    // Strategy 0 (Agenda view): synthesize the FULL visible month, even days
+    // with zero events.
     //
-    // Why synthesize instead of just reading event class names?
-    // 1. Agenda hides days that have zero events, but reps need to see those
-    //    days too — that's where booking capacity LIVES.
-    // 2. Past days in the visible month aren't useful for booking, so we drop
-    //    anything earlier than today.
+    // Why synthesize:
+    // 1. Agenda hides days with zero events, but reps need to see those days
+    //    too — that's where unbooked capacity lives.
+    // 2. Past days aren't useful for booking, so we drop anything before today.
     //
-    // Events from other months still in the agenda DOM (e.g. April overflow
-    // when viewing May) get added to the set too, then filtered to >= today.
+    // For today's month we use today→EOM. For any OTHER month with events in
+    // the visible agenda (e.g. user clicked next-month to view June while
+    // it's still May), we synthesize day 1 → EOM of that month so reps can
+    // see the whole month, not just the days Roofr happened to render rows for.
     if (document.querySelector('[class*="AgendaContainer"]')) {
       const now = new Date();
       const year = now.getFullYear();
       const month = now.getMonth();
       const todayDay = now.getDate();
-      const lastDay = new Date(year, month + 1, 0).getDate(); // 28/29/30/31
       const todayISO = `${year}-${pad(month + 1)}-${pad(todayDay)}`;
+      const todayMonthKey = `${year}-${pad(month + 1)}`;
 
-      // Add today → EOM (even days with zero events)
-      for (let d = todayDay; d <= lastDay; d++) {
-        const dt = new Date(year, month, d);
-        dates.add(`${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`);
-      }
-      // Also include any event dates present in the DOM (covers cases where
-      // user has navigated forward to a future month).
+      // Discover which months are present in the agenda DOM.
+      const monthsPresent = new Set([todayMonthKey]);
       document.querySelectorAll('[class*="rbcalendar-event-"]').forEach(el => {
         const m = (el.className || '').match(/-(\d{2})-(\d{2})-(\d{4})--/);
-        if (m) dates.add(`${m[3]}-${m[2]}-${m[1]}`);
+        if (m) monthsPresent.add(`${m[3]}-${m[2]}`);
       });
-      // Filter out past dates so the day strip starts with today.
+
+      // Synthesize all days of each month present (today→EOM for today's month;
+      // 1→EOM for any other month).
+      for (const mk of monthsPresent) {
+        const [yy, mm] = mk.split('-').map(Number);
+        const lastDay = new Date(yy, mm, 0).getDate();
+        const startDay = (mk === todayMonthKey) ? todayDay : 1;
+        for (let d = startDay; d <= lastDay; d++) {
+          const dt = new Date(yy, mm - 1, d);
+          dates.add(`${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`);
+        }
+      }
+
       const filtered = Array.from(dates).filter(d => d >= todayISO).sort();
       if (filtered.length > 0) return filtered;
     }

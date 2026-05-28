@@ -2764,7 +2764,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             const key = localDayKey(e.start);
             if (groups.has(key)) groups.get(key).push(e);
         }
-        week.forEach(d => daysWrap.appendChild(renderDayCard(d, groups.get(d))));
+        // Alternate background per calendar week (Mon-Sun) so the strip
+        // visually breaks at week boundaries. Tag each card with stripe-a or
+        // stripe-b based on the Monday of the week it belongs to.
+        let lastWeekKey = null;
+        let stripeIndex = -1;
+        week.forEach(d => {
+            const card = renderDayCard(d, groups.get(d));
+            const dt = new Date(d + "T00:00");
+            const monday = new Date(dt);
+            // (dt.getDay()+6)%7 -> 0 for Mon, 6 for Sun
+            monday.setDate(dt.getDate() - ((dt.getDay() + 6) % 7));
+            const weekKey = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
+            if (weekKey !== lastWeekKey) { stripeIndex++; lastWeekKey = weekKey; }
+            card.classList.add(stripeIndex % 2 === 0 ? 'week-stripe-a' : 'week-stripe-b');
+            daysWrap.appendChild(card);
+        });
 
         let grandTotalBooked = (state.allEvents || []).length;
         footerTotal.textContent = `Total: ${grandTotalBooked} booked`;

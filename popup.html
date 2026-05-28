@@ -772,6 +772,13 @@
       background: var(--surface-hover);
     }
 
+    /* Week-stripe backgrounds: alternate the visible bg per calendar week so
+       reps can see week boundaries at a glance. stripe-a is the default
+       (existing) card bg; stripe-b gets a faint grey wash. */
+    .day-card.week-stripe-b {
+      background-color: #f3f4f6;
+    }
+
     /* Shrunk days (past or no availability) - compact display */
     .day-card.day-shrunk {
       padding: 6px 12px;

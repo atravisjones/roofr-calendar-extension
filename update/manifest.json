@@ -1,10 +1,11 @@
 {
-  "version": "2.0.62",
+  "version": "2.0.63",
   "minimum_chrome_version": "116",
-  "release_date": "2026-05-28T18:54:07.839Z",
+  "release_date": "2026-05-28T18:59:59.967Z",
   "changelog": [
-    "Scanner: today's day card no longer shrinks — full-size at the top of the strip so today's events are visible at a glance (the 'Reps Scheduled' badge still appears)"
+    "Scanner: when viewing a future month in agenda, day strip now fills the WHOLE month (not just days with events) — fixes June being clipped at the 23rd because Roofr's agenda hides days with zero bookings",
+    "Scanner: alternating background per calendar week (white / light grey / white / …) for easier week-boundary scanning"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.62/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.62"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.63/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.63"
 }

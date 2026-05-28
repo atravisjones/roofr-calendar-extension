@@ -1689,16 +1689,38 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
   function getVisibleDatesISO() {
     const dates = new Set();
 
-    // Strategy 0 (Agenda view): every event wrapper carries a class like
-    // `rbcalendar-event-{id}-{id}-DD-MM-YYYY--HH-MM-SS` that encodes its date.
-    // Pull dates straight from those — no day-header parsing needed, and works
-    // for the entire month visible in agenda.
+    // Strategy 0 (Agenda view): synthesize TODAY through end-of-current-month.
+    //
+    // Why synthesize instead of just reading event class names?
+    // 1. Agenda hides days that have zero events, but reps need to see those
+    //    days too — that's where booking capacity LIVES.
+    // 2. Past days in the visible month aren't useful for booking, so we drop
+    //    anything earlier than today.
+    //
+    // Events from other months still in the agenda DOM (e.g. April overflow
+    // when viewing May) get added to the set too, then filtered to >= today.
     if (document.querySelector('[class*="AgendaContainer"]')) {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = now.getMonth();
+      const todayDay = now.getDate();
+      const lastDay = new Date(year, month + 1, 0).getDate(); // 28/29/30/31
+      const todayISO = `${year}-${pad(month + 1)}-${pad(todayDay)}`;
+
+      // Add today → EOM (even days with zero events)
+      for (let d = todayDay; d <= lastDay; d++) {
+        const dt = new Date(year, month, d);
+        dates.add(`${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`);
+      }
+      // Also include any event dates present in the DOM (covers cases where
+      // user has navigated forward to a future month).
       document.querySelectorAll('[class*="rbcalendar-event-"]').forEach(el => {
         const m = (el.className || '').match(/-(\d{2})-(\d{2})-(\d{4})--/);
         if (m) dates.add(`${m[3]}-${m[2]}-${m[1]}`);
       });
-      if (dates.size > 0) return Array.from(dates).sort();
+      // Filter out past dates so the day strip starts with today.
+      const filtered = Array.from(dates).filter(d => d >= todayISO).sort();
+      if (filtered.length > 0) return filtered;
     }
 
     // Strategy 1: Try multiple selectors for Weekly view data-date attributes

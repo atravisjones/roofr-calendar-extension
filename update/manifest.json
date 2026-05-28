@@ -1,12 +1,11 @@
 {
-  "version": "2.0.60",
+  "version": "2.0.61",
   "minimum_chrome_version": "116",
-  "release_date": "2026-05-28T18:42:28.239Z",
+  "release_date": "2026-05-28T18:48:46.736Z",
   "changelog": [
-    "Scanner: fix 'Could not detect dates on page' on Agenda view — extract dates from rbcalendar-event class names directly when AgendaContainer is present",
-    "Scanner: extract all-day flag from the agenda 'All day' text and event-type color from the inner EventColorBar (agenda items have no bg color on the wrapper)",
-    "Scanner: accept agenda/weekly/daily as scrape-in-place views — only force-switch from monthly to agenda"
+    "Scanner (agenda): day strip now starts at today and runs through end of month — past days are dropped",
+    "Scanner (agenda): days with zero booked appointments are now included in the day strip so reps can see open capacity to book"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.60/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.60"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.61/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.61"
 }

@@ -1,7 +1,7 @@
 {
   "name": "roofr-calendar-extension",
   "private": true,
-  "version": "2.0.5",
+  "version": "2.0.55",
   "type": "module",
   "scripts": {
     "dev": "vite",

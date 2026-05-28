@@ -4,137 +4,342 @@
   <meta charset="UTF-8" />
   <title>Auto-Dialer</title>
   <style>
+    /* Match popup.html palette for visual consistency */
     :root {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --surface-hi: #f1f5f9;
+      --border: #cbd5e1;
+      --text: #020617;
+      --muted: #475569;
+      --light: #94a3b8;
+      --accent: #3b82f6;
+      --accent-hi: #2563eb;
+      --accent-light: #eff6ff;
+      --success: #10b981;
+      --success-bg: #ecfdf5;
+      --warn: #f59e0b;
+      --warn-bg: #fffbeb;
+      --danger: #ef4444;
+      --danger-bg: #fef2f2;
+      --radius: 8px;
+      --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+      --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    /* Match popup's dark theme if parent toggles it */
+    body.dark-theme {
       --bg: #0f172a;
       --surface: #1e293b;
       --surface-hi: #334155;
       --border: #334155;
       --text: #f8fafc;
       --muted: #94a3b8;
+      --light: #64748b;
       --accent: #3b82f6;
       --accent-hi: #60a5fa;
-      --success: #22c55e;
-      --warn: #f59e0b;
-      --danger: #ef4444;
-      --radius: 8px;
-      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --accent-light: #172554;
+      --success: #4ade80;
+      --success-bg: #052e16;
+      --warn: #fbbf24;
+      --warn-bg: #451a03;
+      --danger: #f87171;
+      --danger-bg: #450a0a;
     }
     * { box-sizing: border-box; }
     html, body {
       margin: 0; padding: 0; height: 100%;
       background: var(--bg); color: var(--text);
-      font-family: var(--font); font-size: 14px;
+      font-family: var(--font); font-size: 13px;
     }
-    .app { display: flex; flex-direction: column; height: 100vh; }
+    .app { display: flex; flex-direction: column; min-height: 100vh; }
 
     header {
       padding: 10px 14px; background: var(--surface);
       border-bottom: 1px solid var(--border);
       display: flex; justify-content: space-between; align-items: center;
     }
-    header h1 { margin: 0; font-size: 15px; font-weight: 600; }
+    header h1 { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); }
     header .meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
     .pill {
       display: inline-flex; align-items: center; gap: 4px;
       padding: 2px 8px; border-radius: 12px;
-      background: var(--surface-hi); font-size: 11px;
+      background: var(--surface-hi); font-size: 11px; color: var(--muted);
     }
     .pill .dot {
       width: 7px; height: 7px; border-radius: 50%;
-      background: var(--muted);
+      background: var(--light);
     }
     .pill.ok .dot { background: var(--success); }
     .pill.warn .dot { background: var(--warn); }
     .pill.bad .dot { background: var(--danger); }
 
     .controls {
-      padding: 10px 14px; background: var(--surface);
+      padding: 8px 14px; background: var(--surface);
       border-bottom: 1px solid var(--border);
-      display: flex; gap: 8px; align-items: center;
+      display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    }
+    .controls-row {
+      display: flex; gap: 6px; align-items: center; width: 100%;
     }
     button {
       font: inherit; cursor: pointer; border: 1px solid var(--border);
-      background: var(--surface-hi); color: var(--text);
+      background: var(--surface); color: var(--text);
       padding: 7px 12px; border-radius: var(--radius);
-      transition: background 120ms;
+      transition: background 120ms, border-color 120ms;
+      box-shadow: var(--shadow-sm);
     }
-    button:hover:not(:disabled) { background: var(--accent); }
-    button:disabled { opacity: 0.4; cursor: not-allowed; }
-    button.primary { background: var(--accent); border-color: var(--accent); }
-    button.primary:hover:not(:disabled) { background: var(--accent-hi); }
-    button.danger { background: var(--danger); border-color: var(--danger); }
-    .stats { margin-left: auto; font-size: 11px; color: var(--muted); }
+    button:hover:not(:disabled) { background: var(--accent-light); border-color: var(--accent); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.primary:hover:not(:disabled) { background: var(--accent-hi); color: #fff; }
+    button.danger { background: var(--surface); border-color: var(--danger); color: var(--danger); }
+    button.danger:hover:not(:disabled) { background: var(--danger-bg); color: var(--danger); }
+    /* Big red hangup button on the current-call card — drop-call action is high-stakes */
+    .hangup-big {
+      background: var(--danger) !important;
+      border-color: var(--danger) !important;
+      color: #fff !important;
+      font-weight: 600;
+      padding: 9px 18px;
+      width: 100%;
+      font-size: 14px;
+    }
+    .hangup-big:hover:not(:disabled) {
+      background: #b91c1c !important;
+      border-color: #b91c1c !important;
+      color: #fff !important;
+    }
 
-    main { flex: 1; overflow-y: auto; padding: 14px; }
+    input[type="number"], select, textarea {
+      font: inherit; padding: 6px 8px; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--surface); color: var(--text);
+    }
+    input[type="number"]:focus, select:focus, textarea:focus {
+      outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent);
+    }
+    .session-limit-input { width: 60px; padding: 4px 6px; font-size: 12px; }
+
+    main {
+      flex: 1; overflow-y: auto; padding: 14px;
+      /* Extra bottom padding so popup's bottom dock + wrap-up modal don't cover content */
+      padding-bottom: 80px;
+    }
 
     #current {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: var(--radius); padding: 14px; margin-bottom: 14px;
+      box-shadow: var(--shadow-sm);
     }
     #current.empty { color: var(--muted); text-align: center; font-style: italic; }
-    .lead-name { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
-    .lead-phone { font-size: 18px; font-weight: 500; color: var(--accent-hi); margin-bottom: 8px; }
+    .lead-name { font-size: 15px; font-weight: 600; margin-bottom: 4px; color: var(--text); }
+    .lead-phone { font-size: 17px; font-weight: 500; color: var(--accent); margin-bottom: 8px; }
     .lead-meta { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
     .lead-meta span { margin-right: 10px; }
+    .double-tap-banner {
+      background: var(--danger);
+      color: #fff;
+      font-size: 18px;
+      font-weight: 800;
+      text-align: center;
+      padding: 10px;
+      border-radius: var(--radius);
+      margin: -6px -6px 10px -6px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      animation: dtPulse 1s ease-in-out infinite alternate;
+      box-shadow: 0 0 0 2px var(--danger-bg), 0 2px 8px rgba(239,68,68,0.4);
+    }
+    .double-tap-banner .sub {
+      display: block; font-size: 11px; font-weight: 500;
+      margin-top: 4px; letter-spacing: 0.04em; text-transform: none;
+      opacity: 0.95;
+    }
+    @keyframes dtPulse {
+      from { box-shadow: 0 0 0 2px var(--danger-bg), 0 2px 8px rgba(239,68,68,0.4); }
+      to   { box-shadow: 0 0 0 4px rgba(239,68,68,0.3), 0 4px 16px rgba(239,68,68,0.6); }
+    }
     .phase {
       display: inline-block; padding: 3px 10px; border-radius: 12px;
-      background: var(--surface-hi); font-size: 11px; text-transform: uppercase;
-      letter-spacing: 0.05em; margin-bottom: 10px;
+      background: var(--surface-hi); color: var(--muted);
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px;
+      font-weight: 600;
     }
-    .phase.dialing { background: var(--warn); color: #000; }
-    .phase.ringing { background: var(--warn); color: #000; animation: pulse 1s ease-in-out infinite alternate; }
-    .phase.connected { background: var(--success); color: #000; }
-    .phase.wrapup { background: var(--accent); }
-    .phase.failed { background: var(--danger); }
-    @keyframes pulse { from { opacity: 1; } to { opacity: 0.5; } }
+    .phase.dialing { background: var(--warn-bg); color: #92400e; }
+    .phase.ringing { background: var(--warn-bg); color: #92400e; animation: pulse 1s ease-in-out infinite alternate; }
+    .phase.connected { background: var(--success-bg); color: #065f46; }
+    .phase.wrapup { background: var(--accent-light); color: var(--accent-hi); }
+    .phase.failed { background: var(--danger-bg); color: #991b1b; }
+    @keyframes pulse { from { opacity: 1; } to { opacity: 0.55; } }
     .call-actions { display: flex; gap: 6px; margin-top: 8px; }
 
-    h2 { margin: 14px 0 6px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    h2 { margin: 14px 0 6px 0; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
     #queue { list-style: none; margin: 0; padding: 0; }
     #queue li {
       background: var(--surface); border: 1px solid var(--border);
-      padding: 8px 10px; border-radius: var(--radius); margin-bottom: 6px;
-      font-size: 12px; display: flex; justify-content: space-between; align-items: center;
+      padding: 7px 10px; border-radius: var(--radius); margin-bottom: 4px;
+      font-size: 12px; display: flex; align-items: flex-start;
+      gap: 6px;
     }
     #queue li.locked { opacity: 0.5; }
-    #queue .meta { font-size: 10px; color: var(--muted); }
-    .tier { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--surface-hi); margin-right: 6px; }
-    .tier.t1 { background: #22c55e22; color: #4ade80; }
-    .tier.t2 { background: #f59e0b22; color: #fbbf24; }
-    .tier.t3 { background: #94a3b822; color: var(--muted); }
+    #queue .meta { font-size: 10px; color: var(--muted); white-space: nowrap; }
+    #queue .left { flex: 1; min-width: 0; }
+    #queue .left .row1 { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; }
+    #queue .left .row2 { font-size: 11px; color: var(--muted); margin-top: 2px; display: flex; align-items: center; gap: 4px; }
+    #queue .name { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #queue .copyable { cursor: pointer; }
+    #queue .copyable:hover { text-decoration: underline; }
+    #queue .x-btn {
+      background: transparent; border: 0; color: var(--light); cursor: pointer;
+      padding: 2px 6px; border-radius: 4px; font-size: 14px; line-height: 1;
+      box-shadow: none; flex-shrink: 0;
+    }
+    #queue .x-btn:hover { background: var(--danger-bg); color: var(--danger); }
+    #completed li {
+      background: var(--success-bg);
+      border: 1px solid var(--success);
+      padding: 6px 10px; border-radius: var(--radius); margin-bottom: 4px;
+      font-size: 12px; display: flex; align-items: center; gap: 6px;
+    }
+    body.dark-theme #completed li { background: rgba(16,185,129,0.12); }
+    #completed .name { color: var(--text); font-weight: 500; flex: 1; }
+    #completed .meta { color: var(--muted); font-size: 11px; }
+    .tier {
+      font-size: 10px; padding: 1px 6px; border-radius: 8px;
+      background: var(--surface-hi); color: var(--muted); margin-right: 6px; font-weight: 600;
+    }
+    .tier.t1 { background: var(--success-bg); color: #065f46; }
+    .tier.t2 { background: var(--warn-bg); color: #92400e; }
+    .tier.t3 { background: var(--surface-hi); color: var(--muted); }
 
     /* Wrap-up modal */
     .scrim {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      position: fixed; inset: 0; background: rgba(15,23,42,0.5);
       display: none; align-items: center; justify-content: center; z-index: 100;
     }
     .scrim.show { display: flex; }
     .modal {
       background: var(--surface); border: 1px solid var(--border);
       border-radius: var(--radius); padding: 16px; width: 360px; max-width: 90%;
+      box-shadow: var(--shadow-md); color: var(--text);
     }
-    .modal h3 { margin: 0 0 10px 0; font-size: 15px; }
-    .modal label { display: block; font-size: 11px; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.05em; }
-    .modal select, .modal textarea {
-      width: 100%; padding: 8px; background: var(--bg); color: var(--text);
-      border: 1px solid var(--border); border-radius: 6px; font: inherit;
+    /* Brief flash + scale-in when modal opens for a NEW lead — makes it
+       obvious that the dropdown context just changed (rep saved one lead and
+       the next lead's wrap-up popped in immediately). */
+    .modal.fresh {
+      animation: modalFresh 0.6s ease-out;
     }
-    .modal textarea { resize: vertical; min-height: 60px; }
+    @keyframes modalFresh {
+      0%   { transform: scale(0.85); box-shadow: 0 0 0 8px var(--accent-light); }
+      50%  { transform: scale(1.03); }
+      100% { transform: scale(1); box-shadow: var(--shadow-md); }
+    }
+    .modal h3 { margin: 0 0 10px 0; font-size: 15px; color: var(--text); }
+    .modal label { display: block; font-size: 11px; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+    .modal select, .modal textarea { width: 100%; font: inherit; }
+    .modal textarea { resize: vertical; min-height: 60px; padding: 8px; }
     .modal-actions { display: flex; gap: 8px; margin-top: 12px; }
     .modal-actions button { flex: 1; }
     .auto-advance {
       font-size: 11px; color: var(--muted); margin-top: 8px; text-align: center;
     }
-    .auto-advance a { color: var(--accent-hi); cursor: pointer; }
+    .auto-advance a { color: var(--accent); cursor: pointer; text-decoration: underline; }
 
     #log {
       margin-top: 14px; padding: 8px 10px;
-      background: #0a0f1c; border: 1px solid var(--border); border-radius: var(--radius);
+      background: var(--surface-hi); border: 1px solid var(--border); border-radius: var(--radius);
       font-family: ui-monospace, "Cascadia Code", Menlo, monospace; font-size: 10px;
-      color: var(--muted); max-height: 120px; overflow-y: auto;
+      color: var(--muted); max-height: 280px; overflow-y: auto;
+      line-height: 1.45;
     }
-    #log .ev { color: var(--accent-hi); }
-    #log .err { color: var(--danger); }
+    #log div { padding: 1px 0; word-break: break-word; }
+    #log .ts { color: var(--light); margin-right: 4px; }
+    #log .tag {
+      display: inline-block; min-width: 46px; padding: 0 4px; margin-right: 4px;
+      border-radius: 3px; font-size: 9px; font-weight: 600; text-align: center;
+      background: var(--surface); color: var(--muted); border: 1px solid var(--border);
+    }
+    #log .ev   { color: var(--text); }
+    #log .ev   .tag { background: var(--accent-light); color: var(--accent-hi); border-color: var(--accent); }
+    #log .ok   { color: var(--text); }
+    #log .ok   .tag { background: var(--success-bg); color: #065f46; border-color: var(--success); }
+    #log .warn { color: var(--text); }
+    #log .warn .tag { background: var(--warn-bg); color: #92400e; border-color: var(--warn); }
+    #log .err  { color: var(--danger); }
+    #log .err  .tag { background: var(--danger-bg); color: #991b1b; border-color: var(--danger); }
+    #log .info { color: var(--muted); }
+    #log .act  { color: var(--text); }
+    #log .act  .tag { background: var(--surface-hi); color: var(--text); border-color: var(--border); }
+
+    /* Session limit banner */
+    .session-banner {
+      background: var(--accent-light); color: var(--accent-hi);
+      padding: 8px 14px; font-size: 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 8px;
+    }
+
+    /* Queue filters panel */
+    .filter-panel {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+    }
+    .filter-toggle {
+      padding: 6px 14px; font-size: 11px; color: var(--muted); cursor: pointer;
+      user-select: none; display: flex; align-items: center; gap: 4px;
+      font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .filter-toggle:hover { color: var(--accent-hi); }
+    .filter-toggle .arrow { transition: transform 150ms; display: inline-block; }
+    .filter-panel.open .filter-toggle .arrow { transform: rotate(180deg); }
+    .filter-body {
+      display: none; padding: 4px 14px 10px; gap: 10px; flex-direction: column;
+    }
+    .filter-panel.open .filter-body { display: flex; }
+    .filter-section { margin-bottom: 2px; }
+    .filter-section > .filter-label {
+      font-size: 10px; color: var(--muted); text-transform: uppercase;
+      letter-spacing: 0.05em; font-weight: 600; margin-bottom: 4px;
+    }
+    .source-checks {
+      display: flex; flex-wrap: wrap; gap: 3px;
+    }
+    .source-checks label {
+      display: flex; align-items: center; gap: 3px;
+      font-size: 11px; color: var(--text); cursor: pointer;
+      padding: 2px 7px; border-radius: 4px; border: 1px solid var(--border);
+      background: var(--surface); user-select: none; transition: all 100ms;
+    }
+    .source-checks label:hover { border-color: var(--accent); }
+    .source-checks label.checked {
+      background: var(--accent-light); border-color: var(--accent); color: var(--accent-hi);
+    }
+    .source-checks label input { display: none; }
+    .preset-btns {
+      display: flex; gap: 4px; flex-wrap: wrap;
+    }
+    .preset-btns button {
+      font-size: 11px; padding: 3px 10px; border-radius: 4px; box-shadow: none;
+    }
+    .preset-btns button.active {
+      background: var(--accent); border-color: var(--accent); color: #fff;
+    }
+    .filter-stats {
+      font-size: 10px; color: var(--light); margin-top: 4px;
+    }
+
+    /* Source pills on queue items */
+    .src-pill {
+      display: inline-block; font-size: 9px; font-weight: 600; padding: 1px 5px;
+      border-radius: 3px; white-space: nowrap; line-height: 1.3;
+      border: 1px solid var(--border);
+    }
+    .src-pill.src-mod  { background: #fef3c7; color: #92400e; border-color: #fbbf24; }
+    .src-pill.src-nct  { background: #dbeafe; color: #1e40af; border-color: #60a5fa; }
+    .src-pill.src-seo  { background: #d1fae5; color: #065f46; border-color: #34d399; }
+    .src-pill.src-ads  { background: #ede9fe; color: #5b21b6; border-color: #a78bfa; }
+    .src-pill.src-angi { background: #fce7f3; color: #9d174d; border-color: #f472b6; }
+    .src-pill.src-gaf  { background: var(--surface-hi); color: var(--muted); border-color: var(--border); }
+    .src-pill.src-unk  { background: var(--surface-hi); color: var(--light); border-color: var(--border); }
   </style>
 </head>
 <body>
@@ -151,24 +356,71 @@
       <button id="settings-btn" title="Open extension options">⚙</button>
     </header>
 
-    <div class="controls">
-      <button id="start-btn" class="primary">▶ Start</button>
-      <button id="pause-btn" disabled>⏸ Pause</button>
-      <button id="stop-btn" class="danger" disabled>⏹ Stop</button>
-      <span class="stats">
-        <span id="queue-count">0</span> queued ·
-        <span id="t1-count">0</span> new ·
-        <span id="t2-count">0</span> follow-up
-      </span>
+    <div class="controls" style="flex-direction:column;gap:6px;">
+      <div class="controls-row">
+        <button id="start-btn" class="primary" style="flex:1;">▶ Start</button>
+        <button id="pause-btn" disabled style="flex:1;">⏸ Pause</button>
+        <button id="stop-btn" class="danger" disabled style="flex:1;">⏹ Stop</button>
+      </div>
+      <div class="controls-row" style="justify-content:space-between;">
+        <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);cursor:pointer;user-select:none;">
+          Dial up to
+          <input type="number" id="session-limit" min="5" max="100" step="5" value="25" class="session-limit-input">
+          leads
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:#92400e;cursor:pointer;user-select:none;border:1px solid var(--warn);padding:2px 6px;border-radius:4px;background:var(--warn-bg);">
+          <input type="checkbox" id="test-mode-toggle" style="cursor:pointer;">
+          Test
+        </label>
+      </div>
+      <div class="controls-row" style="font-size:11px;color:var(--muted);gap:4px;flex-wrap:wrap;">
+        <span><span id="queue-count">0</span> queued</span> ·
+        <span><span id="t1-count">0</span> new</span> ·
+        <span><span id="t2-count">0</span> follow-up</span> ·
+        <span><span id="session-count">0</span>/<span id="session-limit-display">25</span> session</span>
+      </div>
+    </div>
+
+    <div class="filter-panel" id="filter-panel">
+      <div class="filter-toggle" id="filter-toggle">Filters <span class="arrow">▾</span> <span id="filter-summary" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--light);margin-left:4px;"></span></div>
+      <div class="filter-body" id="filter-body">
+        <div class="filter-section">
+          <div class="filter-label">Lead source</div>
+          <div class="source-checks" id="source-checks"></div>
+        </div>
+        <div class="filter-section">
+          <div class="filter-label">Attempts</div>
+          <div class="preset-btns" id="attempt-presets">
+            <button data-preset="new">New (0)</button>
+            <button data-preset="followup">Follow-up (1-3)</button>
+            <button data-preset="persistent">Persistent (4-7)</button>
+            <button data-preset="all" class="active">All</button>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:4px;">
+          <div class="filter-stats" id="filter-stats"></div>
+          <button id="clear-filters-btn" style="font-size:10px;padding:2px 8px;border-radius:4px;box-shadow:none;">Clear filters</button>
+        </div>
+      </div>
     </div>
 
     <main>
       <div id="current" class="empty">Press <strong>Start</strong> to begin dialing.</div>
 
-      <h2>Queue (next 8)</h2>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:14px 0 6px 0;">
+        <h2 id="queue-header" style="margin:0;">Queue</h2>
+        <button id="refresh-btn" title="Resync queue from Google Sheet" style="font-size:11px;padding:3px 8px;border-radius:4px;box-shadow:none;">↻ Refresh</button>
+      </div>
       <ul id="queue"></ul>
 
-      <h2>Event log</h2>
+      <h2>Completed this session</h2>
+      <ul id="completed" style="list-style:none;margin:0;padding:0;"></ul>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:14px 0 6px 0;">
+        <h2 style="margin:0;">Event log</h2>
+        <button id="log-clear-btn" style="font-size:11px;padding:3px 8px;border-radius:4px;box-shadow:none;">✗ Clear</button>
+        <button id="log-copy-btn" style="font-size:11px;padding:3px 8px;border-radius:4px;box-shadow:none;">📋 Copy</button>
+      </div>
       <div id="log"></div>
     </main>
   </div>
@@ -176,15 +428,17 @@
   <div class="scrim" id="wrapup-scrim">
     <div class="modal">
       <h3 id="wrapup-title">Wrap up</h3>
-      <label for="wrapup-status">Status</label>
+      <label for="wrapup-status">Disposition</label>
       <select id="wrapup-status">
-        <option value="Connected">Connected — spoke to lead</option>
-        <option value="Left VM">Left Voicemail</option>
-        <option value="No Answer">No Answer</option>
-        <option value="Wrong Number">Wrong Number</option>
-        <option value="DNC">Do Not Call</option>
-        <option value="Resolved">Resolved (booked / lost)</option>
-        <option value="Follow-Up">Follow-Up (rep marks for retry)</option>
+        <option value="Follow - Up">Follow - Up</option>
+        <option value="Attempted">Attempted</option>
+        <option value="Lost">Lost</option>
+        <option value="Booked">Booked</option>
+        <option value="Bad Leads">Bad Leads</option>
+        <option value="Do Not Service">Do Not Service</option>
+        <option value="SOLD">SOLD</option>
+        <option value="looking for work">looking for work</option>
+        <option value="repeat">repeat</option>
       </select>
       <label for="wrapup-notes">Note</label>
       <textarea id="wrapup-notes" placeholder="Optional note for the sheet…"></textarea>
@@ -192,7 +446,7 @@
         <button id="wrapup-save-next" class="primary">Save → Next</button>
         <button id="wrapup-save-stop">Save → Stop</button>
       </div>
-      <div class="auto-advance" id="auto-advance"></div>
+      <div class="auto-advance" id="wrapup-help">Disposition is required — click Save → Next or Save → Stop.</div>
     </div>
   </div>
 

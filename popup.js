@@ -196,6 +196,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         "sec-reports": document.getElementById("sec-reports"),
         "sec-people": document.getElementById("sec-people"),
         "sec-clipboard": document.getElementById("sec-clipboard"),
+        "sec-dialer": document.getElementById("sec-dialer"),
     };
     const regionPills = Array.from(document.querySelectorAll(".region-pill"));
     const stickyHeader = document.getElementById("sticky-header");
@@ -3822,6 +3823,20 @@ document.addEventListener('DOMContentLoaded', async () => {
                 scannerToolbar.classList.add('hidden');
             }
         }
+
+        // Notify the dialer iframe whether it's the active tab. If the rep
+        // switches away from the Dialer tab while a session is running, the
+        // dialer pauses itself so we don't keep dialing in the background.
+        try {
+            const dialerFrame = document.getElementById('dialer-iframe');
+            if (dialerFrame && dialerFrame.contentWindow) {
+                dialerFrame.contentWindow.postMessage({
+                    type: 'AD_TAB_ACTIVE',
+                    active: targetId === 'sec-dialer',
+                    sectionId: targetId,
+                }, '*');
+            }
+        } catch (_) { /* iframe not loaded yet — fine */ }
 
         // Check prefs to see if we should hide this tab
         if (targetId === 'sec-people' && !userPrefs.showPeopleTab) activateMainTab('sec-scanner');

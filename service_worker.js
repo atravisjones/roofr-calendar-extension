@@ -1116,10 +1116,60 @@ chrome.runtime.onStartup.addListener(async () => {
 
 const AUTODIALER_WINDOW_KEY = 'autodialer_window_id';
 
-async function findCtmTabId() {
-    const tabs = await chrome.tabs.query({ url: '*://app.calltrackingmetrics.com/*' });
+async function findCtmTabId(windowId) {
+    const queryOpts = { url: '*://app.calltrackingmetrics.com/calls/desk*' };
+    if (windowId) queryOpts.windowId = windowId;
+    const tabs = await chrome.tabs.query(queryOpts);
     return tabs.length > 0 ? tabs[0].id : null;
 }
+
+// Programmatically inject dialer bridge into a CTM tab. We rate-limit per tab
+// (max one inject per 3s) instead of one-shot dedup, so we can recover from
+// extension reload where the prior bridge instance left stale closures behind.
+// The bridge's IIFE handles re-injection by cleaning up its prior listeners.
+const _lastInjectAt = new Map();
+async function injectDialerBridge(tabId) {
+    const now = Date.now();
+    const last = _lastInjectAt.get(tabId) || 0;
+    if (now - last < 3000) return;
+    _lastInjectAt.set(tabId, now);
+    try {
+        // Isolated world (relay → chrome.runtime) — all frames
+        await chrome.scripting.executeScript({
+            target: { tabId, allFrames: true },
+            files: ['dialer-bridge.js'],
+        });
+        // MAIN world (talks to <ctm-phone-embed>) — all frames
+        await chrome.scripting.executeScript({
+            target: { tabId, allFrames: true },
+            files: ['dialer-bridge-main.js'],
+            world: 'MAIN',
+        });
+        console.log('[AutoDialer-SW] (re-)injected bridges into tab', tabId, '(all frames)');
+    } catch (e) {
+        console.warn('[AutoDialer-SW] inject failed for tab', tabId, e.message);
+        _lastInjectAt.delete(tabId);
+    }
+}
+
+// Fire on every CTM tab navigation
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.status !== 'complete') return;
+    if (!tab.url || !/^https:\/\/[^/]*calltrackingmetrics\.com\//.test(tab.url)) return;
+    // Clear rate-limit so navigation triggers a fresh inject immediately
+    _lastInjectAt.delete(tabId);
+    injectDialerBridge(tabId);
+});
+
+// Also inject when dialer pings — covers the case where SW restarted and
+// onUpdated already fired before this listener registered.
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+    chrome.tabs.get(tabId).then(tab => {
+        if (tab.url && /calltrackingmetrics\.com/.test(tab.url)) {
+            injectDialerBridge(tabId);
+        }
+    }).catch(() => {});
+});
 
 async function openAutoDialerWindow() {
     try {
@@ -1149,10 +1199,35 @@ chrome.commands?.onCommand.addListener(async (command) => {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg?.type === 'AD_TO_CTM') {
         (async () => {
-            const tabId = await findCtmTabId();
+            const tabId = await findCtmTabId(msg.windowId);
             if (!tabId) { sendResponse({ ok: false, error: 'no_ctm_tab' }); return; }
+            const payload = msg.payload || {};
+
+            // Post command directly into the page's MAIN world where
+            // bridge-main.js listens via window.postMessage. Bypasses the
+            // relay (chrome.tabs.sendMessage → content script) which stopped
+            // delivering messages reliably.
             try {
-                await chrome.tabs.sendMessage(tabId, { type: 'AUTODIALER_TO_BRIDGE', payload: msg.payload });
+                await chrome.scripting.executeScript({
+                    target: { tabId },
+                    world: 'MAIN',
+                    func: (p) => {
+                        // Filter CTM call log to show history for this number
+                        if (p.type === 'dial' && p.number) {
+                            const digits = String(p.number).replace(/\D/g, '').slice(-10);
+                            if (digits.length === 10) {
+                                const formatted = '(' + digits.slice(0,3) + ') ' + digits.slice(3,6) + '-' + digits.slice(6);
+                                location.hash = 'filter=' + formatted;
+                            }
+                        }
+                        window.postMessage({
+                            __autoDialerBridge: true,
+                            dir: "from-relay",
+                            ...p
+                        }, "*");
+                    },
+                    args: [payload],
+                });
                 sendResponse({ ok: true });
             } catch (e) { sendResponse({ ok: false, error: e.message }); }
         })();
@@ -1167,8 +1242,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     if (msg?.type === 'AD_PING_CTM') {
         (async () => {
-            const tabId = await findCtmTabId();
+            const tabId = await findCtmTabId(msg.windowId);
+            // Do NOT re-inject bridge here — manifest content_scripts handles
+            // initial injection. Re-injecting on every 2s poll destroys
+            // bridge-main's phoneEmbed reference, causing "no phone embed"
+            // errors when a dial command arrives during the reset window.
             sendResponse({ ok: true, ctmTabOpen: !!tabId, tabId });
+        })();
+        return true;
+    }
+    if (msg?.type === 'AD_ENSURE_CTM_DESK') {
+        (async () => {
+            const CTM_DESK_URL = 'https://app.calltrackingmetrics.com/calls/desk';
+            const queryOpts = { url: '*://app.calltrackingmetrics.com/calls/desk*' };
+            if (msg.windowId) queryOpts.windowId = msg.windowId;
+            const deskTabs = await chrome.tabs.query(queryOpts);
+            if (deskTabs.length > 0) {
+                const tab = deskTabs[0];
+                await chrome.tabs.move(tab.id, { index: 0 });
+                await chrome.tabs.update(tab.id, { active: false });
+                sendResponse({ ok: true, tabId: tab.id, action: 'reused' });
+            } else {
+                const createOpts = { url: CTM_DESK_URL, active: false, index: 0 };
+                if (msg.windowId) createOpts.windowId = msg.windowId;
+                const tab = await chrome.tabs.create(createOpts);
+                sendResponse({ ok: true, tabId: tab.id, action: 'created' });
+            }
         })();
         return true;
     }

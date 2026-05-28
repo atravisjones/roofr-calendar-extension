@@ -2860,11 +2860,8 @@
             <button class="nav-tab" data-target="sec-reports">Reports</button>
             <button class="nav-tab" data-target="sec-people">People</button>
             <button class="nav-tab" data-target="sec-clipboard">Clipboard</button>
+            <button class="nav-tab" data-target="sec-dialer" style="background:#3b82f6;color:#fff;">📞 Dialer</button>
           </div>
-          <button id="open-dialer-btn" title="Open Auto-Dialer (Alt+Shift+D)"
-            style="margin-left:8px;padding:6px 12px;background:#3b82f6;color:#fff;border:none;border-radius:6px;font-weight:600;font-size:0.85rem;cursor:pointer;white-space:nowrap;">
-            📞 Dialer
-          </button>
         </div>
 
         <!-- Scanner Toolbar (Unique Container) -->
@@ -3188,6 +3185,13 @@ Available:
           <button id="upload-clipboard-btn" class="btn secondary" style="flex:1">Import File</button>
         </div>
         <input type="file" id="clipboard-file-input" accept=".txt,.html,.htm" style="display: none;" />
+      </section>
+
+      <!-- Dialer Section (iframe-hosted dialer.html) -->
+      <section id="sec-dialer" class="section" style="padding:0;">
+        <iframe id="dialer-iframe" src="dialer.html"
+          style="width:100%;height:calc(100vh - 90px);border:0;background:#0f172a;display:block;">
+        </iframe>
       </section>
 
     </main>

@@ -13,7 +13,6 @@
 (function () {
   "use strict";
 
-  if (window.self !== window.top) return;
   if (window.__autoDialerBridgeRelayLoaded) return;
   window.__autoDialerBridgeRelayLoaded = true;
 
@@ -40,6 +39,7 @@
   // ── SW → MAIN: forward dialer commands to the page-side bridge ──
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg?.type === "AUTODIALER_TO_BRIDGE") {
+      log("received command from SW:", msg.payload?.type, "frame:", window === window.top ? "TOP" : "child");
       window.postMessage(
         { [MSG_TAG]: true, dir: "from-relay", ...msg.payload },
         "*"
@@ -49,5 +49,5 @@
     }
   });
 
-  log("relay loaded");
+  log("relay loaded, frame:", window === window.top ? "TOP" : "child");
 })();

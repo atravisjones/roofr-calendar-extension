@@ -3919,8 +3919,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const attemptScan = async () => {
             // 0. Ensure Sales event type is selected
             await sendFindCommand({ type: "SELECT_SALES_EVENT_TYPE" });
-            // Small wait to allow calendar to update events if needed
             await new Promise(r => setTimeout(r, 500));
+            // 0a. Uncheck D2D Sales appointment so D2D bookings aren't scanned.
+            await sendFindCommand({ type: "UNCHECK_D2D_SALES" });
+            await new Promise(r => setTimeout(r, 300));
 
             // 0.5 Check view. Accept agenda/weekly/daily as-is — all three are
             // scrapable. Only force-switch from monthly (which renders summary
@@ -4136,6 +4138,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             addLog("Warning: Could not select Sales event type", "WARN");
         }
         await new Promise(r => setTimeout(r, 500));
+
+        // Step 2b: Uncheck D2D Sales appointment so D2D bookings don't get
+        // pulled in alongside the regular Sales pipeline.
+        const d2dResult = await sendCommandToTab(tabId, { type: "UNCHECK_D2D_SALES" });
+        if (d2dResult?.ok) {
+            if (d2dResult.unchecked) addLog("D2D Sales appointment unchecked");
+            else if (d2dResult.wasAlreadyUnchecked) addLog("D2D Sales appointment already unchecked");
+        } else {
+            addLog(`Warning: ${d2dResult?.reason || 'could not uncheck D2D Sales'}`, "WARN");
+        }
+        await new Promise(r => setTimeout(r, 300));
 
         // Step 3: Select all team members (with retries)
         addLog("Selecting all team members...");

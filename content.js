@@ -2303,6 +2303,15 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       return true;
     }
 
+    if (msg.type === "UNCHECK_D2D_SALES") {
+      uncheckD2DSalesEventType().then(result => {
+        sendResponse(result);
+      }).catch(err => {
+        sendResponse({ ok: false, error: err.message });
+      });
+      return true;
+    }
+
     if (msg.type === "SELECT_PRODUCTION_EVENT_TYPES") {
       const result = selectProductionEventTypes();
       sendResponse(result);
@@ -4654,6 +4663,72 @@ async function checkTeamMembers(names) {
 }
 
 // Select Sales event type
+// Uncheck the "D2D Sales appointment" sub-filter under Sales. Called AFTER
+// selectSalesEventType so the parent Sales group has already checked all
+// subtypes — we then turn D2D back off so the scanner doesn't accidentally
+// suck in D2D-booked appointments alongside the regular Sales pipeline.
+async function uncheckD2DSalesEventType() {
+  if (!window.location.pathname.includes('/calendar')) {
+    return { ok: false, reason: 'Not on calendar page' };
+  }
+
+  const D2D_RE = /^D2D\s+Sales\s+appointment$/i;
+
+  const findD2DCheckbox = () => {
+    for (const el of document.querySelectorAll('*')) {
+      const direct = Array.from(el.childNodes)
+        .filter(n => n.nodeType === Node.TEXT_NODE)
+        .map(n => n.textContent.trim())
+        .join('');
+      if (D2D_RE.test(direct) || (el.children.length === 0 && D2D_RE.test((el.textContent || '').trim()))) {
+        let cur = el;
+        for (let i = 0; i < 6; i++) {
+          const parent = cur.parentElement;
+          if (!parent) break;
+          const cb = parent.querySelector('input[type="checkbox"]');
+          if (cb) return { label: el, cb, container: parent };
+          cur = parent;
+        }
+      }
+    }
+    return null;
+  };
+
+  // Try expanding the Sales group accordion if D2D isn't visible yet — its
+  // sub-checkboxes only mount in the DOM when the group is expanded.
+  const expandSalesGroup = () => {
+    for (const el of document.querySelectorAll('*')) {
+      if (el.children.length === 0 && (el.textContent || '').trim() === 'Sales') {
+        // Click the row/header that contains "Sales" to toggle the accordion.
+        const expandable = el.closest('[role="button"]')
+          || el.closest('[class*="accordion"]')
+          || el.closest('[class*="collapse"]')
+          || el.closest('[class*="expand"]')
+          || el.closest('button')
+          || el.parentElement;
+        if (expandable) { expandable.click(); return true; }
+      }
+    }
+    return false;
+  };
+
+  let found = findD2DCheckbox();
+  if (!found) {
+    expandSalesGroup();
+    // Wait a tick for the accordion to render
+    await new Promise(r => setTimeout(r, 200));
+    found = findD2DCheckbox();
+  }
+
+  if (!found) return { ok: false, reason: 'D2D Sales appointment not found' };
+
+  if (found.cb.checked) {
+    found.cb.click();
+    return { ok: true, unchecked: true };
+  }
+  return { ok: true, unchecked: false, wasAlreadyUnchecked: true };
+}
+
 function selectSalesEventType() {
   // Only run on calendar pages
   if (!window.location.pathname.includes('/calendar')) {

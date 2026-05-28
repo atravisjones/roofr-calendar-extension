@@ -1,11 +1,10 @@
 {
-  "version": "2.0.63",
+  "version": "2.0.64",
   "minimum_chrome_version": "116",
-  "release_date": "2026-05-28T18:59:59.967Z",
+  "release_date": "2026-05-28T19:41:13.367Z",
   "changelog": [
-    "Scanner: when viewing a future month in agenda, day strip now fills the WHOLE month (not just days with events) — fixes June being clipped at the 23rd because Roofr's agenda hides days with zero bookings",
-    "Scanner: alternating background per calendar week (white / light grey / white / …) for easier week-boundary scanning"
+    "Scanner: D2D Sales appointment is now auto-unchecked after Sales group selection so D2D bookings aren't scraped alongside the regular Sales pipeline"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.63/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.63"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.64/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.64"
 }

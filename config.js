@@ -835,14 +835,14 @@ export const CONFIG = {
 export const PEOPLE_DATA = {
     REPS: ["Chandler Duffy", "Christian Noren", "Connor Hamby", "Jonathan Marino", "Josh Jewett", "Justin Parker", "London Smith", "Nick Williams", "Orlando Chavarria", "Richard Hadsall", "Stephen Chaidez", "Tanner Broadbent"].sort(),
     MGMT: ["Andrew Clark", "Anthony Bonomo", "Bradley Crohurst", "Brenda Ochoa", "Nikolas Pagoulatos", "Yousef Ayad"].sort(),
-    CSRS: ["Alex Tillotson", "Bronté Pisz", "Diva Shahpur", "Khamilah Valles", "Madison Meyers", "Nica Javier", "Raven Pelfrey", "Travis Jones"].sort(),
+    CSRS: ["Alex Tillotson", "Bronté Pisz", "Diva Shahpur", "Khamilah Valles", "Madi Meyers", "Nica Javier", "Raven Pelfrey", "Travis Jones"].sort(),
     PRODUCTION: ["Jayda Fairfield", "Justin Saiz"].sort(),
 
     // CTM multi_agents user IDs — used to build per-rep CTM calls URLs
     CTM_USER_IDS: {
         "Travis Jones": "USR3C843ED7AB9B4711B0713552F9CF37DB",
         "Diva Shahpur": "USR3C843ED7AB9B471161CFE46CA61534DB",
-        "Madison Meyers": "USR3C843ED7AB9B4711F9903DED76AC22FF",
+        "Madi Meyers": "USR3C843ED7AB9B4711F9903DED76AC22FF",
         "Bronté Pisz": "USR3C843ED7AB9B471104E5442C4FF87F90",
         "Alex Tillotson": "USRB5384A8A5D54C211ABA4C4FF265EA00F",
         "Nica Javier": "USRC30FF30726A9F646577F250938765D31",

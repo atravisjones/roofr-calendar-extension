@@ -1,11 +1,11 @@
 {
-  "version": "2.0.55",
+  "version": "2.0.56",
   "minimum_chrome_version": "116",
-  "release_date": "2026-05-28T17:17:30.118Z",
+  "release_date": "2026-05-28T17:31:27.454Z",
   "changelog": [
-    "Fix: dialer now uses an allowlist (New, Attempted, Follow-Up, blank) — anything else (Lost, Booked, Bad Leads, Do Not Service, SOLD, repeat, looking for work) is skipped",
-    "Includes accumulated dialer iteration since v2.0.6"
+    "Fix: rep name 'Madison Meyers' now migrates to 'Madi Meyers' automatically — fixes dispositions being saved as 'unknown' when Madi was dialing",
+    "Identity normalization: dialer.js, service_worker.js force any Madison/Maddison/CTM user ID match to resolve to Madi"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.55/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.55"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.56/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.56"
 }

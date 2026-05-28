@@ -9560,7 +9560,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (csrList.length === 0) {
                 csrList = [
                     'alex tillotson', 'bronté pisz', 'bronte pisz', 'diva shahpur',
-                    'khamilah valles', 'madison meyers', 'nica javier',
+                    'khamilah valles', 'madi meyers', 'nica javier',
                     'raven pelfrey', 'travis jones'
                 ];
                 addBatchLog(`CSR list: using hardcoded fallback (${csrList.length} names)`, 'info');

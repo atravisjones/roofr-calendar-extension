@@ -702,8 +702,26 @@ function setupNavigation() {
   });
 }
 
+// One-time migration: Madison Meyers -> Madi Meyers. Without this, existing
+// users still have ctm_csr="Madison Meyers" in chrome.storage.sync, which is
+// no longer in the CSR list and gets rejected by /api/sheet-dispositions —
+// causing dispositions to log as "unknown".
+async function migrateMadisonToMadi() {
+  try {
+    const data = await chrome.storage.sync.get({ ctm_csr: "" });
+    const current = (data.ctm_csr || "").trim();
+    if (/^Mad(d)?ison(\s+Meyers)?$/i.test(current)) {
+      await chrome.storage.sync.set({ ctm_csr: "Madi Meyers" });
+      console.log(`[Options] Migrated ctm_csr "${current}" -> "Madi Meyers"`);
+    }
+  } catch (e) {
+    console.warn("[Options] Madi migration failed:", e);
+  }
+}
+
 // Initialize
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+  await migrateMadisonToMadi();
   load();
   setupCategoryCollapse();
   setupAutoSave();

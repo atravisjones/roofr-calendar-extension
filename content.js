@@ -388,7 +388,7 @@ if (window.location.hostname.includes('calltrackingmetrics.com') && !window.__ct
 
   // Nickname mappings for CSR name matching
   const CTM_NICKNAME_MAP = {
-    'madison': ['madi', 'maddie', 'maddy'],
+    'madi': ['madison', 'maddie', 'maddy'],
     'bronte': ['bronté'],
     'robert': ['rob', 'bob', 'bobby'],
     'timothy': ['tim', 'timmy'],
@@ -3337,7 +3337,7 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     } catch (e) {
       console.log('[Batch] Could not load CSR list from storage:', e.message);
       // Fallback CSR list (CSRs only, not reps)
-      csrList = ["bronté pisz", "diva shahpur", "madison meyers", "nica javier", "raven pelfrey"];
+      csrList = ["bronté pisz", "diva shahpur", "madi meyers", "nica javier", "raven pelfrey"];
     }
 
     // First, find and click the event again

@@ -12,7 +12,7 @@ const SEED_DEFAULTS = {
     // People Lists (Comma separated defaults)
     PEOPLE_REPS: "Chandler Duffy, Christian Noren, Connor Hamby, Jonathan Marino, Josh Jewett, Justin Parker, London Smith, Nick Williams, Orlando Chavarria, Richard Hadsall, Stephen Chaidez, Tanner Broadbent",
     PEOPLE_MGMT: "Andrew Clark, Anthony Bonomo, Bradley Crohurst, Brenda Ochoa, Yousef Ayad",
-    PEOPLE_CSRS: "Bronté Pisz, Diva Shahpur, Layla Fairfield, Madison Meyers, Nica Javier, Raven Pelfrey, Travis Jones",
+    PEOPLE_CSRS: "Bronté Pisz, Diva Shahpur, Layla Fairfield, Madi Meyers, Nica Javier, Raven Pelfrey, Travis Jones",
     PEOPLE_PRODUCTION: "Jayda Fairfield, Justin Saiz",
 
     // =====================
@@ -769,13 +769,16 @@ function waitForTabLoad(tabId, timeout = 10000) {
 // Helper to get display name (first name only, unless generic like "Wireless Caller")
 function getDisplayName(fullName) {
     if (!fullName) return 'Unknown';
-    const parts = fullName.trim().split(' ');
+    // Global identity normalization — Madison was migrated to Madi.
+    // Catch any upstream/CTM source that still emits "Madison" or "Maddison".
+    const normalized = fullName.replace(/\bMad(d)?ison\b/gi, 'Madi');
+    const parts = normalized.trim().split(' ');
     // Keep full name for generic names (wireless caller, unknown caller, etc.)
-    const lowerName = fullName.toLowerCase();
+    const lowerName = normalized.toLowerCase();
     if (lowerName.includes('wireless') || lowerName.includes('unknown') ||
         lowerName.includes('caller') || lowerName.includes('private') ||
         lowerName.includes('blocked') || lowerName.includes('anonymous')) {
-        return fullName;  // Keep full "Wireless Caller"
+        return normalized;  // Keep full "Wireless Caller"
     }
     return parts[0];  // Just first name "Andrew"
 }

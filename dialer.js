@@ -1652,8 +1652,21 @@
         "ctm_csr", "ctm_user", "ctm_display_name",
         "dialer_test_mode", "dialer_session_limit",
       ]);
-      const fullName = s.ctm_csr || s.ctm_display_name || s.ctm_user || "unknown";
+      let fullName = s.ctm_csr || s.ctm_display_name || s.ctm_user || "unknown";
+      // Identity normalization for the Madison -> Madi migration. Forces any
+      // legacy "Madison" / "Maddison" identifier (or her CTM user ID) to
+      // resolve to "Madi Meyers" — needed because /api/sheet-dispositions
+      // only recognizes "Madi" and would otherwise mark her as unknown.
+      const MADI_USER_ID = "USR3C843ED7AB9B4711F9903DED76AC22FF";
+      if (
+        fullName === MADI_USER_ID ||
+        /\bMad(d)?ison\b/i.test(fullName)
+      ) {
+        fullName = "Madi Meyers";
+      }
       repName = fullName.split(" ")[0] || fullName;
+      // Safeguard: never let the first-name extraction emit "Madison".
+      if (/^Mad(d)?ison$/i.test(repName)) repName = "Madi";
       els.repName.textContent = `Rep: ${repName}`;
       if (repName === "unknown") {
         log("rep name not set — open ⚙ to set ctm_csr in options", "err", "init");

@@ -2036,9 +2036,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         const isCutoff = !isPast && (isToday || (state.dayCutoffs && state.dayCutoffs[monFirstIndex]) || isTomorrowAfterCutoff);
         if (isCutoff) card.classList.add("day-cutoff");
 
-        // Mark days that should be shrunk (past, no availability, or reps scheduled/cutoff)
+        // Mark days that should be shrunk (past, no availability, or reps scheduled/cutoff).
+        // EXCEPT today — keep it full-sized so reps can see today's events and any
+        // late-cancellation slots. The "Reps Scheduled" badge still appears.
         const noAvailability = totals.capacity === 0;
-        if (isPast || noAvailability || isCutoff) {
+        if (!isToday && (isPast || noAvailability || isCutoff)) {
             card.classList.add("day-shrunk");
         }
 

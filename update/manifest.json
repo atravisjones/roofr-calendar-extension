@@ -1,11 +1,10 @@
 {
-  "version": "2.0.61",
+  "version": "2.0.62",
   "minimum_chrome_version": "116",
-  "release_date": "2026-05-28T18:48:46.736Z",
+  "release_date": "2026-05-28T18:54:07.839Z",
   "changelog": [
-    "Scanner (agenda): day strip now starts at today and runs through end of month — past days are dropped",
-    "Scanner (agenda): days with zero booked appointments are now included in the day strip so reps can see open capacity to book"
+    "Scanner: today's day card no longer shrinks — full-size at the top of the strip so today's events are visible at a glance (the 'Reps Scheduled' badge still appears)"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.61/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.61"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v2.0.62/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v2.0.62"
 }

@@ -1,9 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Roofr Calendar Scraper",
-  "version": "2.0.71",
+  "version": "2.1.2",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlMkkiPqFUtUx4VZWQMiWasrkEoV3PHPVW4uSWRcBcKuCi5MgAuPhbb2XvKGGiKY8Il5DbkHSoul9RQMvW3BE53A/03u2TG0Glxv+GH7opdIYBwt5t+9VuRe70tVy4ZvetewYE4+FIyoUHYHqrcVIbADlbYuvUvuL8NOfjiA+iGk8d26766Gz6UnrJgX+Hlo9gOPGJgQvFeqdQFOfDt2SmLSVTf/BQfbDSKTBogerm3Q5oJu4wRS/6yqWU+hHwKYbfJ5iiwgVf/TV4/q59+GkH0R3mQM0dcl82quupMxVujUzuTzPZNu5bwTJiOzDqE5y2jA/WG6Y1dV9XGfsBaW5NQIDAQAB",
   "description": "Extract appointments from Roofr and show availability from Google Sheets.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "minimum_chrome_version": "116",
   "update_url": "https://raw.githubusercontent.com/atravisjones/roofr-calendar-extension/main/updates.xml",
   "permissions": [
@@ -26,6 +32,8 @@
     "https://us1.locationiq.com/*",
     "https://sheets.googleapis.com/*",
     "https://raw.githubusercontent.com/*",
+    "https://roofr-storage-private.s3.amazonaws.com/*",
+    "https://ik.imagekit.io/*",
     "https://ucfqgkbkxbztxlyniuph.supabase.co/*",
     "https://az-roofers-tech-scheduler.vercel.app/*",
     "https://roofr-search.vercel.app/*",
@@ -35,7 +43,13 @@
     "service_worker": "service_worker.js"
   },
   "action": {
-    "default_title": "Roofr Calendar Scraper"
+    "default_title": "Roofr Calendar Scraper",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "side_panel": {
     "default_path": "popup.html"
@@ -52,6 +66,16 @@
         "content.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.roofr.com/*"
+      ],
+      "js": [
+        "roofr-material-order-newtab.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
     },
     {
       "matches": [
@@ -83,6 +107,15 @@
       ],
       "matches": [
         "https://*.calltrackingmetrics.com/*"
+      ]
+    },
+    {
+      "resources": [
+        "attachment-viewer.html",
+        "attachment-viewer.js"
+      ],
+      "matches": [
+        "https://*.roofr.com/*"
       ]
     }
   ],

@@ -25,7 +25,7 @@ const fields = [
   "animate_transitions",
 
   // Interface toggles
-  "show_job_sorting",
+  "show_dialer",
   "show_people",
   "show_clipboard",
   "show_reports",
@@ -87,16 +87,6 @@ const fields = [
   "ctm_auto_open_calls_page",
   "ctm_group_tabs",
 
-  // Job sorting toggles
-  "job_sorting_auto_load",
-  "job_sorting_show_unknown_roof",
-  "job_sorting_show_unknown_stories",
-  "job_sorting_show_residential",
-  "job_sorting_show_commercial",
-  "job_sorting_show_insurance",
-  "job_sorting_remember_filters",
-  "job_sorting_multi_select",
-
   // Reports toggles
   "reports_enabled",
   "reports_calendar_enabled",
@@ -156,10 +146,10 @@ const defaults = {
   animate_transitions: true,
 
   // Interface - Tab visibility
-  show_job_sorting: false,
+  show_dialer: true,
   show_people: true,
   show_clipboard: true,
-  show_reports: true,
+  show_reports: false, // Hidden by default
   // Interface - Navigation
   show_dock_note: true,
   show_week_navigation: true,
@@ -218,16 +208,6 @@ const defaults = {
   ctm_show_active_calls: true,
   ctm_auto_open_calls_page: true,
   ctm_group_tabs: true,
-
-  // Job sorting
-  job_sorting_auto_load: false,
-  job_sorting_show_unknown_roof: true,
-  job_sorting_show_unknown_stories: true,
-  job_sorting_show_residential: true,
-  job_sorting_show_commercial: true,
-  job_sorting_show_insurance: true,
-  job_sorting_remember_filters: true,
-  job_sorting_multi_select: true,
 
   // Reports
   reports_enabled: true,

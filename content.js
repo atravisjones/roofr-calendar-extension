@@ -1063,26 +1063,38 @@ if (window.location.hostname.includes('calltrackingmetrics.com') && !window.__ct
         sendResponse({ ok: true, calls: [] });
         return true;
       }
-      // If the tab is hidden/background, CTM's DOM may be stale — return cached calls, filtering out expired ones
-      if (document.hidden) {
-        const now = Date.now();
-        const cachedCalls = Array.from(previousActiveCalls.values())
-          .filter(c => (now - c.lastSeen) < CACHE_EXPIRY_MS)
-          .map(c => ({
-            phoneNumber: c.phoneNumber,
-            formattedPhone: c.formattedPhone,
-            callerName: c.callerName,
-            agentName: c.agentName,
-            isAnswered: c.isAnswered,
-            transferInfo: c.transferInfo
-          }));
-        const cacheAge = Math.round((now - lastCheckTimestamp) / 1000);
-        console.log('[CTM Extension] Tab is hidden — returning', cachedCalls.length, 'cached active calls (cache age:', cacheAge + 's)');
-        sendResponse({ ok: true, calls: cachedCalls, stale: true });
-        return true;
+      // The popup polls this every ~2s. Previously, when the CTM tab was hidden
+      // (the normal case while a rep works the dialer side panel) we returned
+      // CACHE ONLY — and the background scan that fills the cache also bails when
+      // hidden + is throttled by Chrome to ~1/min. Net effect: a new call took
+      // minutes to appear. Now we always do a FRESH on-demand scrape so a new
+      // active-call row surfaces within one poll (~2s) regardless of tab focus.
+      // CTM keeps its softphone websocket live in the background, so the new-call
+      // row lands in the DOM promptly even when hidden. We union with non-expired
+      // cache to smooth over a transient empty scrape, and refresh lastSeen on
+      // anything still present so an ongoing call doesn't get dropped at 30s.
+      const now = Date.now();
+      const fresh = findAllCtmActiveCalls();
+      lastCheckTimestamp = now;
+      const freshPhones = new Set();
+      for (const call of fresh) {
+        if (!call.phoneNumber) continue;
+        freshPhones.add(call.phoneNumber);
+        previousActiveCalls.set(call.phoneNumber, { ...call, lastSeen: now });
       }
-      const activeCalls = findAllCtmActiveCalls();
-      console.log('[CTM Extension] Returning', activeCalls.length, 'active calls');
+      // Add still-recent cached calls the fresh scrape didn't catch this tick.
+      const cachedExtra = Array.from(previousActiveCalls.values())
+        .filter(c => !freshPhones.has(c.phoneNumber) && (now - c.lastSeen) < CACHE_EXPIRY_MS)
+        .map(c => ({
+          phoneNumber: c.phoneNumber,
+          formattedPhone: c.formattedPhone,
+          callerName: c.callerName,
+          agentName: c.agentName,
+          isAnswered: c.isAnswered,
+          transferInfo: c.transferInfo
+        }));
+      const activeCalls = [...fresh, ...cachedExtra];
+      console.log('[CTM Extension] Returning', activeCalls.length, 'active calls (fresh:', fresh.length, '+ cached:', cachedExtra.length, '· hidden:', document.hidden + ')');
       sendResponse({ ok: true, calls: activeCalls });
       return true;
     }
@@ -2342,6 +2354,33 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       return true;
     }
 
+    if (msg.type === "APPLY_SCAN_PROFILE") {
+      applyScanProfile(msg.profile).then(result => {
+        sendResponse(result);
+      }).catch(err => {
+        sendResponse({ ok: false, error: err.message });
+      });
+      return true;
+    }
+
+    if (msg.type === "SWITCH_CALENDAR_VIEW") {
+      switchCalendarView(msg.view).then(result => {
+        sendResponse(result);
+      }).catch(err => {
+        sendResponse({ ok: false, error: err.message });
+      });
+      return true;
+    }
+
+    if (msg.type === "SELECT_ONLY_TEAM_MEMBERS") {
+      selectOnlyTeamMembers(msg.names).then(result => {
+        sendResponse(result);
+      }).catch(err => {
+        sendResponse({ ok: false, error: err.message });
+      });
+      return true;
+    }
+
     if (msg.type === "SELECT_ALL_TEAM_MEMBERS") {
       const result = selectAllTeamMembers();
       sendResponse(result);
@@ -2369,6 +2408,15 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
 
     if (msg.type === "BATCH_OPEN_JOB") {
       batchOpenJobInNewTab(msg.address, msg).then(result => {
+        sendResponse(result);
+      }).catch(err => {
+        sendResponse({ ok: false, error: err.message });
+      });
+      return true;
+    }
+
+    if (msg.type === "OPEN_JOB_VIA_EVENT_CLICK") {
+      openJobViaEventMiddleClick(msg.address, msg.time).then(result => {
         sendResponse(result);
       }).catch(err => {
         sendResponse({ ok: false, error: err.message });
@@ -2787,15 +2835,41 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       return foundEvents;
     };
 
+    // Expected start time (minutes since midnight) for disambiguation. Roofr's
+    // event class encodes the LOCAL start time as DD-MM-YYYY--HH-MM-SS.
+    const wantMinutes = normalizeTimeToMinutes(time);
+    const eventStartMinutes = (event) => {
+      const host = event.closest('[class*="rbcalendar-event"]') || event.closest('.rbc-event') || event;
+      const dt = extractDateTimeFromClass((host.className || '').toString());
+      if (dt) return dt.getHours() * 60 + dt.getMinutes();
+      const title = event.closest('.rbc-event')?.getAttribute('title') || event.textContent || '';
+      const tm = title.match(/(\d{1,2}(?::\d{2})?\s*[AP]M)/i);
+      return tm ? normalizeTimeToMinutes(tm[1]) : null;
+    };
+
     const findMatches = (candidateEvents) => {
-      const foundMatches = [];
+      const addrMatches = [];
       for (const event of candidateEvents) {
         const eventText = event.textContent?.toLowerCase() || '';
         if (addressNumber && eventText.includes(addressNumber)) {
-          foundMatches.push({ event, text: eventText });
+          addrMatches.push({ event, text: eventText });
         }
       }
-      return foundMatches;
+      // SAFETY: when an expected time is known and the same address appears more
+      // than once (duplicate/recurring events), require the event start time to
+      // match before touching it. Address-only matching previously let the
+      // automation open/save the WRONG event. If none match the time, refuse to
+      // guess (return empty → caller aborts) rather than edit a random duplicate.
+      if (wantMinutes != null && addrMatches.length > 1) {
+        const timed = addrMatches.filter(m => {
+          const em = eventStartMinutes(m.event);
+          return em != null && Math.abs(em - wantMinutes) <= 5;
+        });
+        if (timed.length >= 1) return timed;
+        console.warn('[Batch] Address matched but no event start time matches', time, '— refusing to guess which duplicate to edit.');
+        return [];
+      }
+      return addrMatches;
     };
 
     let events = [];
@@ -3428,6 +3502,45 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
   }
 
   // Edit event and add rep as invitee
+  // Open a job card straight from its calendar event by simulating a middle-click
+  // on the event. The MAIN-world script (roofr-material-order-newtab.js) reads the
+  // event's job_id from React fiber and opens the job in a background tab — no need
+  // to open the event popup and hunt for an "Open job" link.
+  async function openJobViaEventMiddleClick(address, time) {
+    const addressNumber = (String(address).match(/^\d+/) || [])[0] || '';
+    const wantMin = (typeof normalizeTimeToMinutes === 'function') ? normalizeTimeToMinutes(time) : null;
+    const getEvents = () => {
+      let evs = Array.from(document.querySelectorAll('.rbc-event-content'));
+      if (!evs.length) evs = Array.from(document.querySelectorAll('.rbc-event button, button.rbc-event, .rbc-event'));
+      return evs;
+    };
+
+    let target = null;
+    for (let i = 0; i < 20 && !target; i++) {
+      const matches = getEvents().filter(e => addressNumber && (e.textContent || '').includes(addressNumber));
+      if (matches.length) {
+        if (wantMin != null && matches.length > 1) {
+          target = matches.find(e => {
+            const host = e.closest('[class*="rbcalendar-event"]') || e.closest('.rbc-event') || e;
+            const dt = extractDateTimeFromClass((host.className || '').toString());
+            return dt && Math.abs((dt.getHours() * 60 + dt.getMinutes()) - wantMin) <= 5;
+          }) || null;
+        } else {
+          target = matches[0];
+        }
+      }
+      if (!target) await batchSleep(500);
+    }
+    if (!target) return { ok: false, error: `Event not found on the visible calendar for: ${address}` };
+
+    const clickTarget = target.closest('.rbc-event') || target;
+    const opts = { bubbles: true, cancelable: true, view: window, button: 1, buttons: 4 };
+    clickTarget.dispatchEvent(new MouseEvent('mousedown', opts));
+    clickTarget.dispatchEvent(new MouseEvent('mouseup', opts));
+    clickTarget.dispatchEvent(new MouseEvent('auxclick', opts));
+    return { ok: true };
+  }
+
   async function batchEditEventAddRep(address, time, repName) {
     console.log('[Batch] Editing event to add rep:', repName);
 
@@ -3827,36 +3940,60 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     const dropdownCheck = document.querySelectorAll('[class*="dropdown"]:not([style*="display: none"]), [class*="menu"]:not([style*="display: none"]), [class*="popover"], [data-floating-ui-portal]');
     console.log('[Batch] Dropdowns/menus visible after click:', dropdownCheck.length);
 
-    // Step 2: Type the rep name to filter the dropdown
+    // Step 2: Type to filter the dropdown.
+    // IMPORTANT: Roofr's invitee search is a substring match against each person's
+    // ACTUAL name, and the schedule/CSR list often uses nicknames (e.g. "Madi" for
+    // "Madison Meyers"). Typing the full "First Last" string returns "No guests
+    // found", which is what made the old code fall back to the dangerous keyboard
+    // selection. So type ONLY the first-name token to filter, then match the
+    // resulting row by last name below. This makes the first attempt succeed.
+    const repTokens = repName.trim().split(/\s+/);
+    const wantFirst = (repTokens[0] || '').toLowerCase();
+    const wantLast = (repTokens[repTokens.length - 1] || '').toLowerCase();
+    const typeQuery = repTokens[0] || repName;
+
+    // True when an option's text plausibly refers to this rep (handles nicknames
+    // like Madi/Madison). Never matches the "Add filtered team" button / headers.
+    const nameMatches = (rawText) => {
+      const t = (rawText || '').trim().toLowerCase();
+      if (!t || t === 'add filtered team' || t === 'team members') return false;
+      if (t === repName.toLowerCase()) return true;
+      const words = t.split(/\s+/);
+      const first = words[0] || '';
+      const last = words[words.length - 1] || '';
+      const firstOk = !!wantFirst && (first.startsWith(wantFirst) || wantFirst.startsWith(first));
+      const lastOk = !!wantLast && (last === wantLast || last.startsWith(wantLast) || wantLast.startsWith(last));
+      return firstOk && lastOk;
+    };
+
     input.value = '';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     await batchSleep(200);
 
-    // Paste the name in one shot using execCommand('insertText') for React compatibility
-    console.log('[Batch] Pasting rep name:', repName);
+    // Paste the first-name query in one shot using execCommand for React compatibility
+    console.log('[Batch] Filtering invitees by first name:', typeQuery, '(rep:', repName + ')');
     input.focus();
-    document.execCommand('insertText', false, repName);
+    document.execCommand('insertText', false, typeQuery);
     // Fallback: if execCommand didn't work, set value + fire events
-    if (!input.value.includes(repName)) {
+    if (!input.value.includes(typeQuery)) {
       console.log('[Batch] execCommand fallback — setting value directly');
       const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-      nativeInputValueSetter.call(input, repName);
+      nativeInputValueSetter.call(input, typeQuery);
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
     }
-    // Wait for dropdown to filter — poll for an option matching the rep name
-    const repLower = repName.toLowerCase();
+    // Wait for dropdown to filter — poll for an option matching the rep (by last name)
     await waitForEl(() => {
       const options = document.querySelectorAll('[data-floating-ui-portal] div, [role="option"], [class*="dropdown"] > div');
       for (const opt of options) {
-        const text = opt.textContent?.trim().toLowerCase() || '';
-        if (text === repLower || (text.includes(repLower) && text.length < repLower.length + 20)) {
+        if (opt.getAttribute && opt.getAttribute('data-testid') === 'calendar-card-add-filtered-team') continue;
+        if (nameMatches(opt.textContent)) {
           const rect = opt.getBoundingClientRect();
           if (rect.width > 0 && rect.height > 0) return opt;
         }
       }
       return null;
-    }, { timeout: 8000, message: `dropdown option "${repName}"` });
+    }, { timeout: 8000, message: `dropdown option for "${repName}"` });
 
     console.log('[Batch] Looking for dropdown option...');
 
@@ -3891,12 +4028,14 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
 
       const options = document.querySelectorAll(selector);
       for (const option of options) {
+        // SAFETY: never match the "Add filtered team" button (adds everyone).
+        if (option.getAttribute && option.getAttribute('data-testid') === 'calendar-card-add-filtered-team') continue;
         const text = option.textContent?.trim() || '';
+        if (text.toLowerCase() === 'add filtered team') continue;
         const rect = option.getBoundingClientRect();
 
-        // Check if this option matches the rep name and is visible
-        if (text.toLowerCase() === repName.toLowerCase() ||
-          (text.toLowerCase().includes(repName.toLowerCase()) && text.length < repName.length + 20)) {
+        // Check if this option matches the rep (nickname-aware, by last name) and is visible
+        if (nameMatches(text)) {
           if (rect.width > 0 && rect.height > 0 && rect.top > 0) {
             console.log('[Batch] Found rep in dropdown:', text, 'selector:', selector);
             option.click();
@@ -3919,10 +4058,11 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       for (const portal of floatingPortals) {
         const portalElements = portal.querySelectorAll('div, span, li, label, button');
         for (const el of portalElements) {
+          if (el.getAttribute && el.getAttribute('data-testid') === 'calendar-card-add-filtered-team') continue;
           const fullText = el.textContent?.trim() || '';
           const rect = el.getBoundingClientRect();
 
-          if (fullText.toLowerCase() === repName.toLowerCase() &&
+          if (nameMatches(fullText) &&
             rect.width > 0 && rect.height > 0) {
             console.log('[Batch] Found rep in floating portal:', fullText, 'tag:', el.tagName);
 
@@ -3960,17 +4100,28 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       }
     }
 
-    // Last resort: try keyboard navigation
+    // SAFETY: do NOT fall back to blind keyboard selection. The invitee
+    // dropdown's first item is the "Add filtered team" button, so ArrowDown+Enter
+    // would invite the ENTIRE team — this caused the company-wide mass-invite
+    // incident (2026-06-03). If we could not positively match the specific rep,
+    // abort WITHOUT saving rather than add the wrong person or everyone.
     if (!foundAndClicked) {
-      console.warn('[Batch] Could not find rep in dropdown, trying keyboard selection...');
-      // Press down arrow to highlight first option, then Enter
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, bubbles: true }));
-      await batchSleep(300);
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-      await batchSleep(500);
+      // They may ALREADY be an invitee — Roofr omits existing invitees from the
+      // add-list, so "not found" can simply mean "already there". Treat that as
+      // success (nothing to add) instead of aborting.
+      const alreadyInvitee = Array.from(
+        document.querySelectorAll('[data-testid*="calendar-card-invitees-row"], [data-testid*="invitees-row"], [class*="invitee"]')
+      ).some(row => nameMatches(row.textContent));
+      if (alreadyInvitee) {
+        console.log('[Batch] Rep already an invitee on this event — nothing to add.');
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+        await batchSleep(300);
+        return;
+      }
+      throw new Error(`Could not find rep "${repName}" in the invitee dropdown — aborting without saving (refusing to add the whole team).`);
     }
 
-    // Find and click Save button
+    // Find and click Save button — only reached when the exact rep was selected.
     await batchSleep(500); // Small wait before looking for save button
 
     const allButtons = document.querySelectorAll('button');
@@ -4507,15 +4658,15 @@ async function clickDateInPicker(day, month, year) {
     const text = cell.textContent?.trim();
     // Match exact day number (avoid matching "30" when looking for "3")
     if (text === dayStr) {
-      // Make sure it's a clickable day cell (not header or other element)
+      // The mini date-picker cells are NOT inside the main react-big-calendar grid.
+      // (Older code assumed the picker sat in the left half of the screen; Roofr now
+      // renders it in the RIGHT-side panel, so filter by "not in .rbc-*" instead.)
+      if (cell.closest('[class*="rbc-"]')) continue;
       const rect = cell.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0 && rect.width < 60 && rect.height < 60) {
-        // Check if it's within the mini calendar area (left side panel)
-        if (rect.left < window.innerWidth / 2) {
-          console.log('[Roofr Extension] Clicking day:', day);
-          cell.click();
-          return { ok: true, clicked: true, day, month, year };
-        }
+        console.log('[Roofr Extension] Clicking day in mini picker:', day);
+        cell.click();
+        return { ok: true, clicked: true, day, month, year };
       }
     }
   }
@@ -5026,6 +5177,164 @@ function selectProductionEventTypes() {
 
   console.log('[Roofr Extension] Production event types selection results:', results);
   return { ok: true, results };
+}
+
+// --- Robust event-type filter control (verified against Roofr's live DOM 2026-06-03) ---
+// Each event-type row in Roofr's calendar filter is a <label> whose text is the type
+// name and which CONTAINS its own checkbox. So the correct, unambiguous way to find a
+// type's checkbox is: the <label> whose trimmed text === name -> the checkbox inside it.
+// (The old walk-up-to-first-ancestor-checkbox approach cross-wired siblings, e.g. it
+// toggled "Sales appointment" when asked for "D2D Sales appointment".)
+function findEventTypeCheckbox(name) {
+  const labels = document.querySelectorAll('label');
+  for (const l of labels) {
+    if ((l.innerText || '').trim() === name) {
+      const cb = l.querySelector('input[type="checkbox"]');
+      if (cb) return cb;
+    }
+  }
+  return null;
+}
+
+function setEventTypeFilter(name, shouldCheck) {
+  const cb = findEventTypeCheckbox(name);
+  if (!cb) return { name, ok: false, reason: 'not found' };
+  if (cb.checked !== shouldCheck) { cb.click(); return { name, ok: true, changed: true, now: shouldCheck }; }
+  return { name, ok: true, changed: false, now: shouldCheck };
+}
+
+// Every event type, grouped. Checking a GROUP checkbox cascades to its children
+// (verified). The full list is used for a deterministic clean-slate so a profile
+// never depends on uncheck-cascade behavior.
+const EVENT_TYPE_GROUPS = {
+  'Sales': ['Sales appointment', 'Sales followup', 'Self-gen appointment', 'Paint consultation', 'D2D Sales appointment'],
+  'General': ['Adjuster meeting'],
+  'Dropoffs and pickups': ['Material drop', 'Material pickup', 'ITEL Sample', 'Repair Test'],
+  'Production': ['Roof install', 'Roof repair', 'Exterior paint install', 'Solar detach', 'Solar reinstall', 'Tarp'],
+  'Post-production': ['Warranty inspection', 'Final walkthrough', 'Go Backs'],
+};
+
+// Per-profile desired CHILD event types (the leaf checkboxes that should end up checked).
+const PROFILE_TYPES = {
+  retail: ['Sales appointment', 'Sales followup', 'Self-gen appointment', 'Paint consultation'],
+  d2d: ['D2D Sales appointment'],
+  insurance: ['Adjuster meeting'],
+  production: [
+    'Material drop', 'Material pickup', 'ITEL Sample', 'Repair Test',
+    'Roof install', 'Roof repair', 'Exterior paint install', 'Solar detach', 'Solar reinstall', 'Tarp',
+    'Warranty inspection', 'Final walkthrough', 'Go Backs',
+  ],
+};
+// Which group checkbox to click first per profile (cascades to children = few clicks).
+const PROFILE_GROUPS = {
+  retail: ['Sales'],
+  d2d: [],
+  insurance: ['General'],
+  production: ['Dropoffs and pickups', 'Production', 'Post-production'],
+};
+
+// Apply a team SCAN PROFILE by driving Roofr's event-type filter checkboxes.
+// CLICK-LIGHT to avoid Roofr's re-render storm (many rapid clicks froze it and caused
+// late clicks like "Repair Test"/"Go Backs" to be dropped). Strategy:
+//   1. Clean slate by unchecking only the 5 GROUP checkboxes (cascades to children).
+//   2. Check the profile's group(s) (cascades).
+//   3. "Ensure" pass: explicitly check each desired child only if it's NOT already checked
+//      (catches any child the cascade missed) — usually 0 extra clicks.
+//   4. retail also drops D2D after the Sales group is on.
+async function applyScanProfile(profile) {
+  if (!window.location.pathname.includes('/calendar')) {
+    return { ok: false, reason: 'Not on calendar page' };
+  }
+  const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  const p = PROFILE_TYPES[profile] ? profile : 'retail';
+
+  // 1. Clean slate — uncheck the 5 groups only (cascades to children; few clicks).
+  for (const g of Object.keys(EVENT_TYPE_GROUPS)) setEventTypeFilter(g, false);
+  await wait(500);
+
+  // 2. Check the profile's group(s) (cascade).
+  for (const g of (PROFILE_GROUPS[p] || [])) setEventTypeFilter(g, true);
+  await wait(700);
+
+  // 3. Ensure each desired child is checked (only clicks the ones the cascade missed).
+  for (const child of PROFILE_TYPES[p]) {
+    const cb = findEventTypeCheckbox(child);
+    if (cb && !cb.checked) { cb.click(); await wait(120); }
+  }
+
+  // 4. retail: drop D2D (the Sales group cascade turned it on).
+  if (p === 'retail') { await wait(150); setEventTypeFilter('D2D Sales appointment', false); }
+
+  await wait(300);
+  return { ok: true, profile: p };
+}
+
+// Select ONLY the given team members (by name): deselect everyone via the "Select all"
+// master, then check just the named people. Robust + click-light vs toggling each of the
+// ~100 non-members. Each team row is a <label> (text=name) with its checkbox inside.
+async function selectOnlyTeamMembers(names) {
+  if (!window.location.pathname.includes('/calendar')) {
+    return { ok: false, reason: 'Not on calendar page' };
+  }
+  const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  // Case-insensitive match: the roster sheet's casing can differ from Roofr's team list
+  // (e.g. sheet "Robert Mcpherson" vs Roofr "Robert McPherson").
+  const norm = (s) => (s || '').trim().toLowerCase();
+  const labelCb = (t) => {
+    const tn = norm(t);
+    const l = Array.from(document.querySelectorAll('label')).find(x => norm(x.innerText) === tn);
+    return l ? l.querySelector('input[type="checkbox"]') : null;
+  };
+  // Force "Select all" through a known cycle so EVERYONE ends up deselected, regardless
+  // of starting state (checked / unchecked / indeterminate).
+  const selAll = labelCb('Select all');
+  if (selAll) {
+    if (!selAll.checked) { selAll.click(); await wait(350); }  // -> all checked
+    selAll.click(); await wait(500);                            // -> all unchecked
+  }
+  // Check just the requested people.
+  let selected = 0;
+  const want = [...new Set((names || []).map(n => n.trim()).filter(Boolean))];
+  for (const n of want) {
+    const cb = labelCb(n);
+    if (cb) { if (!cb.checked) { cb.click(); await wait(90); } selected++; }
+  }
+  return { ok: true, selected, requested: want.length };
+}
+
+// Robust calendar VIEW switch (verified). Roofr's view selector is a dropdown button
+// whose text IS the current view (Agenda / Weekly / Monthly / Daily). Click it to open,
+// then click the option matching the target. Also writes localStorage as a backup.
+// target: 'agenda' | 'weekly' | 'daily' | 'monthly'
+async function switchCalendarView(target) {
+  if (!window.location.pathname.includes('/calendar')) {
+    return { ok: false, reason: 'Not on calendar page' };
+  }
+  const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  const DISPLAY = { agenda: 'Agenda', weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly' };
+  const LS = { agenda: 'agenda', weekly: 'week', daily: 'day', monthly: 'month' };
+  const want = DISPLAY[target] || 'Agenda';
+
+  // Already on it?
+  if (getCurrentCalendarView() === target) return { ok: true, alreadyOn: true };
+
+  // Backup: persist the choice so React picks it up even if the click misses.
+  try { localStorage.setItem('crm.calendar.view', JSON.stringify(LS[target] || 'agenda')); } catch (_) {}
+
+  // Open the dropdown: the button whose text is the CURRENT view name.
+  const viewNames = ['Agenda', 'Weekly', 'Monthly', 'Daily'];
+  const dropdownBtn = Array.from(document.querySelectorAll('button'))
+    .find(b => viewNames.includes((b.textContent || '').trim()));
+  if (!dropdownBtn) return { ok: false, reason: 'view dropdown button not found' };
+  if ((dropdownBtn.textContent || '').trim() === want) return { ok: true, alreadyOn: true };
+  dropdownBtn.click();
+  await wait(350);
+
+  // Click the option matching the target view.
+  const opt = Array.from(document.querySelectorAll('[role="option"],[role="menuitem"],li,div,span'))
+    .find(e => e.children.length === 0 && (e.textContent || '').trim() === want && e.getBoundingClientRect().width > 0);
+  if (opt) { opt.click(); return { ok: true, switchedTo: target }; }
+  return { ok: false, reason: `${want} option not found in dropdown` };
 }
 
 // Select all team members
@@ -5623,6 +5932,29 @@ if (window.__isRoofrJobPage && !window.__roofrJobAutomationLoaded) {
         console.log('[Roofr Automation] Selected rep (partial match):', optText);
         await sleep(300);
         return { ok: true, selected: optText };
+      }
+    }
+
+    // Nickname-aware match: the schedule/CSR list uses nicknames (e.g. "Madi
+    // Meyers") but Roofr stores the legal name ("Madison Meyers"). Match by
+    // first-name prefix + last name so the owner step works for nicknamed reps.
+    {
+      const tks = repName.trim().split(/\s+/);
+      const wf = (tks[0] || '').toLowerCase();
+      const wl = (tks[tks.length - 1] || '').toLowerCase();
+      for (const opt of options) {
+        const optText = (opt.textContent || '').trim();
+        const w = optText.toLowerCase().split(/\s+/);
+        const first = w[0] || '', last = w[w.length - 1] || '';
+        const firstOk = !!wf && (first.startsWith(wf) || wf.startsWith(first));
+        const lastOk = !!wl && (last === wl || last.startsWith(wl) || wl.startsWith(last));
+        if (firstOk && lastOk) {
+          const clickable = opt.closest('label') || opt;
+          clickable.click();
+          console.log('[Roofr Automation] Selected rep (nickname match):', optText, 'for', repName);
+          await sleep(300);
+          return { ok: true, selected: optText };
+        }
       }
     }
 
@@ -6354,4 +6686,220 @@ if (window.__isRoofrJobPage && !window.__roofrJobAutomationLoaded) {
 })();
 // ==================================================
 // END: Google Earth Address Search Handler
+// ==================================================
+
+// ==================================================
+// START: Roofr middle-click / Ctrl+Cmd-click -> open in new tab
+// Job list rows (.ag-row) + board cards (.job-card--modal-link), plus inside a job card:
+// proposals + PDF-signer docs (whole card) and invoice & work-order "View" buttons.
+// Roofr cards/buttons run JS handlers instead of being <a href>, so native middle-click
+// does nothing; we resolve the deep-link and open it ourselves. Material-order View
+// buttons are handled by the companion MAIN-world script roofr-material-order-newtab.js
+// (their id is only in React fiber, which this isolated-world script can't read).
+// ==================================================
+if (location.hostname.includes('roofr.com') && !window.__roofrProposalNewTab) {
+  window.__roofrProposalNewTab = true;
+  (() => {
+    const CARD = '.job-item-card--container';
+    const TIMELINE = '.proposals-card-view-timeline';            // proposal-specific marker
+    const INNER = 'button,[role="menu"],[role="menuitem"],a,input,select,textarea,[contenteditable]';
+    const jobCache = new Map();                                   // jobId -> Promise<{proposals[], signatureDocs[]}>
+    const woCache = new Map();                                    // jobId -> Promise<[{id,number}]>
+
+    const teamId = () => (location.pathname.match(/\/dashboard\/team\/(\d+)/) || [])[1] || null;
+    // jobId: prefer the URL's selectedJobId; fall back to data-roofr-job-id, which the
+    // MAIN-world script (roofr-material-order-newtab.js) sets from React fiber. The fallback
+    // covers job cards opened on a URL WITHOUT selectedJobId (e.g. "View job details" from a
+    // proposal page), where the URL alone can't tell us which job is open.
+    const jobId  = () => (location.search.match(/selectedJobId=(\d+)/) || [])[1]
+                    || document.documentElement.dataset.roofrJobId || null;
+
+    // Open a Roofr URL in a BACKGROUND tab via the service worker (chrome.tabs.create {active:false}),
+    // so middle-click / Ctrl+Cmd-click never steals focus. Falls back to window.open if messaging fails.
+    function openTab(url) {
+      try { chrome.runtime.sendMessage({ type: 'ROOFR_OPEN_BG_TAB', url }); }
+      catch (e) { window.open(url, '_blank'); }
+    }
+    // Relay background-tab requests from the MAIN-world script (it has no chrome.* APIs).
+    window.addEventListener('message', (e) => {
+      if (e.source === window && e.data && typeof e.data.__roofrBgTab === 'string'
+          && /^https:\/\/app\.roofr\.com\//.test(e.data.__roofrBgTab)) {
+        openTab(e.data.__roofrBgTab);
+      }
+      // Relay attachment (PDF/image) opens from the MAIN-world script. The SW re-serves the
+      // file inline via the bundled viewer so it VIEWS in a background tab (the raw S3 link
+      // force-downloads). Host is re-validated in the SW.
+      if (e.source === window && e.data && e.data.__roofrAttachmentTab
+          && typeof e.data.__roofrAttachmentTab.url === 'string') {
+        const a = e.data.__roofrAttachmentTab;
+        try { chrome.runtime.sendMessage({ type: 'ROOFR_OPEN_ATTACHMENT', url: a.url, name: a.name || '', ext: (a.ext || '').toLowerCase() }); }
+        catch (err) { /* SW asleep / context invalidated — ignore */ }
+      }
+    });
+
+    // Proposals AND PDF-signer documents both render as .job-item-card--container.
+    // Proposal cards carry the proposal-specific timeline; PDF-signer doc cards don't.
+    // (Material/work-order cards use different classes, so they never match CARD.)
+    const itemCards     = () => [...document.querySelectorAll(CARD)];
+    const proposalCards = () => itemCards().filter(c => c.querySelector(TIMELINE));
+    const pdfCards      = () => itemCards().filter(c => !c.querySelector(TIMELINE));
+
+    // One /api/job fetch feeds both: proposals[] and signature_documents[] (PDF signer),
+    // each already in the same order as its on-screen cards. The ids aren't in the DOM.
+    function jobData(jid, tid) {
+      if (!jobCache.has(jid)) {
+        const p = fetch(`https://app.roofr.com/api/job/${jid}`, {
+          credentials: 'include', headers: { 'team-id': String(tid) }
+        }).then(r => { if (!r.ok) throw new Error('job ' + r.status); return r.json(); })
+          .then(d => ({
+            proposals: Array.isArray(d.proposals) ? d.proposals.map(p => String(p.id)) : [],
+            signatureDocs: Array.isArray(d.signature_documents) ? d.signature_documents.map(x => String(x.id)) : []
+          }));
+        p.catch(() => jobCache.delete(jid));                      // evict on failure -> retry next click
+        jobCache.set(jid, p);
+      }
+      return jobCache.get(jid);
+    }
+
+    async function openProposal(card) {
+      const tid = teamId(), jid = jobId();
+      if (!tid || !jid) return;
+      const idx = proposalCards().indexOf(card);                 // capture index BEFORE await (DOM stable now)
+      if (idx < 0) return;
+      const pid = (await jobData(jid, tid)).proposals[idx];
+      if (pid) openTab(`https://app.roofr.com/dashboard/team/${tid}/proposals/proposal/${pid}`);
+    }
+
+    async function openPdfDoc(card) {
+      const tid = teamId(), jid = jobId();
+      if (!tid || !jid) return;
+      const idx = pdfCards().indexOf(card);                      // capture index BEFORE await
+      if (idx < 0) return;
+      const id = (await jobData(jid, tid)).signatureDocs[idx];
+      if (id) openTab(`https://app.roofr.com/dashboard/team/${tid}/pdf-signer/document/${id}`);
+    }
+
+    // A "View" button (material orders, work orders, invoices). Exact text "View".
+    function viewBtn(target) {
+      const b = target.closest && target.closest('button');
+      return (b && /^\s*View\s*$/.test(b.textContent || '')) ? b : null;
+    }
+
+    // Invoice cards (.job-invoice-card) embed a real <a href=".../invoice/{uuid}/details">.
+    // Bound the lookup to the clicked element's OWN invoice card so a material/work-order
+    // "View" button can't accidentally grab an invoice anchor from a sibling section.
+    function invoiceHref(fromEl) {
+      const card = fromEl.closest && fromEl.closest('.job-invoice-card');
+      if (!card) return null;
+      const a = card.querySelector('a[href*="/invoice/"][href*="/details"]');
+      return a && a.href ? a.href : null;
+    }
+
+    // Work orders: no in-DOM href, but the job-scoped API returns them with UUIDs.
+    // GET /api/work-orders?filter[job_id]={jobId} -> [{id(uuid), number, ...}].
+    function workOrders(jid, tid) {
+      if (!woCache.has(jid)) {
+        const p = fetch(`https://app.roofr.com/api/work-orders?filter%5Bjob_id%5D=${jid}`, {
+          credentials: 'include', headers: { 'team-id': String(tid) }
+        }).then(r => { if (!r.ok) throw new Error('wo ' + r.status); return r.json(); })
+          .then(d => (d && Array.isArray(d.data) ? d.data : []).map(w => ({ id: String(w.id), number: String(w.number) })));
+        p.catch(() => woCache.delete(jid));
+        woCache.set(jid, p);
+      }
+      return woCache.get(jid);
+    }
+
+    // A "View" button is a work order's if it's NOT inside an invoice or material-order
+    // card and its enclosing card text mentions "Work order". Returns that card or null.
+    function workOrderCard(fromEl) {
+      if (fromEl.closest('.job-invoice-card') || fromEl.closest('.card--material-order')) return null;
+      let n = fromEl;
+      for (let i = 0; i < 8 && n; i++) {
+        if (/work order/i.test(n.textContent || '')) return n;
+        n = n.parentElement;
+      }
+      return null;
+    }
+
+    async function openWorkOrder(card) {
+      const tid = teamId(), jid = jobId();
+      if (!tid || !jid) return;
+      const m = (card.textContent || '').match(/work order\s*#?\s*0*(\d+)/i);  // strip leading zeros (display "02019" == API "2019")
+      const num = m ? m[1] : null;
+      const list = await workOrders(jid, tid);
+      if (!list.length) return;
+      let wo = num ? list.find(w => parseInt(w.number, 10) === parseInt(num, 10)) : null;
+      if (!wo && list.length === 1) wo = list[0];                // single work order: unambiguous
+      if (wo) openTab(`https://app.roofr.com/dashboard/work-orders/${wo.id}`);
+    }
+
+    function handle(e) {
+      try {
+        const mid = e.type === 'auxclick' && e.button === 1;
+        const mod = e.type === 'click' && (e.ctrlKey || e.metaKey);
+        if (!mid && !mod) return;
+        // (C) Job list row (.ag-row[row-id]) or board card (.job-card--modal-link[data-board-job-id]).
+        //     The jobId is a plain DOM attribute on these. Open the job's modal deep-link.
+        const jobEl = e.target.closest('.ag-row[row-id], .job-card--modal-link[data-board-job-id]');
+        if (jobEl) {
+          if (e.target.closest('a[href],input,[role="menu"],[role="menuitem"]')) return; // let real links/menus/checkboxes act natively
+          const jid = jobEl.getAttribute('row-id') || jobEl.getAttribute('data-board-job-id');
+          const tid = teamId();
+          if (tid && /^\d+$/.test(jid || '')) {
+            e.preventDefault(); e.stopPropagation();
+            openTab(`https://app.roofr.com/dashboard/team/${tid}/jobs/list-view?selectedJobId=${jid}`);
+          }
+          return;
+        }
+        // (A) "View" button on a card. Invoice -> in-DOM <a href>; work order -> job-scoped API.
+        //     (Material-order View buttons are handled in roofr-material-order-newtab.js (MAIN world).)
+        const vb = viewBtn(e.target);
+        if (vb) {
+          const href = invoiceHref(vb);
+          if (href) { e.preventDefault(); e.stopPropagation(); openTab(href); return; }
+          const woCard = workOrderCard(vb);
+          if (woCard) { e.preventDefault(); e.stopPropagation(); openWorkOrder(woCard).catch(err => console.warn('[RoofrNewTab]', err)); }
+          return;
+        }
+        // (B) Whole-card click on a .job-item-card--container: proposal OR PDF-signer doc.
+        if (e.target.closest(INNER)) return;                     // don't hijack kebab/badge/links/inputs
+        const card = e.target.closest(CARD);
+        if (!card) return;
+        if (proposalCards().includes(card)) {
+          e.preventDefault(); e.stopPropagation();
+          openProposal(card).catch(err => console.warn('[RoofrNewTab]', err));
+        } else if (pdfCards().includes(card)) {
+          e.preventDefault(); e.stopPropagation();
+          openPdfDoc(card).catch(err => console.warn('[RoofrNewTab]', err));
+        }
+      } catch (err) { console.warn('[RoofrNewTab]', err); }
+    }
+
+    // Suppress the middle-click autoscroll cursor when over a proposal card or a "View" button.
+    document.addEventListener('mousedown', e => {
+      if (e.button !== 1) return;
+      const onJobRow = e.target.closest('.ag-row[row-id], .job-card--modal-link[data-board-job-id]')
+                       && !e.target.closest('a[href],input,[role="menu"],[role="menuitem"]');
+      if (viewBtn(e.target) || (e.target.closest(CARD) && !e.target.closest(INNER)) || onJobRow) e.preventDefault();
+    }, true);
+    document.addEventListener('auxclick', handle, true);
+    document.addEventListener('click', handle, true);
+
+    // Evict the per-job cache when the open job changes (SPA navigation).
+    let last = jobId();
+    const evict = () => { const n = jobId(); if (n !== last) { if (last) { jobCache.delete(last); woCache.delete(last); } last = n; } };
+    addEventListener('popstate', evict);
+    if (!window.__roofrHistPatched) {
+      window.__roofrHistPatched = true;
+      for (const m of ['pushState', 'replaceState']) {
+        const orig = history[m].bind(history);
+        history[m] = (...a) => { const r = orig(...a); evict(); return r; };
+      }
+    }
+
+    console.log('[RoofrNewTab] middle-click / Ctrl+Cmd-click handler registered (proposals, PDF signer, invoices, work orders)');
+  })();
+}
+// ==================================================
+// END: Roofr middle-click proposal cards
 // ==================================================

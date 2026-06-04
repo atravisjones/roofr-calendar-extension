@@ -192,7 +192,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const sections = {
         "sec-scanner": document.getElementById("sec-scanner"),
         "sec-calls": document.getElementById("sec-calls"),
-        "sec-sorting": document.getElementById("sec-sorting"),
         "sec-reports": document.getElementById("sec-reports"),
         "sec-people": document.getElementById("sec-people"),
         "sec-clipboard": document.getElementById("sec-clipboard"),
@@ -203,6 +202,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const scannerToolbar = document.getElementById("scanner-toolbar");
     const recoOptions = document.getElementById("reco-options"); // Adjacent cities buttons
     const verifiedAddressesList = document.getElementById("verified-addresses-container"); // Autofill container (custom div)
+    // When a search fires (Go/Enter), suppress the suggestion dropdown so an
+    // in-flight (debounced) fetch from typing can't flash it back open. Cleared
+    // the moment the user types again.
+    let _suppressAddressSuggestions = false;
 
     // Global Find Bar
     const findInput = document.getElementById("global-find-q");
@@ -224,6 +227,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const repsList = document.getElementById("repsList");
     const csrsList = document.getElementById("csrsList");
     const mgmtList = document.getElementById("mgmtList");
+    const productionList = document.getElementById("productionList");
+    const insuranceList = document.getElementById("insuranceList");
+    const d2dList = document.getElementById("d2dList");
 
     // Read B6 Button
     const readB6Btn = document.getElementById("readB6Btn");
@@ -234,18 +240,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const addClipboardBtn = document.getElementById('add-clipboard-btn');
     const uploadClipboardBtn = document.getElementById('upload-clipboard-btn');
     const clipboardFileInput = document.getElementById('clipboard-file-input');
-
-    // Job Sorting
-    const jobListContainer = document.getElementById('job-list-container');
-    const jobSortFilters = {
-        tags: document.getElementById('sort-filter-tags'),
-        roofType: document.getElementById('sort-filter-roofType'),
-        jobType: document.getElementById('sort-filter-jobType'),
-        city: document.getElementById('sort-filter-city'),
-        stories: document.getElementById('sort-filter-stories'),
-        day: document.getElementById('sort-filter-day'),
-        time: document.getElementById('sort-filter-time'),
-    };
 
     // Open Active Calls Button (phone icon)
     const openActiveCallsBtn = document.getElementById('openActiveCallsBtn');
@@ -267,7 +261,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const settingShowUncat = document.getElementById("setting-show-uncat");
     const settingIdlePopup = document.getElementById("setting-idle-popup");
     const settingDefaultRegion = document.getElementById("setting-default-region");
-    const settingShowJobSorting = document.getElementById("setting-show-job-sorting");
+    const settingShowDialer = document.getElementById("setting-show-dialer");
+    const scanProfileSelect = document.getElementById("scan-profile-select");
+    const scanViewSelect = document.getElementById("scan-view-select");
+    const settingScanProfile = document.getElementById("setting-scan-profile");
+    const settingScanView = document.getElementById("setting-scan-view");
     const settingShowPeople = document.getElementById("setting-show-people");
     const settingShowClipboard = document.getElementById("setting-show-clipboard");
     const settingShowReports = document.getElementById("setting-show-reports");
@@ -286,6 +284,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     const idlePriorityBtns = document.querySelectorAll(".idle-priority-btn");
     const settingIdleTimeout = document.getElementById("setting-idle-timeout");
     const idleTimeoutRow = document.getElementById("idle-timeout-row");
+
+    // Idle-popup timer. The legacy idle-recommendation modal was retired in an earlier
+    // refactor, but call sites (settings handlers + init) still invoke resetIdleTimer().
+    // It was never re-defined, so every load threw "ReferenceError: resetIdleTimer is not
+    // defined" and aborted the tail end of init(). Define a safe version: clear any pending
+    // timer. The idle popup is currently disabled, so we don't arm a new one.
+    let _idleTimer = null;
+    function resetIdleTimer() {
+        if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
+    }
 
     // Address Input Recommendation Modal
     const addressRecoModal = document.getElementById("address-reco-modal");
@@ -423,7 +431,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             try {
                 const resp = await fetch('https://roofr-search.vercel.app/api/data', {
                     cache: 'no-store',
-                    headers: { 'X-Internal-Key': '8ro2zxtukE2ESsn4Cbogc_jq-FSt76EgY1CD68vcK6o' }
+                    headers: { 'X-Internal-Key': 'WSDnmjsudtcCEWvb_TKQKcyWS3TXtcjWqfuLMsnmT96XfqZF' }
                 });
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const json = await resp.json();
@@ -704,10 +712,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         idlePopup: true, // Default enabled
         idleTimeout: 60000, // Default 1 minute
         defaultRegion: 'PHX',
-        showJobSortingTab: false,
+        scanProfile: 'retail', // retail | d2d | production | insurance — which event types the scan reads
+        scanView: 'agenda',    // agenda | weekly | daily — calendar view used when scanning
+        showDialerTab: true,
         showPeopleTab: true,
         showClipboardTab: true,
-        showReportsTab: true,
+        showReportsTab: false, // Hidden by default
         showQuickNotes: true,
         showFindBar: true,
         // Footer tools
@@ -1317,8 +1327,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
-        // Show/hide container
-        if (hasResults) {
+        // Show/hide container. If a search just fired, stay hidden no matter what
+        // this (possibly stale, in-flight) fetch found — prevents the dropdown
+        // flashing open right after Go/Enter.
+        if (hasResults && !_suppressAddressSuggestions) {
             verifiedAddressesList.classList.remove('hidden');
         } else {
             verifiedAddressesList.classList.add('hidden');
@@ -1390,7 +1402,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Appearance
                 'theme', 'compact_mode', 'show_color_indicators', 'show_icons', 'animate_transitions',
                 // Interface - Tab visibility
-                'show_job_sorting', 'show_people', 'show_clipboard', 'show_reports',
+                'show_dialer', 'show_people', 'show_clipboard', 'show_reports',
+                // Scan
+                'scan_profile', 'scan_view',
                 // Interface - Navigation & Controls
                 'show_week_navigation', 'show_date_picker', 'show_team_selector',
                 'show_refresh_button', 'show_tab_badges', 'show_dock_note',
@@ -1413,10 +1427,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // CTM
                 'ctm_enabled', 'ctm_auto_search', 'ctm_show_notifications',
                 'ctm_show_active_calls', 'ctm_auto_open_calls_page', 'ctm_group_tabs',
-                // Job Sorting
-                'job_sorting_auto_load', 'job_sorting_remember_filters', 'job_sorting_multi_select',
-                'job_sorting_show_residential', 'job_sorting_show_commercial', 'job_sorting_show_insurance',
-                'job_sorting_show_unknown_roof', 'job_sorting_show_unknown_stories',
                 // Reports
                 'reports_enabled', 'reports_calendar_enabled', 'reports_job_card_enabled',
                 'reports_batch_enabled', 'reports_auto_export',
@@ -2786,228 +2796,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateToggleAllLabel();
     }
 
-    const tagColorCache = new Map();
-    const totalTagColors = 8; // Must match the number of .tag-color-* classes in CSS
-    function getTagColorClass(tag) {
-        if (tagColorCache.has(tag)) {
-            return tagColorCache.get(tag);
-        }
-        // Simple hash function to get a consistent color index
-        let hash = 0;
-        for (let i = 0; i < tag.length; i++) {
-            const char = tag.charCodeAt(i);
-            hash = ((hash << 5) - hash) + char;
-            hash = hash & hash; // Convert to 32bit integer
-        }
-        const colorIndex = (Math.abs(hash) % totalTagColors) + 1;
-        const className = `tag-color-${colorIndex}`;
-        tagColorCache.set(tag, className);
-        return className;
-    }
-
-
-    /* ========= Job Sorting Tab ========= */
-    function initJobSortingTab() {
-        // This function now only sets up listeners and does an initial render.
-        // The population logic is moved to applyJobFiltersAndRender.
-        Object.values(jobSortFilters).forEach(el => {
-            if (el) {
-                // Add listener for any change
-                el.addEventListener('change', applyJobFiltersAndRender);
-            }
-        });
-
-        // Initial population and render
-        applyJobFiltersAndRender();
-    }
-
-    function applyJobFiltersAndRender() {
-        if (!jobListContainer) return;
-        if (!state.parsedJobs || state.parsedJobs.length === 0) {
-            jobListContainer.innerHTML = '<div style="padding: 24px; text-align: center; color: var(--text-muted);">Scan the calendar to see sortable jobs.</div>';
-            // Hide all filter options initially
-            Object.values(jobSortFilters).forEach(selectEl => {
-                if (!selectEl) return;
-                const defaultOption = selectEl.querySelector('option[value=""]');
-                selectEl.innerHTML = '';
-                if (defaultOption) selectEl.appendChild(defaultOption);
-            });
-            return;
-        }
-
-        // 1. Get current selections from the DOM
-        const currentSelections = {
-            tags: parseInt(jobSortFilters.tags?.value || "0"),
-            roofType: jobSortFilters.roofType?.value || "",
-            jobType: jobSortFilters.jobType?.value || "",
-            city: jobSortFilters.city?.value || "",
-            stories: jobSortFilters.stories?.value || "",
-            day: jobSortFilters.day?.value || "",
-            time: jobSortFilters.time?.value || "",
-        };
-
-        // 2. Helper to filter jobs based on a dynamic set of selections
-        const getFilteredJobs = (jobs, selectionsToApply) => {
-            return jobs.filter(job => {
-                if (selectionsToApply.tags && job.hashTags < selectionsToApply.tags) return false;
-                if (selectionsToApply.roofType && job.roofType !== selectionsToApply.roofType) return false;
-                if (selectionsToApply.city && job.city !== selectionsToApply.city) return false;
-                if (selectionsToApply.stories && job.stories !== selectionsToApply.stories) return false;
-                if (selectionsToApply.day && job.day !== selectionsToApply.day) return false;
-                if (selectionsToApply.time && job.time !== selectionsToApply.time) return false;
-
-                // Job Type filtering
-                if (selectionsToApply.jobType) {
-                    if (selectionsToApply.jobType === 'Residential') {
-                        if (job.jobType !== 'Residential') return false;
-                    } else {
-                        if (!job.rawTags.includes(selectionsToApply.jobType)) return false;
-                    }
-                }
-                return true;
-            });
-        };
-
-        // 3. For each filter, calculate its available options based on OTHER filters
-        const filterKeys = ['roofType', 'jobType', 'city', 'stories', 'day', 'time', 'tags'];
-        const availableOptions = {};
-
-        filterKeys.forEach(key => {
-            const otherFilters = { ...currentSelections };
-            otherFilters[key] = ""; // Consider the current filter as "All" to find its possibilities
-
-            const possibleJobs = getFilteredJobs(state.parsedJobs, otherFilters);
-            const options = new Set();
-            possibleJobs.forEach(job => {
-                if (key === 'tags') {
-                    if (job.hashTags > 0) options.add(job.hashTags);
-                } else if (key === 'jobType') {
-                    if (job.rawTags.length > 0) {
-                        job.rawTags.forEach(tag => options.add(tag));
-                    } else {
-                        options.add('Residential');
-                    }
-                } else if (job[key] && job[key] !== 'Unknown') {
-                    options.add(job[key]);
-                }
-            });
-            availableOptions[key] = options;
-        });
-
-        // 4. Helper to repopulate a select element, preserving its value
-        const updateSelectOptions = (selectEl, optionsSet, sortFn) => {
-            if (!selectEl) return;
-
-            const currentValue = selectEl.value;
-            const defaultOptionText = selectEl.id === 'sort-filter-tags' ? 'Any' : 'All';
-            selectEl.innerHTML = `<option value="">${defaultOptionText}</option>`;
-
-            let sortedOptions = [...optionsSet];
-            if (sortFn) sortedOptions.sort(sortFn);
-            else sortedOptions.sort((a, b) => a.localeCompare(b));
-
-            sortedOptions.forEach(val => {
-                const opt = document.createElement('option');
-                opt.value = val;
-                opt.textContent = val;
-                selectEl.appendChild(opt);
-            });
-
-            // Restore the previous value if it's still a valid option
-            selectEl.value = optionsSet.has(currentValue) ? currentValue : "";
-        };
-
-        // 5. Update the DOM for each select element
-        updateSelectOptions(jobSortFilters.roofType, availableOptions.roofType);
-        updateSelectOptions(jobSortFilters.jobType, availableOptions.jobType);
-
-        const citySortFn = (a, b) => {
-            const indexA = CONFIG.CITY_SORT_ORDER.indexOf(a);
-            const indexB = CONFIG.CITY_SORT_ORDER.indexOf(b);
-            if (indexA === -1 && indexB === -1) return a.localeCompare(b);
-            if (indexA === -1) return 1;
-            if (indexB === -1) return -1;
-            return indexA - indexB;
-        };
-        updateSelectOptions(jobSortFilters.city, availableOptions.city, citySortFn);
-
-        updateSelectOptions(jobSortFilters.stories, availableOptions.stories, (a, b) => a.localeCompare(b, undefined, { numeric: true }));
-
-        const dayOrder = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-        updateSelectOptions(jobSortFilters.day, availableOptions.day, (a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
-
-        const timeBlocks = CONFIG.blockWindowForDate(new Date());
-        const timeOrder = timeBlocks.map(b => b.label);
-        updateSelectOptions(jobSortFilters.time, availableOptions.time, (a, b) => timeOrder.indexOf(a) - timeOrder.indexOf(b));
-
-        // Special handling for tags dropdown
-        if (jobSortFilters.tags) {
-            const currentTagVal = jobSortFilters.tags.value;
-            const availableTagCounts = availableOptions.tags;
-
-            const tagOptions = [
-                { value: '1', text: '#+', enabled: availableTagCounts.has(1) || availableTagCounts.has(2) || availableTagCounts.has(3) },
-                { value: '2', text: '##+', enabled: availableTagCounts.has(2) || availableTagCounts.has(3) },
-                { value: '3', text: '###+', enabled: availableTagCounts.has(3) }
-            ];
-
-            jobSortFilters.tags.innerHTML = '<option value="">Any</option>';
-            tagOptions.forEach(opt => {
-                if (opt.enabled) {
-                    jobSortFilters.tags.innerHTML += `<option value="${opt.value}">${opt.text}</option>`;
-                }
-            });
-
-            jobSortFilters.tags.value = currentTagVal;
-        }
-
-        // 6. Render the final list of jobs using the `currentSelections`
-        const finalFilteredJobs = getFilteredJobs(state.parsedJobs, currentSelections);
-
-        jobListContainer.innerHTML = '';
-        if (finalFilteredJobs.length === 0) {
-            jobListContainer.innerHTML = '<div style="padding: 24px; text-align: center; color: var(--text-muted);">No jobs match filters.</div>';
-        } else {
-            finalFilteredJobs.forEach(job => {
-                const item = document.createElement('div');
-                item.className = 'job-item-v2';
-
-                const hashtagsHTML = `<span class="job-v2-hashtags count-${job.hashTags}">${'#'.repeat(job.hashTags)}</span>`;
-
-                let rawTagsHTML = '';
-                if (job.rawTags && job.rawTags.length > 0) {
-                    const tagPills = job.rawTags.map(tag =>
-                        `<span class="job-v2-tag-pill ${getTagColorClass(tag)}">${tag}</span>`
-                    ).join('');
-                    rawTagsHTML = `<div class="job-v2-raw-tags">${tagPills}</div>`;
-                }
-
-                item.innerHTML = `
-                <div class="job-v2-main">
-                    <div class="job-v2-address">${job.address}</div>
-                    <div class="job-v2-city">${job.city}</div>
-                    <div class="job-v2-details-compact">
-                        ${job.hashTags > 0 ? hashtagsHTML : ''}
-                        <span title="Roof Type"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M2 15.5s2-1.5 4-1.5 4 1.5 4 1.5 2-1.5 4-1.5 4 1.5 4 1.5v4s-2-1.5-4-1.5-4 1.5-4-1.5-2-1.5-4-1.5-4 1.5-4 1.5zM2 8.5s2-1.5 4-1.5 4 1.5 4 1.5 2-1.5 4-1.5 4 1.5 4 1.5v4s-2-1.5-4-1.5-4 1.5-4-1.5-2-1.5-4-1.5-4 1.5-4 1.5z"/></svg> ${job.roofType}</span>
-                        <span title="Roof Age"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> ${job.roofAge !== 'Unknown' ? job.roofAge + ' yrs' : 'N/A'}</span>
-                        <span title="Stories"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> ${job.stories !== 'Unknown' ? job.stories + 'S' : 'N/A'}</span>
-                    </div>
-                    ${rawTagsHTML}
-                </div>
-                <div class="job-v2-time">
-                    <div class="job-v2-day">${job.day}</div>
-                    <div class="job-v2-timeslot">${job.time}</div>
-                </div>
-            `;
-                item.addEventListener('click', () => {
-                    sendFindCommand({ type: 'HIGHLIGHT_EVENT', title: job.event.title, start: job.event.start });
-                });
-                jobListContainer.appendChild(item);
-            });
-        }
-    }
-
-
     /* ========= Event Listeners Setup ========= */
     if (toggleAllBtn) toggleAllBtn.addEventListener("click", () => { setAllCardsCollapsed(!areAllCardsCollapsed()); updateToggleAllLabel(); });
 
@@ -3841,6 +3629,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
+        // Hide the Notes/Find bottom dock on the Dialer tab — the dialer has its
+        // own sticky footer there, and Notes/Find aren't useful while dialing.
+        const bottomDock = document.getElementById('bottom-dock');
+        if (bottomDock) bottomDock.style.display = (targetId === 'sec-dialer') ? 'none' : '';
+
+        // On the Dialer tab, the iframe-hosted dialer manages its own sticky
+        // header + footer, so the POPUP must not scroll (otherwise it drags the
+        // whole iframe — and its pinned elements — around). Lock popup scroll and
+        // size the iframe to fill exactly the space under the sticky header.
+        const onDialer = (targetId === 'sec-dialer');
+        document.body.classList.toggle('dialer-active', onDialer);
+        if (onDialer) {
+            const sh = document.getElementById('sticky-header');
+            const h = sh ? Math.round(sh.getBoundingClientRect().height) : 90;
+            const frame = document.getElementById('dialer-iframe');
+            if (frame) frame.style.height = `calc(100vh - ${h}px)`;
+        }
+
         // Notify the dialer iframe whether it's the active tab. If the rep
         // switches away from the Dialer tab while a session is running, the
         // dialer pauses itself so we don't keep dialing in the background.
@@ -3858,6 +3664,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Check prefs to see if we should hide this tab
         if (targetId === 'sec-people' && !userPrefs.showPeopleTab) activateMainTab('sec-scanner');
         if (targetId === 'sec-clipboard' && !userPrefs.showClipboardTab) activateMainTab('sec-scanner');
+        if (targetId === 'sec-dialer' && !userPrefs.showDialerTab) activateMainTab('sec-scanner');
     }
     mainTabs.forEach(btn => btn.addEventListener("click", () => activateMainTab(btn.getAttribute("data-target"))));
 
@@ -3912,34 +3719,38 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        // Polling logic to wait for content
+        // ── One-time setup — runs ONCE, before the date-polling retries below, so the
+        // profile / view / team selection are NOT re-applied on every retry (that was
+        // firing the event types and "Select all" several times). ──
+        const profile = userPrefs.scanProfile || 'retail';
+        addLog(`Applying scan profile: ${profile}`);
+        await sendFindCommand({ type: "APPLY_SCAN_PROFILE", profile });
+        await new Promise(r => setTimeout(r, 600));
+
+        // Ensure the calendar is in the chosen scan view (agenda/weekly/daily). Switch only if needed.
+        const desiredView = userPrefs.scanView || 'agenda';
+        const setupViewResult = await sendFindCommand({ type: "GET_CALENDAR_VIEW" });
+        if (setupViewResult && setupViewResult.ok && setupViewResult.view !== desiredView) {
+            addLog(`Switching from ${setupViewResult.view} to ${desiredView} view...`);
+            await sendFindCommand({ type: 'SWITCH_CALENDAR_VIEW', view: desiredView });
+            await new Promise(r => setTimeout(r, 1500));
+        }
+
+        // For Production/D2D, narrow the team filter to just that department (once).
+        if (profile === 'production' || profile === 'd2d') {
+            const deptNames = profile === 'production' ? (PEOPLE_DATA.PRODUCTION || []) : (PEOPLE_DATA.D2D || []);
+            if (deptNames.length) {
+                addLog(`Narrowing team to ${profile} (${deptNames.length})...`);
+                await sendFindCommand({ type: "SELECT_ONLY_TEAM_MEMBERS", names: deptNames });
+                await new Promise(r => setTimeout(r, 800));
+            }
+        }
+
+        // Polling logic to wait for content (retries ONLY the date/event detection).
         const maxRetries = 10;
         let attempts = 0;
 
         const attemptScan = async () => {
-            // 0. Ensure Sales event type is selected
-            await sendFindCommand({ type: "SELECT_SALES_EVENT_TYPE" });
-            await new Promise(r => setTimeout(r, 500));
-            // 0a. Uncheck D2D Sales appointment so D2D bookings aren't scanned.
-            await sendFindCommand({ type: "UNCHECK_D2D_SALES" });
-            await new Promise(r => setTimeout(r, 300));
-
-            // 0.5 Check view. Accept agenda/weekly/daily as-is — all three are
-            // scrapable. Only force-switch from monthly (which renders summary
-            // pills, not full event details) to agenda.
-            const viewResult = await sendFindCommand({ type: "GET_CALENDAR_VIEW" });
-            if (viewResult && viewResult.ok) {
-                const v = viewResult.view;
-                if (v === 'agenda' || v === 'weekly' || v === 'daily') {
-                    addLog(`${v} view active, scanning...`);
-                } else {
-                    addLog(`${v} view detected, switching to Agenda...`);
-                    await sendFindCommand({ type: "SWITCH_TO_AGENDA_VIEW" });
-                    // Wait for view transition + agenda render
-                    await new Promise(r => setTimeout(r, 1500));
-                }
-            }
-
             // 1. Check for Dates
             const visibleDates = await sendFindCommand({ type: "GET_VISIBLE_DATES" });
 
@@ -3977,7 +3788,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 state.allEvents = eventData?.events || [];
                 state.parsedJobs = state.allEvents.map(ev => CONFIG.parseJobDetails(ev));
-                initJobSortingTab();
 
                 // Cache this week's data for quick access later
                 const weekKey = state.weekDays[0]; // Use first day as key
@@ -4097,76 +3907,68 @@ document.addEventListener('DOMContentLoaded', async () => {
         // - If already on calendar: accept agenda/weekly/daily and scrape in place.
         //   Only force a switch when the user is on monthly (which doesn't have
         //   per-event details).
+        const desiredView = userPrefs.scanView || 'agenda';
         const viewResult = await sendCommandToTab(tabId, { type: "GET_CALENDAR_VIEW" });
         if (viewResult?.ok) {
             addLog(`Current view: ${viewResult.view}`);
             const v = viewResult.view;
             const scrapeableNow = (v === 'agenda' || v === 'weekly' || v === 'daily');
-            const shouldSwitch = forceWeekly ? (v !== 'agenda') : !scrapeableNow;
+            // Switch to the user's chosen scan view when navigating in, or whenever
+            // the current view isn't scrapable (e.g. monthly).
+            const shouldSwitch = forceWeekly ? (v !== desiredView) : !scrapeableNow;
 
             if (shouldSwitch) {
-                addLog(`Switching to Agenda view...`);
-                const switchResult = await sendCommandToTab(tabId, { type: "SWITCH_TO_AGENDA_VIEW" });
+                addLog(`Switching to ${desiredView} view...`);
+                const switchResult = await sendCommandToTab(tabId, { type: 'SWITCH_CALENDAR_VIEW', view: desiredView });
                 if (switchResult?.ok) {
-                    addLog(switchResult.alreadyAgenda ? "Already in Agenda view" : "Switched to Agenda view");
+                    addLog(`Switched to ${desiredView} view`);
                 } else {
-                    addLog(`Warning: agenda switch returned: ${switchResult?.error || 'unknown'}`, "WARN");
+                    addLog(`Warning: ${desiredView} switch returned: ${switchResult?.error || 'unknown'}`, "WARN");
                 }
                 await new Promise(r => setTimeout(r, 2000)); // Wait for view to render
             }
         }
 
-        // Step 2: Select Sales event type (with retries)
-        addLog("Selecting Sales event type...");
-        let salesResult = await sendCommandToTab(tabId, { type: "SELECT_SALES_EVENT_TYPE" });
-
-        // Retry if Sales wasn't found (page might still be loading)
-        if (!salesResult?.ok) {
-            addLog("Sales not found, retrying...");
+        // Step 2: Apply the active scan profile (which event types to read), with retries.
+        const profile = userPrefs.scanProfile || 'retail';
+        addLog(`Applying scan profile: ${profile}...`);
+        let profileResult = await sendCommandToTab(tabId, { type: "APPLY_SCAN_PROFILE", profile });
+        if (!profileResult?.ok) {
+            addLog("Profile apply failed, retrying...");
             await new Promise(r => setTimeout(r, 1000));
-            salesResult = await sendCommandToTab(tabId, { type: "SELECT_SALES_EVENT_TYPE" });
+            profileResult = await sendCommandToTab(tabId, { type: "APPLY_SCAN_PROFILE", profile });
         }
-        if (!salesResult?.ok) {
-            addLog("Sales not found, retrying again...");
-            await new Promise(r => setTimeout(r, 1000));
-            salesResult = await sendCommandToTab(tabId, { type: "SELECT_SALES_EVENT_TYPE" });
-        }
-
-        if (salesResult?.ok) {
-            addLog(salesResult.wasAlreadyChecked ? "Sales already selected" : "Sales selected");
+        if (profileResult?.ok) {
+            addLog(`Scan profile '${profile}' applied`);
         } else {
-            addLog("Warning: Could not select Sales event type", "WARN");
+            addLog(`Warning: could not apply scan profile (${profileResult?.reason || profileResult?.error || 'unknown'})`, "WARN");
         }
         await new Promise(r => setTimeout(r, 500));
 
-        // Step 2b: Uncheck D2D Sales appointment so D2D bookings don't get
-        // pulled in alongside the regular Sales pipeline.
-        const d2dResult = await sendCommandToTab(tabId, { type: "UNCHECK_D2D_SALES" });
-        if (d2dResult?.ok) {
-            if (d2dResult.unchecked) addLog("D2D Sales appointment unchecked");
-            else if (d2dResult.wasAlreadyUnchecked) addLog("D2D Sales appointment already unchecked");
+        // Step 3: Select team members. For Production/D2D, select ONLY that department's
+        // people (from the roster-synced PEOPLE_DATA); for Retail/Insurance, select everyone.
+        const teamProfile = profile;
+        let teamResult;
+        if (teamProfile === 'production' || teamProfile === 'd2d') {
+            const names = teamProfile === 'production' ? (PEOPLE_DATA.PRODUCTION || []) : (PEOPLE_DATA.D2D || []);
+            addLog(`Selecting ${teamProfile} team members only (${names.length})...`);
+            teamResult = await sendCommandToTab(tabId, { type: "SELECT_ONLY_TEAM_MEMBERS", names });
+            if (!teamResult?.ok) {
+                await new Promise(r => setTimeout(r, 1000));
+                teamResult = await sendCommandToTab(tabId, { type: "SELECT_ONLY_TEAM_MEMBERS", names });
+            }
+            addLog(teamResult?.ok ? `Selected ${teamResult.selectedCount} ${teamProfile} members` : `Warning: could not select ${teamProfile} members`, teamResult?.ok ? undefined : "WARN");
         } else {
-            addLog(`Warning: ${d2dResult?.reason || 'could not uncheck D2D Sales'}`, "WARN");
-        }
-        await new Promise(r => setTimeout(r, 300));
-
-        // Step 3: Select all team members (with retries)
-        addLog("Selecting all team members...");
-        let teamResult = await sendCommandToTab(tabId, { type: "SELECT_ALL_TEAM_MEMBERS" });
-
-        // Retry if Select All wasn't found
-        if (!teamResult?.ok) {
-            addLog("Select All not found, retrying...");
-            await new Promise(r => setTimeout(r, 1000));
+            addLog("Selecting all team members...");
             teamResult = await sendCommandToTab(tabId, { type: "SELECT_ALL_TEAM_MEMBERS" });
+            if (!teamResult?.ok) {
+                addLog("Select All not found, retrying...");
+                await new Promise(r => setTimeout(r, 1000));
+                teamResult = await sendCommandToTab(tabId, { type: "SELECT_ALL_TEAM_MEMBERS" });
+            }
+            addLog(teamResult?.ok ? "All team members selected" : "Warning: Could not select all team members", teamResult?.ok ? undefined : "WARN");
         }
-
-        if (teamResult?.ok) {
-            addLog("All team members selected");
-        } else {
-            addLog("Warning: Could not select all team members", "WARN");
-        }
-        await new Promise(r => setTimeout(r, 1500)); // Wait for calendar to update with all events
+        await new Promise(r => setTimeout(r, 1500)); // Wait for calendar to update with events
 
         return true;
     }
@@ -4328,11 +4130,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 await new Promise(r => setTimeout(r, 3000));
             }
 
-            // Now setup the calendar and scan
-            await setupCalendarForScan(targetTab.id);
-
-            // Run the scan on the target tab
-            // We need to update sendFindCommand to use the target tab
+            // Run the scan on the target tab. runScanFlow() (its attemptScan) now does the
+            // full setup itself — calendar view, scan profile (event types), and team-member
+            // selection — so we no longer call setupCalendarForScan() here. Calling both made
+            // the profile/view/team get applied TWICE (visible as deselect-all → pick dept →
+            // select-all → deselect-all → pick dept again).
             addLog("Running scan on Roofr calendar...");
 
             // Store the target tab ID for sendFindCommand to use
@@ -4348,6 +4150,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     if (scanBtn) scanBtn.addEventListener("click", handleScanClick);
+
+    // Right-click the Scan button to toggle the scan-options popover (profile + view).
+    if (scanBtn) {
+        const scanOptionsPopover = document.getElementById('scan-options-popover');
+        scanBtn.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            if (!scanOptionsPopover) return;
+            scanOptionsPopover.style.display = (scanOptionsPopover.style.display === 'none' || !scanOptionsPopover.style.display) ? 'flex' : 'none';
+        });
+        // Dismiss on outside click.
+        document.addEventListener('click', (e) => {
+            if (scanOptionsPopover && scanOptionsPopover.style.display === 'flex'
+                && !scanOptionsPopover.contains(e.target) && e.target !== scanBtn && !scanBtn.contains(e.target)) {
+                scanOptionsPopover.style.display = 'none';
+            }
+        });
+    }
 
     // Open daily calendar view for a specific date with appropriate people selected
     async function openDailyCalendarForDate(dateStr) {
@@ -5396,6 +5215,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         addrGoBtn.addEventListener("click", async () => {
             const inputValue = addrInput?.value?.trim();
             if (!inputValue) return;
+
+            // Suppress + collapse the suggestion dropdown for the whole search so a
+            // late, in-flight fetch from typing can't flash it open mid-run.
+            _suppressAddressSuggestions = true;
+            if (verifiedAddressesList) verifiedAddressesList.classList.add('hidden');
 
             // Show loading state on Go button
             const originalBtnContent = addrGoBtn.innerHTML;
@@ -6696,6 +6520,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Restore Go button state
                 addrGoBtn.innerHTML = originalBtnContent;
                 addrGoBtn.disabled = false;
+                // Collapse the autocomplete/verified-addresses dropdown. After Go
+                // runs there's nothing left to pick from it, so leaving it open
+                // just shows an empty white panel until the user clicks away.
+                if (verifiedAddressesList) verifiedAddressesList.classList.add('hidden');
             }
         });
     }
@@ -6718,6 +6546,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Update button state when input changes
         addrInput.addEventListener("input", (e) => {
             const value = e.target.value.trim();
+
+            // The user is typing again → re-enable the suggestion dropdown.
+            _suppressAddressSuggestions = false;
 
             // Clear Roofr job selection if user manually edits the input
             if (window.__selectedRoofrJobLink && value !== window.__selectedRoofrJobInputValue) {
@@ -6790,6 +6621,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (e.key === "Enter") {
                 const inputValue = addrInput?.value?.trim();
                 if (!inputValue) return;
+
+                // Collapse + suppress the autocomplete dropdown — Enter fires the
+                // search, so block any in-flight fetch from flashing it back open.
+                _suppressAddressSuggestions = true;
+                if (verifiedAddressesList) verifiedAddressesList.classList.add('hidden');
+                _activeSuggestionIndex = -1;
 
                 // Check if input is a phone number
                 const phoneDigits = detectPhoneNumber(inputValue);
@@ -6920,9 +6757,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 highlightBtn.title = "Click: highlight all | Right-click: toggle all checkboxes";
 
-                // Insert button before drag handle
-                const dragHandle = header.querySelector('.drag-handle');
-                if (dragHandle) header.insertBefore(highlightBtn, dragHandle);
+                // Insert the Highlight-All button just left of the up/down move controls
+                const moveControls = header.querySelector('.group-move-controls');
+                if (moveControls) header.insertBefore(highlightBtn, moveControls);
                 else header.appendChild(highlightBtn);
 
                 // Add date navigation row for Sales Reps only
@@ -7440,6 +7277,49 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    // Company Team Roster sheet — live source for the People tab's Production /
+    // Insurance / Door-to-Door groups. The "Team Roster" tab holds ONLY active staff
+    // (fired/archived people live on a separate "Archived Staff" tab), so a simple
+    // Department bucket is safe. Reps / CSRs / Management are NOT sourced here.
+    const ROSTER_SHEET_ID = "1XFJHD0IVZ8sJrQ7H2CrqU26a6n-FulPM8ABKc1hrh9o";
+    const ROSTER_DEPT_MAP = { "Production": "PRODUCTION", "Insurance": "INSURANCE", "D2D Sales": "D2D" };
+
+    // Pull Production / Insurance / D2D from the roster sheet (col B = Department, col C = Name).
+    // Mutates PEOPLE_DATA in place. On any failure the existing config fallbacks are kept.
+    // Note: names are intentionally NOT deduped across groups — someone can legitimately
+    // belong to two teams (e.g. Khamilah Valles is both Insurance and a CSR).
+    async function fetchRosterGroups() {
+        try {
+            const range = "'Team Roster'!A2:C200";
+            const url = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(ROSTER_SHEET_ID)}&range=${encodeURIComponent(range)}`;
+            const res = await fetch(url, { cache: "no-store" });
+            if (!res.ok) throw new Error(`roster sheet HTTP ${res.status}`);
+            const data = await res.json();
+            const rows = Array.isArray(data.values) ? data.values : [];
+
+            const buckets = { PRODUCTION: [], INSURANCE: [], D2D: [] };
+            for (const row of rows) {
+                const dept = (row[1] || "").trim();
+                const name = (row[2] || "").trim();
+                if (!name || !dept) continue;
+                const key = ROSTER_DEPT_MAP[dept];
+                if (key) buckets[key].push(name);
+            }
+
+            // Only overwrite a group if the sheet actually returned people for it,
+            // so a partial/empty read never blanks the tab.
+            for (const key of Object.keys(buckets)) {
+                if (buckets[key].length) {
+                    PEOPLE_DATA[key] = [...new Set(buckets[key])].sort();
+                }
+            }
+            addLog(`Roster sync: ${buckets.PRODUCTION.length} production, ${buckets.INSURANCE.length} insurance, ${buckets.D2D.length} D2D`);
+        } catch (e) {
+            console.warn('[People] Roster sheet sync failed, using config fallback:', e);
+            addLog(`Roster sync failed (${e.message}) — using built-in lists`);
+        }
+    }
+
     async function loadPeopleLists() {
         if (chrome.storage && chrome.storage.sync) {
             const keys = ["PEOPLE_REPS", "PEOPLE_MGMT", "PEOPLE_CSRS"];
@@ -7447,9 +7327,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // Check if stored data contains old removed reps or is missing new people and clear if so
             const removedReps = ["Ashkan Etemadi", "Brandon Cook", "Brian Griggs", "Oliver Johnson", "Phil Merrell", "Ted Pear", "Kyle Ludewig", "William Ludewig", "William Yost"];
-            const newReps = ["Josh Jewett", "Stephen Chaidez"];
-            const removedCSRs = ["Layla Fairfield"];
-            const newMgmt = ["Andrew Clark"]; // New management members to check for
+            const newReps = ["Josh Jewett", "Stephen Chaidez", "Alex Tillotson"];
+            const removedCSRs = ["Layla Fairfield", "Alex Tillotson"]; // Alex moved to Sales Reps
+            const newMgmt = ["Andrew Clark", "Conor Smith", "Jayda Fairfield", "Raven Pelfrey", "Travis Jones"]; // New management members to check for
             let needsClear = false;
 
             if (settings.PEOPLE_REPS) {
@@ -7494,9 +7374,83 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Fetch tomorrow's availability
         repAvailabilityStatus = await fetchTomorrowRepAvailability();
 
+        // Live-sync Production / Insurance / D2D from the Company Team Roster sheet.
+        await fetchRosterGroups();
+
         renderPeopleList(repsList, PEOPLE_DATA.REPS);
         renderPeopleList(mgmtList, PEOPLE_DATA.MGMT);
         renderPeopleList(csrsList, PEOPLE_DATA.CSRS);
+        renderPeopleList(productionList, PEOPLE_DATA.PRODUCTION);
+        renderPeopleList(insuranceList, PEOPLE_DATA.INSURANCE);
+        renderPeopleList(d2dList, PEOPLE_DATA.D2D);
+    }
+
+    /* ===== People-tab group reordering — up/down arrows, persisted to sync ===== */
+    const PEOPLE_GROUP_ORDER_KEY = 'PEOPLE_GROUP_ORDER';
+    const peopleContainerEl = () => document.querySelector('#sec-people .people-container');
+
+    // Grey out ▲ on the first panel and ▼ on the last.
+    function updateGroupMoveButtons() {
+        const container = peopleContainerEl();
+        if (!container) return;
+        const panels = [...container.querySelectorAll('.people-group')];
+        panels.forEach((p, i) => {
+            const up = p.querySelector('.group-move-btn[data-move="up"]');
+            const down = p.querySelector('.group-move-btn[data-move="down"]');
+            if (up) up.disabled = (i === 0);
+            if (down) down.disabled = (i === panels.length - 1);
+        });
+    }
+
+    // Persist the current DOM order of the group panels (array of data-group keys).
+    async function savePeopleGroupOrder() {
+        const container = peopleContainerEl();
+        if (!container) return;
+        const order = [...container.querySelectorAll('.people-group')].map(p => p.dataset.group).filter(Boolean);
+        try {
+            if (chrome.storage && chrome.storage.sync) await chrome.storage.sync.set({ [PEOPLE_GROUP_ORDER_KEY]: order });
+        } catch (e) { console.warn('[People] save group order failed', e); }
+    }
+
+    // Apply a saved order to the DOM. Unknown/new groups (added in a later version)
+    // simply stay where they are, after the saved ones.
+    async function applyPeopleGroupOrder() {
+        const container = peopleContainerEl();
+        if (!container) return;
+        let order = [];
+        try {
+            if (chrome.storage && chrome.storage.sync) {
+                const r = await chrome.storage.sync.get(PEOPLE_GROUP_ORDER_KEY);
+                if (Array.isArray(r[PEOPLE_GROUP_ORDER_KEY])) order = r[PEOPLE_GROUP_ORDER_KEY];
+            }
+        } catch (_) {}
+        for (const key of order) {
+            const panel = container.querySelector(`.people-group[data-group="${key}"]`);
+            if (panel) container.appendChild(panel); // re-append in saved sequence
+        }
+        updateGroupMoveButtons();
+    }
+
+    // Wire the arrow buttons once (event delegation on the container).
+    function setupPeopleGroupReorder() {
+        const container = peopleContainerEl();
+        if (!container || container.dataset.reorderWired) return;
+        container.dataset.reorderWired = '1';
+        container.addEventListener('click', (e) => {
+            const btn = e.target.closest('.group-move-btn');
+            if (!btn) return;
+            const panel = btn.closest('.people-group');
+            if (!panel) return;
+            if (btn.dataset.move === 'up') {
+                const prev = panel.previousElementSibling;
+                if (prev) container.insertBefore(panel, prev);
+            } else {
+                const next = panel.nextElementSibling;
+                if (next) container.insertBefore(next, panel);
+            }
+            updateGroupMoveButtons();
+            savePeopleGroupOrder();
+        });
     }
 
     // Update the assigned rep display next to the toggle
@@ -7922,17 +7876,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function applyUserPrefs() {
-        // One-time migration: reset tab visibility to correct defaults (Scanner + People + Clipboard on, others off)
-        chrome.storage.local.get('tabs_visibility_migrated_v4', (result) => {
-            if (!result.tabs_visibility_migrated_v4) {
-                chrome.storage.sync.set({
-                    show_job_sorting: false,
-                    show_people: true,
-                    show_clipboard: true,
-                    show_reports: true
-                }, () => {
-                    chrome.storage.local.set({ tabs_visibility_migrated_v4: true });
-                    console.log('[Popup] Migrated tab visibility: Scanner + People + Clipboard on, others off');
+        // One-time migration: hide the Reports tab by default (team rollout 2026-06-03).
+        // Bumped from v4 (which seeded Reports ON) so it re-runs once for everyone and
+        // flips Reports OFF. Only touches show_reports — other tabs keep the user's choice.
+        // v6: re-run once more — the service worker's onInstalled was re-seeding
+        // show_reports:true on every reload (`if (!current[key])` treats false as missing),
+        // so v5 alone wasn't enough for users who'd been re-enabled. SW seed is now false too.
+        chrome.storage.local.get('tabs_visibility_migrated_v6', (result) => {
+            if (!result.tabs_visibility_migrated_v6) {
+                chrome.storage.sync.set({ show_reports: false }, () => {
+                    chrome.storage.local.set({ tabs_visibility_migrated_v6: true });
+                    userPrefs.showReportsTab = false;
+                    const reportsTabBtn = document.querySelector('.nav-tab[data-target="sec-reports"]');
+                    if (reportsTabBtn) reportsTabBtn.style.display = 'none';
+                    console.log('[Popup] Migrated tab visibility v6: Reports tab hidden by default');
                 });
             }
         });
@@ -7994,7 +7951,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // Interface Toggles
-        if (settingShowJobSorting) settingShowJobSorting.checked = userPrefs.showJobSortingTab;
+        if (scanProfileSelect) scanProfileSelect.value = userPrefs.scanProfile || 'retail';
+        if (scanViewSelect) scanViewSelect.value = userPrefs.scanView || 'agenda';
+        if (settingScanProfile) settingScanProfile.value = userPrefs.scanProfile || 'retail';
+        if (settingScanView) settingScanView.value = userPrefs.scanView || 'agenda';
+        if (settingShowDialer) settingShowDialer.checked = userPrefs.showDialerTab;
         if (settingShowPeople) settingShowPeople.checked = userPrefs.showPeopleTab;
         if (settingShowClipboard) settingShowClipboard.checked = userPrefs.showClipboardTab;
         if (settingShowReports) settingShowReports.checked = userPrefs.showReportsTab;
@@ -8002,7 +7963,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Sync with options page settings if available
         chrome.storage.sync.get([
             // Tab visibility
-            'show_job_sorting', 'show_people', 'show_clipboard', 'show_reports',
+            'show_dialer', 'show_people', 'show_clipboard', 'show_reports',
+            // Scan
+            'scan_profile', 'scan_view',
             // Appearance
             'theme', 'compact_mode', 'show_color_indicators', 'show_icons', 'animate_transitions',
             // Interface
@@ -8065,7 +8028,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // Tab visibility - only update if value exists in storage
             // Default is to show all tabs (true), only hide if explicitly set to false
-            if (result.show_job_sorting !== undefined) userPrefs.showJobSortingTab = result.show_job_sorting;
+            if (result.show_dialer !== undefined) userPrefs.showDialerTab = result.show_dialer;
+            if (result.scan_profile) { userPrefs.scanProfile = result.scan_profile; if (scanProfileSelect) scanProfileSelect.value = result.scan_profile; if (settingScanProfile) settingScanProfile.value = result.scan_profile; }
+            if (result.scan_view) { userPrefs.scanView = result.scan_view; if (scanViewSelect) scanViewSelect.value = result.scan_view; if (settingScanView) settingScanView.value = result.scan_view; }
             if (result.show_people !== undefined) userPrefs.showPeopleTab = result.show_people;
             if (result.show_clipboard !== undefined) userPrefs.showClipboardTab = result.show_clipboard;
             if (result.show_reports !== undefined) userPrefs.showReportsTab = result.show_reports;
@@ -8078,14 +8043,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result.footer_show_links !== undefined) userPrefs.footerShowLinks = result.footer_show_links;
 
             // Update checkboxes
-            if (settingShowJobSorting) settingShowJobSorting.checked = userPrefs.showJobSortingTab;
+            if (settingShowDialer) settingShowDialer.checked = userPrefs.showDialerTab;
             if (settingShowPeople) settingShowPeople.checked = userPrefs.showPeopleTab;
             if (settingShowClipboard) settingShowClipboard.checked = userPrefs.showClipboardTab;
             if (settingShowReports) settingShowReports.checked = userPrefs.showReportsTab;
 
             // Update tab visibility - tabs are visible by default, only hide if explicitly false
-            const jobSortingTabBtn = document.querySelector('.nav-tab[data-target="sec-sorting"]');
-            if (jobSortingTabBtn) jobSortingTabBtn.style.display = userPrefs.showJobSortingTab === false ? 'none' : '';
+            const dialerTabBtn = document.querySelector('.nav-tab[data-target="sec-dialer"]');
+            if (dialerTabBtn) dialerTabBtn.style.display = userPrefs.showDialerTab === false ? 'none' : '';
 
             const peopleTabBtn = document.querySelector('.nav-tab[data-target="sec-people"]');
             if (peopleTabBtn) peopleTabBtn.style.display = userPrefs.showPeopleTab === false ? 'none' : '';
@@ -8198,12 +8163,36 @@ document.addEventListener('DOMContentLoaded', async () => {
         userPrefs.defaultRegion = e.target.value;
         saveUserPrefs();
     });
-    if (settingShowJobSorting) settingShowJobSorting.addEventListener('change', (e) => {
-        userPrefs.showJobSortingTab = e.target.checked;
+    // Shared setters keep BOTH the right-click popover selects and the Settings-panel
+    // selects in sync, and persist to storage.
+    function setScanProfile(val) {
+        userPrefs.scanProfile = val;
+        saveUserPrefs();
+        if (chrome.storage && chrome.storage.sync) chrome.storage.sync.set({ scan_profile: val });
+        if (scanProfileSelect) scanProfileSelect.value = val;
+        if (settingScanProfile) settingScanProfile.value = val;
+        addLog(`Scan profile set to: ${val}`);
+    }
+    function setScanView(val) {
+        userPrefs.scanView = val;
+        saveUserPrefs();
+        if (chrome.storage && chrome.storage.sync) chrome.storage.sync.set({ scan_view: val });
+        if (scanViewSelect) scanViewSelect.value = val;
+        if (settingScanView) settingScanView.value = val;
+        addLog(`Scan view set to: ${val}`);
+        // Switch the live Roofr calendar to this view immediately (not just on next scan).
+        sendFindCommand({ type: 'SWITCH_CALENDAR_VIEW', view: val });
+    }
+    if (scanProfileSelect) scanProfileSelect.addEventListener('change', (e) => setScanProfile(e.target.value));
+    if (scanViewSelect) scanViewSelect.addEventListener('change', (e) => setScanView(e.target.value));
+    if (settingScanProfile) settingScanProfile.addEventListener('change', (e) => setScanProfile(e.target.value));
+    if (settingScanView) settingScanView.addEventListener('change', (e) => setScanView(e.target.value));
+    if (settingShowDialer) settingShowDialer.addEventListener('change', (e) => {
+        userPrefs.showDialerTab = e.target.checked;
         saveUserPrefs(); applyUserPrefs();
-        if (chrome.storage && chrome.storage.sync) chrome.storage.sync.set({ show_job_sorting: e.target.checked });
+        if (chrome.storage && chrome.storage.sync) chrome.storage.sync.set({ show_dialer: e.target.checked });
         // If we just hid the active tab, switch to scanner
-        if (!e.target.checked && document.querySelector('.nav-tab[data-target="sec-sorting"].active')) {
+        if (!e.target.checked && document.querySelector('.nav-tab[data-target="sec-dialer"].active')) {
             document.querySelector('.nav-tab[data-target="sec-scanner"]').click();
         }
     });
@@ -8324,6 +8313,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         await loadDynamicCities();
         await loadState();
         await loadPeopleLists();
+        setupPeopleGroupReorder();
+        await applyPeopleGroupOrder();
         await loadClipboards();
 
         renderUIFromState();
@@ -9038,7 +9029,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 <input type="checkbox" ${checkedAttr} data-apt-idx="${i}" class="review-checkbox" style="margin-top: 2px; cursor: pointer; accent-color: var(--primary);">
                 <div style="font-size: 0.75rem; font-weight: 800; color: var(--text-main); line-height: 1.25;">${escapeHtml(apt.startTime)}<br><span style="color: var(--text-muted); font-weight: 700;">${escapeHtml(apt.endTime)}</span></div>
                 <div style="min-width: 0;">
-                    <div style="font-size: 0.82rem; font-weight: 650; color: var(--text-main); line-height: 1.25; overflow-wrap: anywhere;">${escapeHtml(apt.address)}</div>
+                    <div class="batch-open-job" data-apt-idx="${i}" title="Click to open this job card in a new tab" style="font-size: 0.82rem; font-weight: 650; color: var(--primary); cursor: pointer; line-height: 1.25; overflow-wrap: anywhere; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px;">${escapeHtml(apt.address)}</div>
                     <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px;">${chips.join('')}</div>
                 </div>
             </div>`;
@@ -9055,6 +9046,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 setBatchScheduleCollapsed(batchScheduleBody?.style.display === 'none');
                 // Re-render to update styling
                 renderParsedAppointments();
+            });
+        });
+
+        // One-click: open a row's job card in a new tab
+        batchJobsList.querySelectorAll('.batch-open-job').forEach(el => {
+            el.addEventListener('click', (e) => {
+                const idx = parseInt(e.currentTarget.dataset.aptIdx);
+                if (!isNaN(idx) && parsedAppointments[idx]) openAppointmentJobCard(parsedAppointments[idx]);
             });
         });
 
@@ -9096,6 +9095,37 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // --- Review Batch Functions ---
+
+    // One-click: open a Review Queue row's Roofr job card in a new tab.
+    // Reuses the extension's middle-click opener — the MAIN-world script reads the
+    // calendar event's job_id from React fiber and opens the job in a background
+    // tab. No event popup, no "Open job" hunt (which is what made it feel clunky).
+    async function openAppointmentJobCard(apt) {
+        if (!apt || !apt.address) return;
+        try {
+            const calQueryOpts = { url: "*://app.roofr.com/*/calendar*" };
+            if (window.__targetWindowId) calQueryOpts.windowId = window.__targetWindowId;
+            const calendarTabs = await chrome.tabs.query(calQueryOpts);
+            if (calendarTabs.length === 0) {
+                addBatchLog('ERROR: Open the Roofr calendar first', 'error');
+                return;
+            }
+            const calendarTab = calendarTabs[0];
+            addBatchLog(`Opening job card for ${apt.address}...`);
+
+            // Simulate a middle-click on the event; the fiber opener handles the rest.
+            const res = await sendMessageToTab(calendarTab.id, {
+                type: 'OPEN_JOB_VIA_EVENT_CLICK',
+                address: apt.address,
+                time: apt.startTime
+            });
+            if (!res || !res.ok) {
+                addBatchLog(`Could not open job card for ${apt.address}: ${res?.error || 'event not visible on calendar'}`, 'error');
+            }
+        } catch (e) {
+            addBatchLog(`Open job card failed: ${e.message}`, 'error');
+        }
+    }
 
     async function openReviewBatch() {
         const openBtn = document.getElementById('open-review-batch');
@@ -9607,7 +9637,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             // --- Address matching helpers ---
             const normalizeAddress = (addr) => {
                 if (!addr) return '';
-                return addr.toLowerCase().replace(/[,.\-#]/g, ' ').replace(/\s+/g, ' ').trim();
+                // Strip brackets/parens too — Roofr job titles wrap the address like
+                // "paint (1310 North Lesueur...)", which otherwise left "(1310" and
+                // "85203)" un-parseable and broke street-number matching.
+                return addr.toLowerCase().replace(/[,.\-#()\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
             };
             const getAddressParts = (addr) => {
                 const normalized = normalizeAddress(addr);
@@ -9618,6 +9651,22 @@ document.addEventListener('DOMContentLoaded', async () => {
                     !['az', 'st', 'rd', 'ln', 'dr', 'ave', 'blvd', 'ct', 'cir', 'pl', 'way', 'n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].includes(p)
                 );
                 return { streetNum, streetWords };
+            };
+
+            // Nickname-aware person-name compare. The schedule/CSR list uses
+            // nicknames ("Madi Meyers") but Roofr stores the legal name
+            // ("Madison Meyers"), so plain includes() fails to confirm the owner.
+            const personNameMatch = (a, b) => {
+                if (!a || !b) return false;
+                const norm = (s) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+                const A = norm(a), B = norm(b);
+                if (A === B || A.includes(B) || B.includes(A)) return true;
+                const aw = A.split(/\s+/), bw = B.split(/\s+/);
+                const af = aw[0] || '', al = aw[aw.length - 1] || '';
+                const bf = bw[0] || '', bl = bw[bw.length - 1] || '';
+                const firstOk = !!af && !!bf && (af.startsWith(bf) || bf.startsWith(af));
+                const lastOk = !!al && !!bl && (al === bl || al.startsWith(bl) || bl.startsWith(al));
+                return firstOk && lastOk;
             };
 
             // --- Shared helper: set job owner on a tab ---
@@ -9763,6 +9812,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             async function reloadCalendarTabForNextEdit(tabId, prefix) {
                 try {
+                    // Capture the viewed week BEFORE reloading. Roofr resets the
+                    // calendar to the CURRENT week on reload, which hides future-week
+                    // events (e.g. next week's appointments) and loses progress.
+                    let restoreDate = null;
+                    try {
+                        const vis = await sendMessageToTab(tabId, { type: 'GET_VISIBLE_DATES' });
+                        const iso = (vis && vis.datesISO) || [];
+                        const anchor = iso[Math.floor(iso.length / 2)] || iso[0] || null;
+                        if (anchor && /^\d{4}-\d{2}-\d{2}/.test(anchor)) {
+                            const [yy, mm, dd] = anchor.slice(0, 10).split('-').map(Number);
+                            restoreDate = { year: yy, month: mm, day: dd, iso: anchor.slice(0, 10) };
+                        }
+                    } catch (e) { /* best effort */ }
+
                     addBatchLog(`${prefix} Reloading calendar before next edit...`);
                     await chrome.tabs.reload(tabId);
 
@@ -9790,6 +9853,25 @@ document.addEventListener('DOMContentLoaded', async () => {
                         }
                     } catch (e) {
                         addBatchLog(`${prefix} Could not confirm team filter: ${e.message}`, 'error');
+                    }
+
+                    // Restore the week we were on before the reload, so future-dated
+                    // appointments are visible again (the reload reset us to today's week).
+                    if (restoreDate) {
+                        try {
+                            const nav = await sendMessageToTab(tabId, {
+                                type: 'CLICK_DATE_IN_PICKER',
+                                day: restoreDate.day, month: restoreDate.month, year: restoreDate.year
+                            });
+                            if (nav && nav.ok) {
+                                addBatchLog(`${prefix} Restored week of ${restoreDate.iso}`, 'success');
+                                await new Promise(r => setTimeout(r, 1500));
+                            } else {
+                                addBatchLog(`${prefix} Could not restore week ${restoreDate.iso}: ${nav?.error || 'date picker not found'}`, 'error');
+                            }
+                        } catch (e) {
+                            addBatchLog(`${prefix} Week restore failed: ${e.message}`, 'error');
+                        }
                     }
 
                     let eventCount = 0;

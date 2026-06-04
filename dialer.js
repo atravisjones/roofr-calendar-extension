@@ -14,6 +14,14 @@
 
   const API_BASE = "https://speed-to-leads.vercel.app";
   const DISPOSITIONS_URL = `${API_BASE}/api/sheet-dispositions`;
+  // Missed Calls tab: server-side CTM missed/uncalled queue + disposition write-back.
+  const MISSED_CALLS_URL = `${API_BASE}/api/missed-calls-queue`;
+  const MISSED_DISPOSITIONS_URL = `${API_BASE}/api/lead-dispositions`;
+  // Needs Rescheduled tab: jobs sitting in Roofr stage "Needs Rescheduled",
+  // grouped by the CSR who created the lead. Review-then-call, log-only (no
+  // sheet write-back — outcomes are recorded in this session's Event log).
+  const RESCHEDULED_URL = `${API_BASE}/api/roofr-needs-rescheduled`;
+  const RSCHED_DEFAULT_REVIEW_SEC = 60;  // 1:00 default review countdown
   const DEBUG_LOG_URL = `${API_BASE}/api/dialer-debug-log`;
   const RING_TIMEOUT_MS = 35000;          // give up if no ctm:start within 35s
   const WRAPUP_AUTOFIRE_MS = 60000;       // auto Save → Next after 60s of inactivity in wrap-up
@@ -23,7 +31,8 @@
   const MAX_ATTEMPTS = 8;                 // 8 attempts then auto-Lost
   const POLL_BRIDGE_MS = 5000;
   const MIN_GAP_MS = 3 * 60 * 60 * 1000;  // 3 hours between consecutive calls to the same lead
-  const AUTO_RETRY_THRESHOLD_MS = 5000;   // if call ends <5s, retry on main line
+  const AUTO_RETRY_THRESHOLD_MS = 5000;   // connected then dropped <5s → retry on main line
+  const NEVER_CONNECT_RETRY_MS = 12000;   // never connected but ended <12s → one-ring reject, retry on main line
   const AUTO_RETRY_NUMBER = "+14805884668"; // Arizona Roofers Main Line for retries
   const SHORT_CALL_THRESHOLD_MS = 15000;  // calls ≤15s auto-set "Attempted" + short timer
   const SHORT_WRAPUP_MS = 15000;          // 15s wrap-up timer for short/VM calls
@@ -47,11 +56,56 @@
     "attempted", "follow - up", "follow-up",
   ].map(s => s.toLowerCase()));
 
+  // ── Wrap-up disposition option sets (per tab) ──
+  // Leads tab: the Google-Sheet form-lead dispositions.
+  const LEADS_DISPOSITIONS = [
+    "Follow - Up", "Attempted", "Lost", "Booked", "Bad Leads",
+    "Do Not Service", "SOLD", "looking for work", "repeat",
+  ];
+  // Missed Calls tab: CTM dispositions. Active ones keep the lead in the
+  // cadence (logged as an attempt, auto-Lost at 7); resolved ones drop it.
+  const MISSED_DISPOSITIONS = [
+    "No Answer",        // ONLY this keeps the lead in the queue to call back
+    "Left VM", "Alex Callback", "Booked", "Spam", "Not Valid #", "Not Qualified", // all close the number out
+  ];
+  // Only "No Answer" recycles the lead for another attempt; everything else
+  // closes the number out. (Drives the double-tap + cadence.)
+  const MISSED_ACTIVE_DISPOSITIONS = ["No Answer"];
+
   // ── State ──
   let mode = "idle";      // 'idle' | 'running' | 'paused' | 'stopping'
+  let _autoPausedByTabSwitch = false; // true when 'paused' came from leaving the Dialer tab (auto-resume on return)
   let phase = "idle";     // 'idle' | 'fetching' | 'dialing' | 'ringing' | 'connected' | 'wrapup'
   let currentLead = null;
   let queue = [];
+  let currentTab = "leads";   // 'leads' (form leads / Google Sheet) | 'missed' (CTM missed calls) | 'rescheduled' (Roofr Needs-Rescheduled jobs)
+
+  // ── Needs Rescheduled state (fully ISOLATED from the leads/missed dialer) ──
+  // This flow never sets `currentLead`, never calls advanceToNext/onCallEnded/
+  // showWrapup, and never touches `mode`/`phase` — so the normal dialer's
+  // wrap-up, double-tap, cadence, and sheet-lock logic can't fire on it.
+  let _rschedAll = [];        // raw jobs from /api/needs-rescheduled (newest reschedule first)
+  let _rschedRepFilter = "all";  // "all" | a created_by CSR name
+  let _rschedRangeDays = 0;      // 0 = all time | 30 | 60 | 90 (rescheduled within last N days)
+  let _rschedQueue = [];      // the filtered, ordered job list Start walks / renders
+  let _rschedIdx = -1;        // index into _rschedQueue of the open card
+  let _rschedJob = null;      // the job currently being reviewed
+  let _rschedPhase = "idle";  // 'idle' | 'reviewing' | 'stage1' | 'calling' | 'stage2'
+  let _rschedStage1 = "";     // stage-1 choice carried into the logged outcome
+  let _rschedTimerId = null;  // review countdown interval
+  let _rschedRemainSec = RSCHED_DEFAULT_REVIEW_SEC;
+  let _rschedCallTimerId = null;
+  let _rschedCallStartMs = 0;
+  let _rschedRingTimeoutId = null;
+  let _rschedDialActive = false;  // gate for the separate CTM event router
+  let _rschedRoofrTabId = null;   // the single reused Roofr job-card tab
+  // Phone(10-digit) → Roofr job { url, jobId, stage, name }. Used to flag missed
+  // callers who are already customers (light blue + name links to their job card).
+  let _roofrJobMap = {};
+  let _roofrJobMapAt = 0;
+  // Missed Calls tab filter: "all" | "new" | "customer" | "uncalled" | "followup".
+  let missedFilter = "all";
+  let _missedAll = [];   // full built missed queue (pre-filter), so chips don't refetch
   let ringTimeoutId = null;
   let bridgeReady = false;
   let ctmTabOpen = false;
@@ -68,7 +122,9 @@
   let filterSources = new Set();         // empty = all sources pass
   let filterAttemptPreset = "all";       // "new" | "followup" | "persistent" | "all"
   let allKnownSources = [];              // rebuilt from fetched data
-  const completedThisSession = [];       // {phone, name, status, attempts} for the in-session "Done" list
+  const completedThisSession = [];       // {phone, name, status, attempts} — the rolling DAILY "Done" list (persisted, resets at AZ midnight)
+  const DAILY_DONE_KEY = "dialer_daily_done"; // chrome.storage.local: { date:"M/D/YYYY", done:[...] }
+  let _dailyDoneDate = "";               // AZ day the current completedThisSession belongs to
   // CTM event dedup state — two rotating buckets, swapped every 1.5s by a
   // single setInterval. Per-event setTimeouts caused timer-queue thrashing.
   let _recentCtmEvents = new Set();
@@ -81,6 +137,7 @@
   // dial. We compare event.ts against this to drop events from the prior call
   // so a late end-activity doesn't pop a wrap-up modal mid-2nd-ring.
   let _currentDialAt = 0;
+  let _currentFromNumber = null;  // outbound caller ID used for the current dial (for retry decisions)
   // Double-tap state. The 2-dial sequence is treated as ONE wrap-up:
   //   call#1 → ends → wrap-up → rep saves "Attempted" → DO NOT WRITE TO SHEET
   //     → set isInDoubleTap=true, stash first disposition+notes
@@ -100,8 +157,8 @@
     ctmPill: $("ctm-pill"),
     bridgePill: $("bridge-pill"),
     startBtn: $("start-btn"),
-    pauseBtn: $("pause-btn"),
     stopBtn: $("stop-btn"),
+    doneToday: $("done-today"),
     settingsBtn: $("settings-btn"),
     queueCount: $("queue-count"),
     t1Count: $("t1-count"),
@@ -232,7 +289,6 @@
   function setPhase(p) {
     phase = p;
     els.startBtn.disabled = mode === "running" || !ctmTabOpen || !bridgeReady;
-    els.pauseBtn.disabled = mode !== "running";
     els.stopBtn.disabled = mode === "idle";
     renderCurrent();
   }
@@ -270,7 +326,7 @@
         <span>Last: ${escapeHtml(currentLead.lastContactDate || "never")}</span>
       </div>
       <div class="call-actions">
-        <button id="hangup-btn" class="danger hangup-big">☎ Hangup</button>
+        <button id="hangup-btn" class="danger hangup-big" title="Hang up (Esc)">☎ Hangup <span style="opacity:.7;font-weight:600;">· Esc</span></button>
       </div>
     `;
     $("hangup-btn").onclick = onHangupClick;
@@ -338,6 +394,7 @@
   }
 
   function renderQueue() {
+    if (currentTab === "rescheduled") { renderRescheduledQueue(); return; }
     els.queue.innerHTML = "";
     // Show ALL queued leads (was capped at 8 — Travis: "why is there always 8?").
     // The list is inside the scrollable <main>, so long queues scroll naturally.
@@ -347,13 +404,15 @@
     for (const lead of queue) {
       const li = document.createElement("li");
       if (lead.lockedBy && lead.lockedBy !== repName) li.classList.add("locked");
+      // Missed-call leads who are already Roofr customers → light-blue row.
+      if (lead.backend === "missed-calls" && lead.isCustomer) li.classList.add("customer-row");
       const tier = lead._tier;
       const tierLabel = { 1: "NEW", 2: "TODAY", 3: "WIP" }[tier] || "—";
       const leftEl = document.createElement("span");
       leftEl.className = "left";
       const attemptsNow = parseInt(lead.attemptCount) || 0;
       const doubleTapBadge = (attemptsNow === 0)
-        ? `<span class="tier" style="background:var(--accent-light);color:var(--accent-hi);margin-left:2px;">×2 double-tap</span>`
+        ? `<span class="tier" style="background:var(--accent-light);color:var(--accent-hi);margin-left:2px;white-space:nowrap;" title="Double-tap: this lead gets called twice in a row on the first attempt">×2</span>`
         : "";
       const noteText = (lead.notes || "").trim();
       // Truncate long notes so a chatty lead doesn't bloat the row height.
@@ -361,10 +420,17 @@
       const noteHtml = noteText
         ? `<div class="row3" style="font-size:11px;color:var(--muted);margin-top:2px;line-height:1.3;" title="${escapeHtml(noteText)}">📝 ${escapeHtml(noteShort)}</div>`
         : "";
+      const calledHtml = (lead.backend === "missed-calls" && lead.time)
+        ? `<div class="row3" style="font-size:11px;color:var(--muted);margin-top:2px;">📞 Called ${escapeHtml(formatCalledTime(lead.time))}</div>`
+        : "";
+      const nameInner = escapeHtml(lead.name || "(no name)");
+      const nameHtml = lead.jobUrl
+        ? `<a class="name copyable job-link" data-copy="${escapeHtml(lead.name || "")}" href="${escapeHtml(lead.jobUrl)}" target="_blank" rel="noopener" title="Open Roofr job card${lead.jobStage ? " — " + escapeHtml(lead.jobStage) : ""}">${nameInner} 🔗</a>`
+        : `<strong class="name copyable" data-copy="${escapeHtml(lead.name || "")}">${nameInner}</strong>`;
       leftEl.innerHTML = `
-        <div class="row1"><span class="tier t${tier}">${tierLabel}</span><strong class="name copyable" data-copy="${escapeHtml(lead.name || "")}">${escapeHtml(lead.name || "(no name)")}</strong></div>
+        <div class="row1"><span class="tier t${tier}">${tierLabel}</span>${nameHtml}</div>
         <div class="row2"><a class="phone-link copyable" data-copy="${escapeHtml(lead.phone)}" data-ctm-digits="${escapeHtml(lead.phone10 || (lead.phone || '').replace(/\D/g,'').slice(-10))}" href="https://app.calltrackingmetrics.com/calls/desk#filter=${escapeHtml(lead.phone10 || (lead.phone || '').replace(/\D/g,'').slice(-10))}" title="Click to open CTM filtered to this number">${escapeHtml(lead.phone)}</a> ${sourcePillHtml(lead.source)}${statusPillHtml(lead.status)}${doubleTapBadge}</div>
-        ${noteHtml}
+        ${calledHtml}${noteHtml}
       `;
       const metaEl = document.createElement("span");
       metaEl.className = "meta";
@@ -376,6 +442,7 @@
       xBtn.onclick = (e) => {
         e.stopPropagation();
         if (lead.rowIndex) removedThisSession.add(lead.rowIndex);
+        else if (lead.backend === "missed-calls") removedThisSession.add("m:" + (lead.phoneBare || (lead.phone || "").replace(/\D/g, "")));
         queue = queue.filter(q => q !== lead);
         renderQueue();
         log(`removed from session: ${lead.name || "(no name)"} ${lead.phone}`, "act", "queue");
@@ -394,6 +461,126 @@
   function escapeHtml(s) {
     return String(s ?? "").replace(/[&<>"']/g, c =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  }
+
+  // ── Missed Calls queue builder ──
+  // The /api/missed-calls-queue endpoint already applies the app's exact
+  // missed/uncalled filter, dedups, drops resolved/dismissed leads, and shapes
+  // each row for the dialer. We only need to add the dialer's local fields
+  // (_tier, phone10) and honor in-session X-outs.
+  function buildMissedQueue(leads) {
+    return (leads || [])
+      .filter(l => {
+        const key = "m:" + (l.phoneBare || (l.phone || "").replace(/\D/g, ""));
+        return !removedThisSession.has(key);
+      })
+      .map(l => {
+        const att = parseInt(l.attemptCount) || 0;
+        const bare = (l.phoneBare || (l.phone || "").replace(/\D/g, "")).slice(-10);
+        const job = _roofrJobMap[bare] || null;
+        // "Customer" = phone matches an actual Roofr job card (so blue always
+        // means there's a card to open). The CTM "existing customer" tag is NOT
+        // used — it's noisy (gets stuck on spam / toll-free / vendor numbers)
+        // and points to no job, which left blue rows whose names only copied.
+        const isCustomer = !!job;
+        return {
+          ...l,
+          backend: "missed-calls",
+          rowIndex: null,
+          phone10: bare,
+          attemptCount: att,
+          status: l.status || "",
+          // Already a Roofr customer? flag it (light-blue row) + link to their job.
+          isCustomer,
+          jobUrl: job ? job.url : null,
+          jobStage: job ? job.stage : null,
+          // NEW (never attempted) → Tier 1; otherwise work-in-progress → Tier 3.
+          // Endpoint already returns them newest-first / new-callers-first.
+          _tier: att === 0 ? 1 : 3,
+        };
+      });
+  }
+
+  // Load the phone→Roofr-job map once (cached 5 min). Open endpoint, no auth.
+  async function ensureRoofrJobMap() {
+    if (Date.now() - _roofrJobMapAt < 5 * 60 * 1000 && Object.keys(_roofrJobMap).length) return;
+    try {
+      const r = await fetch(`${API_BASE}/api/roofr-lookup`, { headers: { "X-Dialer-Client": "roofr-extension" } });
+      const data = await r.json();
+      if (data && data.phones) {
+        _roofrJobMap = data.phones;
+        _roofrJobMapAt = Date.now();
+        log(`roofr job map loaded: ${Object.keys(_roofrJobMap).length} phones`, "info", "queue");
+      }
+    } catch (e) {
+      log(`roofr job map load failed: ${e.message}`, "warn", "queue");
+    }
+  }
+
+  // Apply the active Missed Calls filter chip to the full built list.
+  // "Uncalled" = never called back yet (no-callback-yet, 0 attempts).
+  // "Following up" = already called but not reached (no-contact stage) or has
+  // dialer attempts — i.e. the cadence is in progress.
+  const _isUncalled = l => l.stage !== "no-contact" && (parseInt(l.attemptCount) || 0) === 0;
+  const _isFollowup = l => l.stage === "no-contact" || (parseInt(l.attemptCount) || 0) > 0;
+  function filterMissed(list) {
+    switch (missedFilter) {
+      case "new":      return list.filter(l => l.stage === "new-lead" || l.isNew);
+      case "customer": return list.filter(l => l.isCustomer);
+      case "uncalled": return list.filter(_isUncalled);
+      case "followup": return list.filter(_isFollowup);
+      default:         return list.slice();
+    }
+  }
+
+  // Count for each filter chip, computed from the full list.
+  function countMissed(mf) {
+    const l = _missedAll;
+    if (mf === "new")      return l.filter(x => x.stage === "new-lead" || x.isNew).length;
+    if (mf === "customer") return l.filter(x => x.isCustomer).length;
+    if (mf === "uncalled") return l.filter(_isUncalled).length;
+    if (mf === "followup") return l.filter(_isFollowup).length;
+    return l.length;
+  }
+
+  function updateMissedFilterCounts() {
+    document.querySelectorAll(".mfilter").forEach(btn => {
+      const mf = btn.dataset.mf;
+      const base = btn.dataset.label || (btn.dataset.label = btn.textContent.trim());
+      btn.textContent = `${base} (${countMissed(mf)})`;
+    });
+  }
+
+  function setMissedFilter(mf) {
+    missedFilter = mf;
+    document.querySelectorAll(".mfilter").forEach(b => b.classList.toggle("active", b.dataset.mf === mf));
+    const sum = document.getElementById("missed-filter-summary");
+    const chip = document.querySelector(`.mfilter[data-mf="${mf}"]`);
+    if (sum && chip) sum.textContent = chip.dataset.label || chip.textContent.trim();
+    queue = filterMissed(_missedAll);
+    log(`missed filter → ${mf} (${queue.length} shown)`, "info", "ui");
+    renderQueue();
+  }
+
+  // Format the CTM call time ("2026-05-28 02:15 PM -07:00") → "Thu 5/28 · 2:15 PM".
+  function formatCalledTime(t) {
+    if (!t) return "";
+    const m = /^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}:\d{2}\s*[AP]M)/i.exec(String(t));
+    if (!m) return String(t);
+    const [, y, mo, d, time] = m;
+    let dow = "";
+    try {
+      dow = new Date(`${y}-${mo}-${d}T12:00:00`).toLocaleDateString("en-US", { weekday: "short", timeZone: "America/Phoenix" });
+    } catch (_) {}
+    return `${dow ? dow + " " : ""}${parseInt(mo)}/${parseInt(d)} · ${time.replace(/\s+/g, " ").trim()}`;
+  }
+
+  // Update the count badge on the Missed Calls tab.
+  function updateMissedBadge(n) {
+    const badge = document.getElementById("missed-badge");
+    if (!badge) return;
+    if (n > 0) { badge.textContent = n; badge.style.display = ""; }
+    else { badge.textContent = ""; badge.style.display = "none"; }
   }
 
   // ── Sort + filter the queue ──
@@ -698,6 +885,48 @@
     if (_inflightFetch) return _inflightFetch;
     _lastFetchAt = now;
     _inflightFetch = (async () => {
+      // ── Needs Rescheduled tab: pull Roofr jobs in "Needs Rescheduled" ──
+      if (currentTab === "rescheduled") {
+        log("fetching rescheduled jobs…", "info", "queue");
+        try {
+          const r = await fetch(RESCHEDULED_URL, { headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" } });
+          const data = await r.json();
+          if (!data.success) {
+            log(`rescheduled API error: ${data.error || "unknown"}`, "err", "queue");
+            return;
+          }
+          _rschedAll = data.jobs || [];
+          log(`rescheduled loaded: ${_rschedAll.length} jobs`, "ok", "queue");
+          renderRescheduledQueue();
+        } catch (e) {
+          log(`fetch rescheduled failed: ${e.message}`, "err", "queue");
+        }
+        return;
+      }
+      // ── Missed Calls tab: pull the server-side CTM missed/uncalled queue ──
+      if (currentTab === "missed") {
+        log("fetching missed calls from CTM…", "info", "queue");
+        try {
+          const [r] = await Promise.all([
+            fetch(MISSED_CALLS_URL, { headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" } }),
+            ensureRoofrJobMap(),
+          ]);
+          const data = await r.json();
+          if (data.configured === false || data.error) {
+            log(`missed-calls API error: ${data.error || "not configured"}`, "err", "queue");
+            return;
+          }
+          _missedAll = buildMissedQueue(data.leads || []);
+          queue = filterMissed(_missedAll);
+          log(`missed calls loaded: ${_missedAll.length} (showing ${queue.length} · filter=${missedFilter})`, "ok", "queue");
+          updateMissedBadge(_missedAll.length);
+          updateMissedFilterCounts();
+          renderQueue();
+        } catch (e) {
+          log(`fetch missed calls failed: ${e.message}`, "err", "queue");
+        }
+        return;
+      }
       log("fetching leads from sheet…", "info", "queue");
       try {
         const r = await fetch(DISPOSITIONS_URL);
@@ -719,7 +948,10 @@
     try { await _inflightFetch; } finally { _inflightFetch = null; }
   }
 
-  async function claimLead(phone, rowIndex) {
+  async function claimLead(phone, rowIndex, lead) {
+    // Missed calls have no Google-Sheet row lock — single shared CTM source.
+    // Claiming is a no-op; just take the lead.
+    if (lead && lead.backend === "missed-calls") return true;
     try {
       const r = await fetch(DISPOSITIONS_URL, {
         method: "POST",
@@ -752,7 +984,50 @@
     }
   }
 
+  // Map a dialer wrap-up disposition → a lead-dispositions action for CTM
+  // missed calls. attempt = stays active (retry later); responded/dismiss =
+  // resolved, drops off the Missed Calls queue (and the Speed to Lead app).
+  function mapMissedDisposition(status) {
+    // "No Answer" → log an attempt; lead stays in queue, cadence advances,
+    // auto-Losts at 7 attempts.
+    if (status === "No Answer") return { action: "attempt", disposition: status };
+    // Booked / Spam / Not Valid # / Not Qualified are in lead-dispositions'
+    // resolved list → 'disposition' auto-dismisses them (closes the number out).
+    if (["Booked", "Spam", "Not Valid #", "Not Qualified"].includes(status)) {
+      return { action: "disposition", disposition: status };
+    }
+    // Left VM / Alex Callback aren't in the resolved list, so close them out
+    // explicitly with 'dismiss'. (Label preserved in the attempt/dismiss note.)
+    return { action: "dismiss", disposition: status };
+  }
+
+  async function saveMissedDisposition(lead, status, notes, opts) {
+    const phone10 = lead.phone10 || (lead.phoneBare || lead.phone || "").replace(/\D/g, "").slice(-10);
+    const { action, disposition } = mapMissedDisposition(status);
+    // For attempt-type saves, record the disposition label in the attempt note
+    // (the 'attempt' action doesn't store a disposition field server-side).
+    let note = (action === "attempt" || action === "dismiss") ? (status + (notes ? " — " + notes : "")) : (notes || "");
+    note += ((opts && opts.attemptIncrement === 2) ? ((note ? " " : "") + "on 2tap") : "");
+    log(`saving missed disposition: ${phone10} → "${status}" (${action})${note ? " note: " + note : ""}`, "act", "wrap");
+    try {
+      const r = await fetch(MISSED_DISPOSITIONS_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" },
+        body: JSON.stringify({ emailId: phone10, prefix: "ctm", action, disposition, rep: repName, note: note || null }),
+      });
+      const data = await r.json();
+      if (data && data.configured) log(`missed disposition saved ✓ ${phone10} → ${status}`, "ok", "wrap");
+      else log(`missed disposition save failed: ${(data && data.error) || "?"}`, "err", "wrap");
+    } catch (e) {
+      log(`missed disposition error: ${e.message}`, "err", "wrap");
+    }
+  }
+
   async function saveDisposition(phone, status, notes, leadAtSaveTime, opts) {
+    const _ld = leadAtSaveTime || currentLead;
+    if (_ld && _ld.backend === "missed-calls") {
+      return saveMissedDisposition(_ld, status, notes, opts);
+    }
     try {
       const ld = leadAtSaveTime || currentLead;
       const attemptIncrement = (opts && opts.attemptIncrement) || 1;
@@ -842,8 +1117,8 @@
     }
 
     if (inQuietHours()) {
-      log("quiet hours active (8am-9pm AZ) — pausing", "warn", "state");
-      mode = "paused";
+      log("quiet hours active (8am-9pm AZ) — stopping", "warn", "state");
+      mode = "idle";
       setPhase("idle");
       currentLead = null;
       renderCurrent();
@@ -862,7 +1137,7 @@
     while (queue.length > 0) {
       const candidate = queue.shift();
       if (candidate.lockedBy && candidate.lockedBy !== repName) { skippedLocked++; continue; }
-      const claimed = await claimLead(candidate.phone, candidate.rowIndex);
+      const claimed = await claimLead(candidate.phone, candidate.rowIndex, candidate);
       if (claimed) { lead = candidate; break; }
     }
     if (skippedLocked > 0) log(`skipped ${skippedLocked} locked-by-other leads`, "info", "queue");
@@ -895,12 +1170,19 @@
     } else {
       log(`no outbound mapping for source "${lead.source}" — using CTM default`, "warn", "src");
     }
+    // Missed-call leads carry a server-resolved outbound number (matched to the
+    // tracking number they originally dialed, Main Line fallback). Prefer it.
+    if (lead.fromNumber) {
+      outbound = { number: lead.fromNumber, name: lead.source || "Missed Call" };
+      log(`missed-call outbound → ${outbound.number} (${lead.source || "Main Line"})`, "info", "src");
+    }
 
     setPhase("dialing");
     retriedOnMainLine = false;
     sessionCount++;
     if (els.sessionCount) els.sessionCount.textContent = sessionCount;
     _currentDialAt = Date.now();
+    _currentFromNumber = outbound?.number || null;
     startCallTimer();
     log(`▶ DIALING ${leadTag(lead)} → ${e164} [${sessionCount}/${sessionLimit}] attempts=${lead.attemptCount || 0}`, "act", "dial");
     const resp = await sendToCtm({
@@ -946,13 +1228,30 @@
     const callDurationMs = callStartMs ? (Date.now() - callStartMs) : 0;
     log(`call ended via ${source} · connected=${connectedThisCall} duration=${Math.round(callDurationMs/1000)}s attempts-going-in=${currentLead.attemptCount || 0}`, "info", "call");
 
-    // AUTO-RETRY: if the call connected but dropped in <5s and we haven't
-    // retried yet, redial on Main Line after a 2s pause to let CTM's stale
-    // events flush. Some numbers get a one-ring hangup on certain outbound
-    // tracking numbers but go through on the main line.
-    if (connectedThisCall && callDurationMs > 0 && callDurationMs < AUTO_RETRY_THRESHOLD_MS && !retriedOnMainLine) {
+    // AUTO-RETRY on the Main Line. Two failure modes both mean "this outbound
+    // caller ID didn't work — try the number CTM definitely allows outbound":
+    //   (a) call CONNECTED then dropped in <5s (ctm:start fired, instant drop).
+    //   (b) call NEVER connected and ended fast (<12s) and NOT via the 35s
+    //       no-answer timeout — i.e. the "rings once and hangs up" signature of
+    //       CTM rejecting a tracking number that isn't outbound-enabled, or an
+    //       explicit ctm:failed. A real no-answer rings to the 35s ring-timeout
+    //       (or hits voicemail, which fires ctm:start) so it won't match here.
+    // (b) only helps if we WEREN'T already on the Main Line — a different caller
+    // ID is the whole point. (a) keeps its original behavior (retry regardless).
+    const dialElapsedMs = _currentDialAt ? (Date.now() - _currentDialAt) : 0;
+    const fromWasMainLine = !_currentFromNumber || _currentFromNumber === AUTO_RETRY_NUMBER;
+    const connectedFastDrop = connectedThisCall && callDurationMs > 0 && callDurationMs < AUTO_RETRY_THRESHOLD_MS;
+    const isHardFail = source === "failed" || source === "dial-failed";
+    const instantReject = !connectedThisCall && !fromWasMainLine && (
+      isHardFail ||
+      (source !== "ring-timeout" && source !== "retry-timeout" && dialElapsedMs > 0 && dialElapsedMs < NEVER_CONNECT_RETRY_MS)
+    );
+    if ((connectedFastDrop || instantReject) && !retriedOnMainLine) {
       retriedOnMainLine = true;
-      log(`ultra-short call (${Math.round(callDurationMs/1000)}s) — retrying on Main Line in 2s`, "warn", "retry");
+      const why = connectedFastDrop
+        ? `ultra-short call (${Math.round(callDurationMs/1000)}s)`
+        : `one-ring/no-connect (${Math.round(dialElapsedMs/1000)}s via ${source}) from ${_currentFromNumber || "default"}`;
+      log(`${why} — retrying on Main Line in 2s`, "warn", "retry");
       phase = "retrying";
       connectedThisCall = false;
       callStartMs = 0;
@@ -963,6 +1262,7 @@
         const e164 = toE164(currentLead.phone);
         if (!e164) { onCallEnded({ source: "retry-bad-phone" }); return; }
         _currentDialAt = Date.now();
+        _currentFromNumber = AUTO_RETRY_NUMBER;
         startCallTimer();
         setPhase("dialing");
         const resp = await sendToCtm({
@@ -1010,8 +1310,18 @@
   let wrapupActiveLead = null;
   let wrapupTimerId = null;
   let wrapupDeadlineMs = 0;
+  // Swap the disposition dropdown to match the active lead's source.
+  function setWrapupDispositions(backend) {
+    const opts = backend === "missed-calls" ? MISSED_DISPOSITIONS : LEADS_DISPOSITIONS;
+    const desired = JSON.stringify(opts);
+    if (els.wrapupStatus.dataset.optset === desired) return; // already correct
+    els.wrapupStatus.innerHTML = opts.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
+    els.wrapupStatus.dataset.optset = desired;
+  }
+
   function showWrapup(defaultStatus, isShortCall) {
     wrapupActiveLead = currentLead;
+    setWrapupDispositions(wrapupActiveLead && wrapupActiveLead.backend);
     const dtPrefix = isInDoubleTap ? "DOUBLE TAP — " : "";
     const shortTag = isShortCall ? " (short call)" : "";
     els.wrapupTitle.textContent = `${dtPrefix}Wrap up — ${wrapupActiveLead.name || wrapupActiveLead.phone}${shortTag}`;
@@ -1035,7 +1345,9 @@
     }
     log(`wrap-up opened for ${leadTag(wrapupActiveLead)} (default: ${finalDefault}${isInDoubleTap ? ", DOUBLE TAP 2of2" : ""}${isShortCall ? ", SHORT CALL — 15s timer" : ""})`, "act", "wrap");
     startWrapupAutoFire(isShortCall);
-    setTimeout(() => { try { els.wrapupNotes.focus(); } catch (_) {} }, 50);
+    // Focus the disposition dropdown (not notes) so the rep can pick hands-free:
+    // type-ahead (press "b" → Booked) or ↑/↓ arrows, then Enter to Save → Next.
+    setTimeout(() => { try { els.wrapupStatus.focus(); } catch (_) {} }, 50);
   }
 
   function hideWrapup() {
@@ -1077,7 +1389,7 @@
     if (!els.wrapupHelp) return;
     const remaining = Math.max(0, Math.ceil((wrapupDeadlineMs - Date.now()) / 1000));
     els.wrapupHelp.innerHTML =
-      `Auto-saving in <strong>${remaining}s</strong> · type a note or change the dropdown to reset the timer.`;
+      `Auto-saving in <strong>${remaining}s</strong> · <strong>Enter</strong> → Note → <strong>Enter</strong> Save·Next · <strong>Esc</strong> Save·Stop`;
   }
 
   async function finishWrapup(advance) {
@@ -1100,6 +1412,7 @@
       pushCompleted({ phone, name: savedLead.name, status, attempts: priorAttempts + 2 });
       // Block from re-queue this session
       if (rowIndex) removedThisSession.add(rowIndex);
+    else if (savedLead.backend === "missed-calls") removedThisSession.add("m:" + (savedLead.phoneBare || (savedLead.phone || "").replace(/\D/g, "")));
       isInDoubleTap = false;
       doubleTapPriorStatus = null;
       doubleTapPriorNotes = "";
@@ -1113,10 +1426,13 @@
     // CASE B: First call on a fresh lead saved as "Attempted" → trigger
     // double-tap. DO NOT write to sheet yet — hold disposition in memory,
     // immediately redial. The 2nd save will be the one that writes.
+    // Double-tap on the FIRST attempt: form leads use "Attempted"; missed
+    // calls use any active disposition (No Answer / Left VM / Alex Callback).
+    const isMissedActive = savedLead.backend === "missed-calls" && MISSED_ACTIVE_DISPOSITIONS.includes(status);
     const shouldDoubleTap =
       advance && mode === "running" &&
-      status === "Attempted" &&
-      priorAttempts === 0;
+      priorAttempts === 0 &&
+      (status === "Attempted" || isMissedActive);
 
     if (shouldDoubleTap) {
       log(`★★ DOUBLE-TAP triggered — holding "${status}" disposition, re-dialing ${phone} now`, "act", "dial");
@@ -1131,6 +1447,7 @@
 
     // CASE C: Normal single-call save.
     if (rowIndex) removedThisSession.add(rowIndex);
+    else if (savedLead.backend === "missed-calls") removedThisSession.add("m:" + (savedLead.phoneBare || (savedLead.phone || "").replace(/\D/g, "")));
     await saveDisposition(phone, status, notes, savedLead);
     pushCompleted({ phone, name: savedLead.name, status, attempts: priorAttempts + 1 });
     currentLead = null;
@@ -1182,11 +1499,15 @@
     }
     let outbound = null;
     try { outbound = (window.DialerSources || {}).lookupOutbound?.(lead.source); } catch (_) {}
+    // Missed-call leads carry a server-resolved outbound (the tracking number
+    // they dialed). Honor it on the 2nd double-tap too, like the primary path.
+    if (lead.fromNumber) outbound = { number: lead.fromNumber, name: lead.source || "Missed Call" };
     setPhase("dialing");
     retriedOnMainLine = false;
     sessionCount++;
     if (els.sessionCount) els.sessionCount.textContent = sessionCount;
     _currentDialAt = Date.now();
+    _currentFromNumber = outbound?.number || null;
     log(`▶ DIALING (double-tap #2) ${leadTag(lead)} → ${e164} [${sessionCount}/${sessionLimit}]`, "act", "dial");
     const resp = await sendToCtm({
       type: "dial",
@@ -1214,17 +1535,49 @@
   }
 
   // ── In-session "Completed" list ──
-  // After each disposition save, push a row into the completedThisSession array
-  // and render the list. Gives Travis a clear visual that the queue is moving.
+  // The "Done" list is a rolling DAILY tally: it persists across Stop→Start
+  // (so a rep's count + history survive breaks) and only resets at AZ midnight.
+  // Backed by chrome.storage.local so it also survives a panel reload.
+  function rollDailyIfNeeded() {
+    const today = azDatePlus(0);
+    if (_dailyDoneDate && _dailyDoneDate !== today) {
+      completedThisSession.length = 0; // new day → fresh tally
+    }
+    _dailyDoneDate = today;
+  }
+  function persistDailyDone() {
+    try {
+      chrome.storage.local.set({ [DAILY_DONE_KEY]: { date: _dailyDoneDate, done: completedThisSession } });
+    } catch (_) {}
+  }
+  async function loadDailyDone() {
+    try {
+      const s = await chrome.storage.local.get([DAILY_DONE_KEY]);
+      const saved = s && s[DAILY_DONE_KEY];
+      const today = azDatePlus(0);
+      _dailyDoneDate = today;
+      if (saved && saved.date === today && Array.isArray(saved.done)) {
+        completedThisSession.length = 0;
+        completedThisSession.push(...saved.done);
+      }
+    } catch (_) {}
+    renderCompleted();
+  }
+
+  // After each disposition save, push a row into the daily Done list, persist it,
+  // and render. Gives a clear visual that the queue is moving + a running total.
   function pushCompleted(item) {
+    rollDailyIfNeeded();
     completedThisSession.push(item);
+    persistDailyDone();
     renderCompleted();
   }
   function renderCompleted() {
     const el = els.completed;
+    if (els.doneToday) els.doneToday.textContent = completedThisSession.length;
     if (!el) return;
     if (completedThisSession.length === 0) {
-      el.innerHTML = "<em style='color:var(--muted);'>None yet this session.</em>";
+      el.innerHTML = "<em style='color:var(--muted);'>None yet today.</em>";
       return;
     }
     el.innerHTML = completedThisSession.slice().reverse().map(c => {
@@ -1294,12 +1647,13 @@
   }
 
   els.startBtn.onclick = async () => {
+    if (currentTab === "rescheduled") { rschedStartQueue(); return; }
     if (mode === "running") return;
     if (inQuietHours()) { log("can't start — outside quiet hours (8am-9pm AZ only)", "err", "ui"); return; }
     const ready = await ensureCtmTab();
     if (!ready) return;
-    sessionCount = 0;
-    completedThisSession.length = 0;
+    sessionCount = 0; // per-run pacing cap counter; the Done list is daily (kept)
+    rollDailyIfNeeded(); // clears the Done list only if the AZ day rolled over
     renderCompleted();
     // NOTE: do NOT clear removedThisSession here — user-removed leads should stay
     // removed across Start/Stop cycles within the same dialer window.
@@ -1309,18 +1663,9 @@
     advanceToNext();
   };
 
-  els.pauseBtn.onclick = () => {
-    if (mode === "running") {
-      mode = "paused";
-      log("⏸ PAUSE clicked — dialer halted between calls", "act", "ui");
-      setPhase(phase); // re-enable/disable buttons
-    } else if (mode === "paused") {
-      mode = "running";
-      log("▶ RESUME clicked", "act", "ui");
-      if (!currentLead) advanceToNext();
-      else setPhase(phase);
-    }
-  };
+  // (Pause button removed — Start always begins a fresh, current queue; the
+  // only "paused" state left is the automatic tab-switch safety below, which
+  // auto-resumes when the rep returns to the Dialer tab.)
 
   els.stopBtn.onclick = async () => {
     log("⏹ STOP clicked", "act", "ui");
@@ -1349,6 +1694,61 @@
   els.wrapupSaveStop.onclick = () => { mode = "idle"; finishWrapup(false); };
   els.settingsBtn.onclick = () => chrome.runtime.openOptionsPage();
 
+  // ── Tab switching: Leads (Google Sheet) ↔ Missed Calls (CTM) ──
+  function switchTab(tab) {
+    if (tab === currentTab) return;
+    // Never swap the queue out from under an active call (leads/missed OR a
+    // rescheduled call in progress).
+    if (mode === "running" || ["dialing", "ringing", "connected", "wrapup"].includes(phase) || _rschedPhase === "calling") {
+      log("can't switch tabs mid-call — stop the dialer first", "warn", "state");
+      return;
+    }
+    // Leaving the rescheduled tab: tear down any open review card/timer.
+    if (currentTab === "rescheduled" && tab !== "rescheduled") rschedReset();
+    currentTab = tab;
+    queue = [];
+    const isResched = tab === "rescheduled";
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+    if (els.queueHeader) els.queueHeader.textContent = tab === "missed" ? "Missed Calls" : "Queue";
+    if (els.refreshBtn) els.refreshBtn.title = tab === "missed" ? "Resync missed calls from CTM" : "Resync queue from Google Sheet";
+    // Standard queue view vs the rescheduled panel.
+    const stdView = document.getElementById("standard-queue-view");
+    const rschedMain = document.getElementById("rescheduled-main");
+    if (stdView) stdView.style.display = isResched ? "none" : "";
+    if (rschedMain) rschedMain.style.display = isResched ? "" : "none";
+    // Filter panels: leads / missed / rescheduled each show only their own.
+    const mfPanel = document.getElementById("missed-filter-panel");
+    const rschedPanel = document.getElementById("rescheduled-filter-panel");
+    if (mfPanel) mfPanel.style.display = tab === "missed" ? "" : "none";
+    if (rschedPanel) rschedPanel.style.display = isResched ? "" : "none";
+    if (els.filterPanel) els.filterPanel.style.display = tab === "leads" ? "" : "none";
+    log(`switched to ${{ leads: "Leads", missed: "Missed Calls", rescheduled: "Rescheduled" }[tab] || tab} tab`, "info", "ui");
+    renderQueue();
+    fetchLeads({ force: true });
+  }
+  document.getElementById("tab-leads")?.addEventListener("click", () => switchTab("leads"));
+  document.getElementById("tab-missed")?.addEventListener("click", () => switchTab("missed"));
+  document.getElementById("tab-rescheduled")?.addEventListener("click", () => switchTab("rescheduled"));
+  document.querySelectorAll(".mfilter").forEach(btn =>
+    btn.addEventListener("click", () => setMissedFilter(btn.dataset.mf)));
+  rschedBindButtons();
+  // Prime the Missed Calls badge once on load (independent of the active tab).
+  (async () => {
+    try {
+      const r = await fetch(MISSED_CALLS_URL, { headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" } });
+      const data = await r.json();
+      if (Array.isArray(data.leads)) updateMissedBadge(data.leads.length);
+    } catch (_) {}
+  })();
+  // Prime the Rescheduled badge once on load.
+  (async () => {
+    try {
+      const r = await fetch(RESCHEDULED_URL, { headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" } });
+      const data = await r.json();
+      if (data.success && Array.isArray(data.jobs)) updateRescheduledBadge(data.jobs.length);
+    } catch (_) {}
+  })();
+
   // Engagement → reset the 60s auto-fire so the rep is never cut off mid-typing
   els.wrapupNotes.addEventListener("input", () => resetWrapupAutoFire("notes"));
   els.wrapupNotes.addEventListener("focus", () => resetWrapupAutoFire("focus"));
@@ -1361,17 +1761,64 @@
     if (e.target === els.scrim) {
       log("click outside modal ignored — disposition is required", "warn", "ui");
       if (els.wrapupHelp) {
-        els.wrapupHelp.textContent = "Disposition required — click Save → Next or Save → Stop to dismiss.";
+        els.wrapupHelp.textContent = "Disposition required — press Enter (or click Save → Next) to dismiss.";
         els.wrapupHelp.style.color = "var(--danger)";
         setTimeout(() => { if (els.wrapupHelp) els.wrapupHelp.style.color = ""; }, 1200);
       }
     }
   });
+  // ── Keyboard-only call handling (no mouse needed) ──
+  //   • During a live call:  Esc  → hang up + open wrap-up
+  //   • In the wrap-up modal, two taps of Enter:
+  //       1st (on the disposition dropdown) → jump to the Note field, like Tab
+  //       2nd (in the Note field)           → Save → Next (advance)
+  //     ↑/↓ or type-ahead pick the disposition (native); Shift+Enter in the
+  //     Note field = newline.
+  //   • Esc in the Note field → Save → Stop (record this call, end the session).
+  //     Esc on the dropdown is ignored so a reflex double-tap of the hang-up
+  //     Esc doesn't accidentally stop the dialer the instant wrap-up opens.
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && els.scrim.classList.contains("show")) {
+    const wrapOpen = els.scrim.classList.contains("show");
+
+    if (wrapOpen) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (document.activeElement === els.wrapupNotes) {
+          log("⎋ Esc → Save → Stop (keyboard)", "act", "ui");
+          mode = "idle";
+          finishWrapup(false);
+        } else {
+          log("Escape ignored — press Enter to reach the Note field, then Esc to stop", "warn", "ui");
+        }
+        return;
+      }
+      if (e.key === "Enter") {
+        // First Enter on the dropdown acts like Tab → move to the Note field.
+        if (document.activeElement === els.wrapupStatus) {
+          e.preventDefault();
+          e.stopPropagation();
+          try { els.wrapupNotes.focus(); } catch (_) {}
+          log("⏎ Enter → Note field (keyboard)", "act", "ui");
+          return;
+        }
+        // Shift+Enter in the Note field inserts a newline instead of saving.
+        if (document.activeElement === els.wrapupNotes && e.shiftKey) return;
+        // Second Enter (from the Note field, or anywhere else) saves & advances.
+        e.preventDefault();
+        e.stopPropagation();
+        log("⏎ Enter → Save → Next (keyboard)", "act", "ui");
+        finishWrapup(true);
+      }
+      return;
+    }
+
+    // Live call → Esc hangs up and pops the wrap-up modal, no mouse required.
+    if (e.key === "Escape" && ["dialing", "ringing", "connected"].includes(phase)) {
       e.preventDefault();
       e.stopPropagation();
-      log("Escape ignored — disposition is required", "warn", "ui");
+      log("⎋ Esc → hang up (keyboard)", "act", "ui");
+      onHangupClick();
     }
   }, true);
 
@@ -1402,6 +1849,20 @@
         });
       } catch (_) {
         window.open(url, "_blank");
+      }
+      return;
+    }
+    // Customer-name clicks open that lead's Roofr job card. Routed through
+    // chrome.tabs because a bare <a target="_blank"> doesn't reliably navigate
+    // from inside the side panel. Must come BEFORE the .copyable branch — the
+    // name link is also .copyable, and we want "open job card", not "copy name".
+    const jobLink = e.target.closest(".job-link");
+    if (jobLink && !e.metaKey && !e.ctrlKey && !e.shiftKey && e.button === 0) {
+      e.preventDefault();
+      const url = jobLink.getAttribute("href");
+      if (url) {
+        try { chrome.tabs.create({ url }); }
+        catch (_) { window.open(url, "_blank"); }
       }
       return;
     }
@@ -1460,6 +1921,10 @@
   els.filterToggle?.addEventListener("click", () => {
     els.filterPanel?.classList.toggle("open");
     try { chrome.storage.sync.set({ dialer_filters_open: els.filterPanel?.classList.contains("open") }); } catch (_) {}
+  });
+  // Missed Calls filter dropdown — same collapse behavior as the Leads filters.
+  document.getElementById("missed-filter-toggle")?.addEventListener("click", () => {
+    document.getElementById("missed-filter-panel")?.classList.toggle("open");
   });
 
   function rebuildSourceCheckboxes() {
@@ -1626,6 +2091,10 @@
       const leadCtx = currentLead ? ` [${currentLead.phone}]` : "";
       log(`${p.event}${leadCtx}`, "ev", "ctm");
       handleCtmEvent(p.event, p.detail || {});
+      // Separate, additive router for the Needs Rescheduled flow. handleCtmEvent
+      // bails on !currentLead (which rescheduled never sets), so this is the only
+      // consumer of CTM events during a rescheduled call.
+      rschedHandleCtmEvent(p.event);
       return;
     }
     if (p.type === "command-error") {
@@ -1715,16 +2184,23 @@
     if (msg.type === "AD_TAB_ACTIVE") {
       const active = !!msg.active;
       if (!active && mode === "running") {
+        // Auto-pause so we don't keep dialing while the rep reviews another
+        // panel. Flagged so we know to auto-resume when they come back (there's
+        // no manual Pause/Resume button anymore).
         mode = "paused";
-        log(`⏸ paused — switched to "${msg.sectionId || "other"}" tab`, "warn", "ui");
+        _autoPausedByTabSwitch = true;
+        log(`⏸ auto-paused — switched to "${msg.sectionId || "other"}" tab`, "warn", "ui");
         setPhase(phase);
-      } else if (!active && mode === "paused") {
-        // already paused, nothing to do
       } else if (active) {
         log(`dialer tab active`, "info", "ui");
-        // Re-check CTM tab whenever dialer becomes visible
-        if (!ctmTabOpen) {
-          ensureCtmTabOnLoad();
+        if (!ctmTabOpen) ensureCtmTabOnLoad();
+        // Resume right where we left off if WE auto-paused on the way out.
+        if (_autoPausedByTabSwitch && mode === "paused") {
+          _autoPausedByTabSwitch = false;
+          mode = "running";
+          log(`▶ auto-resumed — back on the Dialer tab`, "act", "ui");
+          if (!currentLead && !els.scrim?.classList.contains("show")) advanceToNext();
+          else setPhase(phase);
         }
       }
     }
@@ -1733,6 +2209,7 @@
   // ── Init ──
   async function init() {
     log(`dialer loaded`, "info", "init");
+    loadDailyDone(); // restore today's running Done list + count (survives reloads)
     syncThemeFromParent();
     // Re-sync periodically in case parent toggles theme
     setInterval(syncThemeFromParent, 2000);
@@ -1885,6 +2362,383 @@
         log(`initial bridge ping failed: ${resp.error || "unknown"}`, "err", "bridge");
       }
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // NEEDS RESCHEDULED — isolated two-stage flow (review → call → outcome)
+  // Never sets currentLead / mode / phase, so it can't trigger the normal
+  // dialer's wrap-up, double-tap, cadence, or sheet-lock logic.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  function updateRescheduledBadge(n) {
+    const b = document.getElementById("rescheduled-badge");
+    if (!b) return;
+    if (n > 0) { b.textContent = n; b.style.display = ""; }
+    else { b.textContent = ""; b.style.display = "none"; }
+  }
+
+  // Jobs already arrive newest-reschedule-first from the API. Two filters stack:
+  // a days-back range (when it entered Needs Rescheduled) then a rep (created_by).
+  function rschedRangeFiltered() {
+    if (!_rschedRangeDays) return _rschedAll.slice();
+    const cutoff = Date.now() - _rschedRangeDays * 86400000;
+    return _rschedAll.filter(j => {
+      const t = Date.parse(j.rescheduled_at || "");
+      return isNaN(t) ? false : t >= cutoff;
+    });
+  }
+  function rschedFilteredJobs() {
+    const inRange = rschedRangeFiltered();
+    if (_rschedRepFilter === "all") return inRange;
+    return inRange.filter(j => ((j.created_by || "").trim() || "Unknown CSR") === _rschedRepFilter);
+  }
+
+  function rschedFmtDate(iso) {
+    if (!iso) return "—";
+    try {
+      return new Date(iso).toLocaleDateString("en-US", { timeZone: "America/Phoenix", month: "numeric", day: "numeric" });
+    } catch (_) { return "—"; }
+  }
+
+  // "3d ago" / "5h ago" style age from the rescheduled-at timestamp.
+  function rschedAge(iso) {
+    if (!iso) return "";
+    const t = Date.parse(iso);
+    if (isNaN(t)) return "";
+    const mins = Math.floor((Date.now() - t) / 60000);
+    if (mins < 60) return `${Math.max(0, mins)}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.floor(hrs / 24)}d ago`;
+  }
+
+  // Populate the rep <select> with counts scoped to the active range. Resets
+  // the rep filter to "all" if the chosen rep has no jobs in the new range.
+  function populateRschedRepSelect() {
+    const sel = document.getElementById("rsched-rep-select");
+    if (!sel) return;
+    const inRange = rschedRangeFiltered();
+    const counts = Object.create(null);
+    for (const j of inRange) {
+      const csr = (j.created_by || "").trim() || "Unknown CSR";
+      counts[csr] = (counts[csr] || 0) + 1;
+    }
+    const reps = Object.keys(counts).sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
+    if (_rschedRepFilter !== "all" && !counts[_rschedRepFilter]) _rschedRepFilter = "all";
+    sel.innerHTML = "";
+    const opt = (val, label) => { const o = document.createElement("option"); o.value = val; o.textContent = label; if (val === _rschedRepFilter) o.selected = true; sel.appendChild(o); };
+    opt("all", `All reps (${inRange.length})`);
+    for (const rep of reps) opt(rep, `${rep} (${counts[rep]})`);
+  }
+
+  function syncRschedRangeSelect() {
+    const sel = document.getElementById("rsched-range-select");
+    if (sel) sel.value = String(_rschedRangeDays);
+  }
+
+  function setRschedRepFilter(rep) {
+    if (_rschedRepFilter === rep) return;
+    if (_rschedPhase !== "idle") { log("rsched: finish the current card before changing the filter", "warn", "rsched"); syncRschedRepSelect(); return; }
+    _rschedRepFilter = rep;
+    renderRescheduledQueue();
+  }
+  function syncRschedRepSelect() {
+    const sel = document.getElementById("rsched-rep-select");
+    if (sel) sel.value = _rschedRepFilter;
+  }
+
+  function setRschedRange(days) {
+    const d = parseInt(days) || 0;
+    if (_rschedRangeDays === d) return;
+    if (_rschedPhase !== "idle") { log("rsched: finish the current card before changing the filter", "warn", "rsched"); syncRschedRangeSelect(); return; }
+    _rschedRangeDays = d;
+    renderRescheduledQueue();
+  }
+
+  function renderRescheduledQueue() {
+    const container = document.getElementById("rsched-queue");
+    const header = document.getElementById("rsched-queue-header");
+    if (!container) return;
+    populateRschedRepSelect();
+    syncRschedRangeSelect();
+    updateRescheduledBadge(_rschedAll.length);
+    if (!_rschedAll.length) {
+      container.innerHTML = `<li style="color:var(--muted);font-style:italic;font-size:12px;padding:8px 2px;">No jobs in "Needs Rescheduled".</li>`;
+      if (header) header.textContent = "Rescheduled Queue";
+      _rschedQueue = [];
+      return;
+    }
+    const list = rschedFilteredJobs();
+    _rschedQueue = list;
+    const bits = [];
+    if (_rschedRepFilter !== "all") bits.push(_rschedRepFilter);
+    if (_rschedRangeDays) bits.push(`≤${_rschedRangeDays}d`);
+    const scope = bits.length ? ` · ${bits.join(" · ")}` : "";
+    if (header) header.textContent = `Rescheduled Queue (${list.length}${scope})`;
+    container.innerHTML = "";
+    if (!list.length) {
+      container.innerHTML = `<li style="color:var(--muted);font-style:italic;font-size:12px;padding:8px 2px;">No rescheduled jobs match this filter.</li>`;
+      return;
+    }
+    for (const job of list) {
+      const li = document.createElement("li");
+      li.className = "rsched-row";
+      li.dataset.jobId = String(job.job_id);
+      const age = rschedAge(job.rescheduled_at);
+      li.innerHTML = `
+        <div style="flex:1;min-width:0;">
+          <div class="rsched-name">${escapeHtml(job.customer || "(no name)")}</div>
+          <div class="rsched-phone">${escapeHtml(job.phone || "—")}</div>
+          <div class="rsched-meta">Resched ${escapeHtml(rschedFmtDate(job.rescheduled_at))}${age ? " · " + escapeHtml(age) : ""} · CSR: ${escapeHtml(job.created_by || "—")}</div>
+        </div>`;
+      li.addEventListener("click", () => {
+        const idx = _rschedQueue.findIndex(j => String(j.job_id) === String(job.job_id));
+        if (idx >= 0) { _rschedIdx = idx; rschedOpenCard(_rschedQueue[idx]); }
+      });
+      container.appendChild(li);
+    }
+  }
+
+  // Open the job card in a FRESH (cold-loaded) tab. Navigating an already-warm
+  // Roofr SPA tab makes Roofr treat the URL change as an in-app "Jumping to
+  // track" that respects the tab's current list filter — so a job filtered out
+  // of that view never opens. A cold tab load opens the card every time. We
+  // reuse ONE dedicated tab: open the new one, then close the previous.
+  function rschedOpenJobCard(url) {
+    if (!url) return;
+    try {
+      const prev = _rschedRoofrTabId;
+      chrome.tabs.create({ url, active: true }, (t) => {
+        if (chrome.runtime.lastError || !t) { window.open(url, "_blank"); return; }
+        _rschedRoofrTabId = t.id;
+        if (t.windowId != null) chrome.windows.update(t.windowId, { focused: true });
+        if (prev != null && prev !== t.id) {
+          chrome.tabs.remove(prev, () => { void chrome.runtime.lastError; });
+        }
+      });
+    } catch (_) { window.open(url, "_blank"); }
+  }
+
+  function rschedParseTimer(v) {
+    const s = String(v || "").trim();
+    const c = s.indexOf(":");
+    if (c >= 0) return (parseInt(s.slice(0, c)) || 0) * 60 + (parseInt(s.slice(c + 1)) || 0);
+    return parseInt(s) || 0;
+  }
+  function rschedFmt(sec) {
+    sec = Math.max(0, sec | 0);
+    return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+  }
+
+  function rschedStartQueue() {
+    if (!_rschedQueue.length) _rschedQueue = rschedFilteredJobs();
+    if (!_rschedQueue.length) { log("rescheduled: queue is empty — nothing to start", "warn", "rsched"); return; }
+    _rschedIdx = 0;
+    rschedOpenCard(_rschedQueue[0]);
+  }
+
+  function rschedOpenCard(job) {
+    if (mode === "running" || ["dialing", "ringing", "connected", "wrapup"].includes(phase)) {
+      log("rescheduled: stop the main dialer before opening a card", "warn", "rsched");
+      return;
+    }
+    _rschedJob = job;
+    _rschedStage1 = "";
+    _rschedPhase = "reviewing";
+    rschedOpenJobCard(job.link);
+    log(`rsched: ▸ ${job.customer || job.job_id} (${job.phone || "no phone"}) — CSR ${job.created_by || "?"}`, "act", "rsched");
+    _rschedRemainSec = rschedParseTimer(document.getElementById("rsched-timer-input")?.value) || RSCHED_DEFAULT_REVIEW_SEC;
+    rschedRenderCard();
+    rschedShowPhase("reviewing");
+    rschedStartTimer();
+    document.querySelectorAll(".rsched-row").forEach(r => r.classList.toggle("active", r.dataset.jobId === String(job.job_id)));
+  }
+
+  function rschedRenderCard() {
+    const j = _rschedJob; if (!j) return;
+    const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+    set("rsched-job-name", j.customer || "(no name)");
+    set("rsched-job-phone", j.phone || "—");
+    const meta = document.getElementById("rsched-job-meta");
+    const age = rschedAge(j.rescheduled_at);
+    if (meta) meta.innerHTML =
+      `Created by <strong>${escapeHtml(j.created_by || "—")}</strong> · Rescheduled ${escapeHtml(rschedFmtDate(j.rescheduled_at))}${age ? " (" + escapeHtml(age) + ")" : ""}<br>${escapeHtml(j.address || "")}`;
+  }
+
+  function rschedShowPhase(ph) {
+    const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? "" : "none"; };
+    show("rsched-review-card", ph !== "idle");
+    show("rsched-stage1", ph === "reviewing");
+    show("rsched-dialing", ph === "calling");
+    show("rsched-stage2", ph === "stage2");
+    const badge = document.getElementById("rsched-phase-badge");
+    if (badge) badge.textContent = { reviewing: "Reviewing", calling: "Calling", stage2: "Outcome" }[ph] || ph;
+  }
+
+  function rschedStartTimer() {
+    rschedStopTimer();
+    const disp = document.getElementById("rsched-timer-display");
+    const nudge = document.getElementById("rsched-nudge");
+    if (nudge) nudge.style.display = "none";
+    if (disp) { disp.classList.remove("times-up"); disp.textContent = rschedFmt(_rschedRemainSec); }
+    _rschedTimerId = setInterval(() => {
+      if (_rschedPhase !== "reviewing") { rschedStopTimer(); return; }
+      _rschedRemainSec = Math.max(0, _rschedRemainSec - 1);
+      if (disp) disp.textContent = rschedFmt(_rschedRemainSec);
+      if (_rschedRemainSec === 0) {
+        rschedStopTimer();
+        // SOFT NUDGE: flash, but never force-advance or cut off the review.
+        if (disp) disp.classList.add("times-up");
+        if (nudge) nudge.style.display = "";
+        log(`rsched: review time up for ${_rschedJob?.customer} (soft nudge)`, "info", "rsched");
+      }
+    }, 1000);
+  }
+  function rschedStopTimer() { if (_rschedTimerId) { clearInterval(_rschedTimerId); _rschedTimerId = null; } }
+
+  function rschedStartCallTimer() {
+    rschedStopCallTimer();
+    _rschedCallStartMs = Date.now();
+    const el = document.getElementById("rsched-call-timer");
+    _rschedCallTimerId = setInterval(() => {
+      if (el) el.textContent = rschedFmt(Math.floor((Date.now() - _rschedCallStartMs) / 1000));
+    }, 1000);
+  }
+  function rschedStopCallTimer() {
+    if (_rschedCallTimerId) { clearInterval(_rschedCallTimerId); _rschedCallTimerId = null; }
+    const el = document.getElementById("rsched-call-timer"); if (el) el.textContent = "";
+  }
+
+  // Panel-only logging — records the outcome in the Event log (no sheet write).
+  function rschedLogOutcome(stage1, stage2, note) {
+    const j = _rschedJob; if (!j) return;
+    const parts = [stage1]; if (stage2) parts.push("→ " + stage2); if (note) parts.push(`(${note})`);
+    log(`rsched ✓ ${j.customer || j.job_id} [${j.created_by || "?"}]: ${parts.join(" ")}`, "ok", "rsched");
+  }
+
+  function rschedAdvance() {
+    _rschedIdx++;
+    if (_rschedIdx >= 0 && _rschedIdx < _rschedQueue.length) {
+      rschedOpenCard(_rschedQueue[_rschedIdx]);
+    } else {
+      log("rsched: queue complete — every card reviewed this session", "ok", "rsched");
+      rschedReset();
+      fetchLeads({ force: true });
+    }
+  }
+
+  function rschedReset() {
+    rschedStopTimer();
+    rschedStopCallTimer();
+    clearTimeout(_rschedRingTimeoutId);
+    _rschedDialActive = false;
+    _rschedPhase = "idle";
+    _rschedJob = null;
+    rschedShowPhase("idle");
+    document.querySelectorAll(".rsched-row").forEach(r => r.classList.remove("active"));
+  }
+
+  // ── Stage 1 ──
+  async function rschedHandleCall() {
+    if (mode === "running" || ["dialing", "ringing", "connected", "wrapup"].includes(phase)) {
+      log("rsched: can't dial — the main dialer is active", "warn", "rsched"); return;
+    }
+    const j = _rschedJob; if (!j) return;
+    const e164 = toE164(j.phone || "");
+    if (!e164) { log(`rsched: bad/empty phone: ${j.phone || "(none)"}`, "err", "rsched"); return; }
+    const ready = await ensureCtmTab();
+    if (!ready) { log("rsched: CTM tab not ready — can't dial", "err", "rsched"); return; }
+    _rschedStage1 = "Call";
+    _rschedPhase = "calling";
+    _rschedDialActive = true;
+    _currentDialAt = Date.now();   // lets the listener's stale-event guard protect this call
+    rschedStopTimer();
+    rschedShowPhase("calling");
+    rschedStartCallTimer();
+    log(`rsched: ▶ DIALING ${j.customer} ${e164}`, "act", "rsched");
+    clearTimeout(_rschedRingTimeoutId);
+    _rschedRingTimeoutId = setTimeout(() => {
+      if (_rschedPhase === "calling") {
+        log("rsched: ring timeout — ending, go to outcome", "warn", "rsched");
+        sendToCtm({ type: "hangup" }).catch(() => {});
+        rschedOnCallEnded();
+      }
+    }, RING_TIMEOUT_MS);
+    const resp = await sendToCtm({ type: "dial", number: e164 });
+    if (!resp || !resp.ok) {
+      log(`rsched: dial failed: ${resp?.error || "?"} — go to outcome`, "err", "rsched");
+      clearTimeout(_rschedRingTimeoutId);
+      rschedStopCallTimer();
+      _rschedDialActive = false;
+      _rschedPhase = "stage2";
+      rschedShowPhase("stage2");
+    }
+  }
+  function rschedHandleChangedS1() {
+    rschedStopTimer();
+    rschedLogOutcome("Changed status (after review)", "", "");
+    rschedAdvance();
+  }
+  function rschedHandleSkip() {
+    rschedStopTimer();
+    rschedLogOutcome("Skip", "", "");
+    rschedAdvance();
+  }
+
+  // ── Stage 2 ──
+  function rschedHandleStage2(label) {
+    const note = (document.getElementById("rsched-note")?.value || "").trim();
+    rschedLogOutcome(_rschedStage1 || "Call", label, note);
+    const n = document.getElementById("rsched-note"); if (n) n.value = "";
+    rschedAdvance();
+  }
+
+  function rschedOnCallEnded() {
+    clearTimeout(_rschedRingTimeoutId);
+    rschedStopCallTimer();
+    _rschedDialActive = false;
+    if (_rschedPhase !== "calling") return;
+    _rschedPhase = "stage2";
+    rschedShowPhase("stage2");
+    log(`rsched: call ended → outcome for ${_rschedJob?.customer}`, "info", "rsched");
+  }
+
+  // Separate CTM router — only acts when a rescheduled call is active.
+  function rschedHandleCtmEvent(eventName) {
+    if (!_rschedDialActive) return;
+    if (eventName === "ctm:start") {
+      log("rsched: call connected", "ok", "rsched");
+      const el = document.getElementById("rsched-call-timer"); if (el) el.style.color = "var(--success)";
+    } else if (eventName === "ctm:end-activity" || eventName === "ctm:wrapup_start" || eventName === "ctm:failed") {
+      rschedOnCallEnded();
+    }
+  }
+
+  function rschedBindButtons() {
+    const on = (id, fn) => document.getElementById(id)?.addEventListener("click", fn);
+    document.getElementById("rsched-rep-select")?.addEventListener("change", (e) => setRschedRepFilter(e.target.value));
+    document.getElementById("rsched-range-select")?.addEventListener("change", (e) => setRschedRange(e.target.value));
+    on("rsched-start-btn", rschedStartQueue);
+    on("rsched-refresh-btn", async () => {
+      const b = document.getElementById("rsched-refresh-btn");
+      if (b) { b.disabled = true; b.textContent = "↻ …"; }
+      try { await fetchLeads({ force: true }); }
+      finally { if (b) { b.disabled = false; b.textContent = "↻ Refresh"; } }
+    });
+    on("rsched-reopen-btn", () => { if (_rschedJob?.link) rschedOpenJobCard(_rschedJob.link); });
+    on("rsched-btn-call", rschedHandleCall);
+    on("rsched-btn-changed-s1", rschedHandleChangedS1);
+    on("rsched-btn-skip", rschedHandleSkip);
+    on("rsched-btn-contacted", () => rschedHandleStage2("Contacted"));
+    on("rsched-btn-leftvm", () => rschedHandleStage2("Left VM"));
+    on("rsched-btn-changed-s2", () => rschedHandleStage2("Changed status"));
+    on("rsched-btn-unqualified", () => rschedHandleStage2("Unqualified"));
+    on("rsched-btn-other", () => rschedHandleStage2("Other"));
+    on("rsched-hangup-btn", () => {
+      log("rsched: hangup clicked", "act", "rsched");
+      sendToCtm({ type: "hangup" }).catch(() => {});
+      rschedOnCallEnded();
+    });
   }
 
   init();

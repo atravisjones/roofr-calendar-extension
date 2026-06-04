@@ -31,7 +31,7 @@ const SEED_DEFAULTS = {
     show_job_sorting: false,
     show_people: true,
     show_clipboard: true,  // Fixed: was false, now matches options.js default
-    show_reports: true,
+    show_reports: false,   // Hidden by default (onInstalled re-seeds with `if (!current[key])`, so true here re-enabled it on every reload)
     // Interface behavior
     show_dock_note: true,
     default_tab: "scanner",
@@ -371,6 +371,42 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
 // Listen for preference updates from popup.js and CTM incoming calls
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    // Open a Roofr URL in a BACKGROUND tab (Roofr "open in new tab" feature, so middle-click /
+    // Ctrl+Cmd-click never steals focus). URL is validated to app.roofr.com for safety.
+    if (msg.type === "ROOFR_OPEN_BG_TAB" && typeof msg.url === "string" && /^https:\/\/app\.roofr\.com\//.test(msg.url)) {
+        const opts = { url: msg.url, active: false };
+        if (sender.tab && sender.tab.windowId !== undefined) opts.windowId = sender.tab.windowId;
+        chrome.tabs.create(opts);
+        return; // fire-and-forget
+    }
+
+    // Open a Roofr job-card ATTACHMENT (PDF/image) in a BACKGROUND tab. The raw file URL is an
+    // S3 presigned link with content-disposition=attachment baked into the signature, so it
+    // force-downloads instead of rendering. For viewable types we open the bundled viewer page
+    // (attachment-viewer.html), which fetches the bytes (extension has S3 host permission ->
+    // CORS-exempt) and re-serves them inline. Non-viewable types just open the URL (download).
+    if (msg.type === "ROOFR_OPEN_ATTACHMENT" && typeof msg.url === "string") {
+        let host = "";
+        try { host = new URL(msg.url).host; } catch (e) { return; }
+        const ALLOWED = ["roofr-storage-private.s3.amazonaws.com", "ik.imagekit.io"];
+        if (!ALLOWED.includes(host)) return;
+        const ext = (msg.ext || "").toLowerCase();
+        const VIEWABLE = ["pdf", "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "heic", "heif"];
+        let target;
+        if (VIEWABLE.includes(ext)) {
+            target = chrome.runtime.getURL("attachment-viewer.html")
+                + "?u=" + encodeURIComponent(msg.url)
+                + "&t=" + encodeURIComponent(ext)
+                + "&n=" + encodeURIComponent(msg.name || "");
+        } else {
+            target = msg.url; // not inline-viewable -> let the browser download it (background tab)
+        }
+        const opts = { url: target, active: false };
+        if (sender.tab && sender.tab.windowId !== undefined) opts.windowId = sender.tab.windowId;
+        chrome.tabs.create(opts);
+        return; // fire-and-forget
+    }
+
     // Open contacts page and search for a specific phone number (triggered from popup UI)
     if (msg.type === "OPEN_CONTACTS_FOR_PHONE") {
         // Pass true to skip enabled check since this is a manual user action

@@ -1493,6 +1493,81 @@
       cursor: grab;
     }
 
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      position: relative;
+    }
+
+    .scan-options-popover {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      margin-top: 6px;
+      z-index: 10000;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
+      padding: 10px;
+      min-width: 168px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .scan-opt-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .scan-opt-row label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      color: var(--text-muted);
+    }
+
+    .scan-mini-select {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 5px 6px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text-main);
+      cursor: pointer;
+      width: 100%;
+    }
+
+    .group-move-controls {
+      display: inline-flex;
+      gap: 2px;
+    }
+
+    .group-move-btn {
+      background: var(--surface-hover);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+      line-height: 1;
+      padding: 3px 6px;
+    }
+
+    .group-move-btn:hover:not(:disabled) {
+      background: var(--surface-active, #e0f2fe);
+    }
+
+    .group-move-btn:disabled {
+      opacity: 0.3;
+      cursor: default;
+    }
+
     .names-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
@@ -1694,6 +1769,11 @@
     .link-item:hover svg {
       color: var(--primary);
     }
+
+    /* Dialer tab: lock popup scroll so the iframe's own sticky header + fixed
+       footer stay put (otherwise the whole iframe scrolls with the popup). */
+    body.dialer-active { overflow: hidden; }
+    body.dialer-active .app { padding-bottom: 0 !important; }
 
     /* --- Bottom Dock --- */
     .dock {
@@ -2131,300 +2211,6 @@
       opacity: 1;
     }
 
-    /* --- Job Sorting Tab (NEW MODERN STYLES) --- */
-    #sec-sorting-filters {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 12px;
-      margin-bottom: 12px;
-    }
-
-    #sec-sorting-filters .filter-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px 16px;
-    }
-
-    .filter-group label {
-      font-weight: 700;
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 0.02em;
-      color: var(--text-muted);
-      display: block;
-      margin-bottom: 4px;
-    }
-
-    .filter-group select {
-      font-weight: 600;
-    }
-
-    #job-list-container {
-      max-height: 65vh;
-      overflow-y: auto;
-      background: var(--surface);
-      border-radius: var(--radius);
-      border: 1px solid var(--border);
-    }
-
-    .job-item-v2 {
-      display: flex;
-      align-items: stretch;
-      padding: 8px 12px;
-      border-bottom: 1px solid var(--border);
-      cursor: pointer;
-      transition: background-color 0.15s;
-    }
-
-    .job-item-v2:last-child {
-      border-bottom: none;
-    }
-
-    .job-item-v2:hover {
-      background-color: var(--primary-light);
-    }
-
-    .job-v2-main {
-      flex-grow: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      min-width: 0;
-    }
-
-    .job-v2-address {
-      font-weight: 700;
-      font-size: 0.9rem;
-      color: var(--text-main);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .job-v2-city {
-      font-size: 0.75rem;
-      font-weight: 600;
-      color: var(--text-muted);
-      margin-top: -2px;
-    }
-
-    .job-v2-details-compact {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 4px 12px;
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      font-weight: 600;
-    }
-
-    .job-v2-details-compact>span {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
-
-    .job-v2-details-compact svg {
-      flex-shrink: 0;
-      color: var(--text-light);
-    }
-
-    .job-v2-hashtags {
-      font-weight: 800;
-      font-size: 0.9rem;
-    }
-
-    .job-v2-hashtags.count-1 {
-      color: #ca8a04;
-    }
-
-    /* yellow-600 */
-    .job-v2-hashtags.count-2 {
-      color: #d97706;
-    }
-
-    /* amber-600 */
-    .job-v2-hashtags.count-3 {
-      color: #ea580c;
-    }
-
-    /* orange-600 */
-
-    body.dark-theme .job-v2-hashtags.count-1 {
-      color: #facc15;
-    }
-
-    body.dark-theme .job-v2-hashtags.count-2 {
-      color: #fbbf24;
-    }
-
-    body.dark-theme .job-v2-hashtags.count-3 {
-      color: #f97316;
-    }
-
-    .job-v2-raw-tags {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px;
-      margin-top: 2px;
-    }
-
-    .job-v2-tag-pill {
-      padding: 1px 6px;
-      border-radius: 4px;
-      font-size: 0.7rem;
-      font-weight: 700;
-      border: 1px solid;
-      white-space: nowrap;
-    }
-
-    .tag-color-1 {
-      background-color: #dbeafe;
-      color: #1e40af;
-      border-color: #93c5fd;
-    }
-
-    .tag-color-2 {
-      background-color: #dcfce7;
-      color: #166534;
-      border-color: #86efac;
-    }
-
-    .tag-color-3 {
-      background-color: #fee2e2;
-      color: #991b1b;
-      border-color: #fca5a5;
-    }
-
-    .tag-color-4 {
-      background-color: #f3e8ff;
-      color: #581c87;
-      border-color: #d8b4fe;
-    }
-
-    .tag-color-5 {
-      background-color: #fef9c3;
-      color: #854d0e;
-      border-color: #fde047;
-    }
-
-    .tag-color-6 {
-      background-color: #fce7f3;
-      color: #9d174d;
-      border-color: #f9a8d4;
-    }
-
-    .tag-color-7 {
-      background-color: #e0e7ff;
-      color: #3730a3;
-      border-color: #a5b4fc;
-    }
-
-    .tag-color-8 {
-      background-color: #f0fdf4;
-      color: #14532d;
-      border-color: #4ade80;
-    }
-
-    body.dark-theme .tag-color-1 {
-      background-color: #1e3a8a;
-      color: #bfdbfe;
-      border-color: #3b82f6;
-    }
-
-    body.dark-theme .tag-color-2 {
-      background-color: #14532d;
-      color: #86efac;
-      border-color: #22c55e;
-    }
-
-    body.dark-theme .tag-color-3 {
-      background-color: #7f1d1d;
-      color: #fca5a5;
-      border-color: #ef4444;
-    }
-
-    body.dark-theme .tag-color-4 {
-      background-color: #581c87;
-      color: #e9d5ff;
-      border-color: #a855f7;
-    }
-
-    body.dark-theme .tag-color-5 {
-      background-color: #78350f;
-      color: #fde047;
-      border-color: #eab308;
-    }
-
-    body.dark-theme .tag-color-6 {
-      background-color: #831843;
-      color: #fbcfe8;
-      border-color: #ec4899;
-    }
-
-    body.dark-theme .tag-color-7 {
-      background-color: #312e81;
-      color: #c7d2fe;
-      border-color: #6366f1;
-    }
-
-    body.dark-theme .tag-color-8 {
-      background-color: #052e16;
-      color: #bbf7d0;
-      border-color: #4ade80;
-    }
-
-    .job-v2-time {
-      flex-shrink: 0;
-      margin-left: 12px;
-      padding-left: 12px;
-      border-left: 1px solid var(--border);
-      text-align: right;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      width: 80px;
-    }
-
-    .job-v2-day {
-      font-size: 1.1rem;
-      font-weight: 800;
-      color: var(--text-main);
-    }
-
-    .job-v2-timeslot {
-      font-size: 0.75rem;
-      font-weight: 600;
-      color: var(--text-muted);
-    }
-
-    @media (max-width: 420px) {
-      .job-item-v2 {
-        flex-direction: column;
-        gap: 6px;
-      }
-
-      .job-v2-time {
-        border-left: none;
-        border-top: 1px solid var(--border);
-        padding-left: 0;
-        padding-top: 6px;
-        margin-left: 0;
-        text-align: left;
-        width: auto;
-        flex-direction: row;
-        justify-content: flex-start;
-        align-items: baseline;
-        gap: 6px;
-      }
-
-      .job-v2-day {
-        font-size: 1rem;
-      }
-    }
-
-
     /* Scan Spinner */
     .scan-spinner {
       display: inline-block;
@@ -2809,7 +2595,7 @@
         <!-- Top Row: Actions & Tabs -->
         <div class="actions-bar header-bar">
           <div class="header-left">
-            <button id="scanBtn" class="btn" title="Scan calendar for events">
+            <button id="scanBtn" class="btn" title="Scan calendar for events (right-click for profile + view options)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
                 stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;">
                 <path d="M21 12a9 9 0 11-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
@@ -2817,6 +2603,26 @@
               </svg>
               Scan
             </button>
+            <!-- Right-click the Scan button to toggle this -->
+            <div id="scan-options-popover" class="scan-options-popover" style="display:none;">
+              <div class="scan-opt-row">
+                <label for="scan-profile-select">Scan profile</label>
+                <select id="scan-profile-select" class="scan-mini-select" title="Which calendar event types the scan reads">
+                  <option value="retail">Retail</option>
+                  <option value="d2d">D2D</option>
+                  <option value="production">Production</option>
+                  <option value="insurance">Insurance</option>
+                </select>
+              </div>
+              <div class="scan-opt-row">
+                <label for="scan-view-select">Calendar view</label>
+                <select id="scan-view-select" class="scan-mini-select" title="Calendar view used when scanning">
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="agenda">Agenda</option>
+                </select>
+              </div>
+            </div>
           </div>
 
           <!-- CTM Toggle with Active Calls Dropdown - Centered -->
@@ -2863,7 +2669,6 @@
         <div class="nav-segment-row">
           <div class="nav-segment">
             <button class="nav-tab active" data-target="sec-scanner">Scanner</button>
-            <button class="nav-tab" data-target="sec-sorting">Job Sorting</button>
             <button class="nav-tab" data-target="sec-reports">Reports</button>
             <button class="nav-tab" data-target="sec-people">People</button>
             <button class="nav-tab" data-target="sec-clipboard">Clipboard</button>
@@ -2933,61 +2738,6 @@
         </div>
       </section>
 
-      <!-- Job Sorting Section -->
-      <section id="sec-sorting" class="section">
-        <div id="sec-sorting-filters">
-          <div class="filter-grid">
-            <div class="filter-group">
-              <label for="sort-filter-tags">Tags</label>
-              <select id="sort-filter-tags">
-                <option value="">Any</option>
-                <option value="1">#+</option>
-                <option value="2">##+</option>
-                <option value="3">###+</option>
-              </select>
-            </div>
-            <div class="filter-group">
-              <label for="sort-filter-roofType">Roof Type</label>
-              <select id="sort-filter-roofType">
-                <option value="">All</option>
-              </select>
-            </div>
-            <div class="filter-group">
-              <label for="sort-filter-jobType">Job Type</label>
-              <select id="sort-filter-jobType">
-                <option value="">All</option>
-              </select>
-            </div>
-            <div class="filter-group">
-              <label for="sort-filter-city">City</label>
-              <select id="sort-filter-city">
-                <option value="">All</option>
-              </select>
-            </div>
-            <div class="filter-group">
-              <label for="sort-filter-stories">Stories</label>
-              <select id="sort-filter-stories">
-                <option value="">All</option>
-              </select>
-            </div>
-            <div class="filter-group">
-              <label for="sort-filter-day">Day</label>
-              <select id="sort-filter-day">
-                <option value="">All</option>
-              </select>
-            </div>
-            <div class="filter-group">
-              <label for="sort-filter-time">Time</label>
-              <select id="sort-filter-time">
-                <option value="">All</option>
-              </select>
-            </div>
-          </div>
-        </div>
-        <div id="job-list-container">
-          <!-- Jobs will be rendered here by JS -->
-        </div>
-      </section>
 
       <!-- Reports Automation Section -->
       <section id="sec-reports" class="section">
@@ -3169,17 +2919,41 @@ Available:
       <!-- People Section -->
       <section id="sec-people" class="section">
         <div class="people-container">
-          <div class="people-group draggable-panel" draggable="true">
-            <div class="people-header"><span>Sales Reps</span> <span class="drag-handle">⋮⋮</span></div>
+          <div class="people-group" data-group="reps">
+            <div class="people-header"><span>Sales Reps</span>
+              <span class="group-move-controls"><button class="group-move-btn" data-move="up" title="Move up">▲</button><button class="group-move-btn" data-move="down" title="Move down">▼</button></span>
+            </div>
             <div id="repsList" class="names-grid"></div>
           </div>
-          <div class="people-group draggable-panel" draggable="true">
-            <div class="people-header"><span>CSRs</span> <span class="drag-handle">⋮⋮</span></div>
+          <div class="people-group" data-group="csrs">
+            <div class="people-header"><span>CSRs</span>
+              <span class="group-move-controls"><button class="group-move-btn" data-move="up" title="Move up">▲</button><button class="group-move-btn" data-move="down" title="Move down">▼</button></span>
+            </div>
             <div id="csrsList" class="names-grid"></div>
           </div>
-          <div class="people-group draggable-panel" draggable="true">
-            <div class="people-header"><span>Management</span> <span class="drag-handle">⋮⋮</span></div>
+          <div class="people-group" data-group="mgmt">
+            <div class="people-header"><span>Management</span>
+              <span class="group-move-controls"><button class="group-move-btn" data-move="up" title="Move up">▲</button><button class="group-move-btn" data-move="down" title="Move down">▼</button></span>
+            </div>
             <div id="mgmtList" class="names-grid"></div>
+          </div>
+          <div class="people-group" data-group="production">
+            <div class="people-header"><span>Production</span>
+              <span class="group-move-controls"><button class="group-move-btn" data-move="up" title="Move up">▲</button><button class="group-move-btn" data-move="down" title="Move down">▼</button></span>
+            </div>
+            <div id="productionList" class="names-grid"></div>
+          </div>
+          <div class="people-group" data-group="insurance">
+            <div class="people-header"><span>Insurance</span>
+              <span class="group-move-controls"><button class="group-move-btn" data-move="up" title="Move up">▲</button><button class="group-move-btn" data-move="down" title="Move down">▼</button></span>
+            </div>
+            <div id="insuranceList" class="names-grid"></div>
+          </div>
+          <div class="people-group" data-group="d2d">
+            <div class="people-header"><span>Door to Door</span>
+              <span class="group-move-controls"><button class="group-move-btn" data-move="up" title="Move up">▲</button><button class="group-move-btn" data-move="down" title="Move down">▼</button></span>
+            </div>
+            <div id="d2dList" class="names-grid"></div>
           </div>
         </div>
       </section>
@@ -3448,6 +3222,27 @@ Available:
         <div class="setting-group-header">Scanner Preferences</div>
 
         <div class="setting-row">
+          <span class="setting-label">Scan Profile</span>
+          <select id="setting-scan-profile" class="setting-input"
+            style="padding:4px; border-radius:4px; border:1px solid var(--border);">
+            <option value="retail">Retail</option>
+            <option value="d2d">D2D</option>
+            <option value="production">Production</option>
+            <option value="insurance">Insurance</option>
+          </select>
+        </div>
+
+        <div class="setting-row">
+          <span class="setting-label">Calendar View</span>
+          <select id="setting-scan-view" class="setting-input"
+            style="padding:4px; border-radius:4px; border:1px solid var(--border);">
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="agenda">Agenda</option>
+          </select>
+        </div>
+
+        <div class="setting-row">
           <span class="setting-label">Scanner Mode</span>
           <div style="text-align:right;">
             <label class="switch">
@@ -3496,9 +3291,9 @@ Available:
         <div class="setting-group-header">Interface</div>
 
         <div class="setting-row">
-          <span class="setting-label">Show Job Sorting Tab</span>
+          <span class="setting-label">Show Dialer Tab</span>
           <label class="switch">
-            <input type="checkbox" id="setting-show-job-sorting">
+            <input type="checkbox" id="setting-show-dialer">
             <span class="slider"></span>
           </label>
         </div>

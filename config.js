@@ -833,10 +833,18 @@ export const CONFIG = {
 };
 
 export const PEOPLE_DATA = {
-    REPS: ["Christian Noren", "Connor Hamby", "Jonathan Marino", "Josh Jewett", "Justin Parker", "London Smith", "Orlando Chavarria", "Richard Hadsall", "Stephen Chaidez", "Tanner Broadbent"].sort(),
-    MGMT: ["Andrew Clark", "Anthony Bonomo", "Bradley Crohurst", "Brenda Ochoa", "Nikolas Pagoulatos", "Yousef Ayad"].sort(),
-    CSRS: ["Alex Tillotson", "Bronté Pisz", "Diva Shahpur", "Khamilah Valles", "Madi Meyers", "Nica Javier", "Travis Jones"].sort(),
-    PRODUCTION: ["Jayda Fairfield", "Justin Saiz"].sort(),
+    REPS: ["Alex Tillotson", "Christian Noren", "Connor Hamby", "Jonathan Marino", "Josh Jewett", "Justin Parker", "London Smith", "Orlando Chavarria", "Richard Hadsall", "Stephen Chaidez", "Tanner Broadbent"].sort(),
+    // Conor Smith, Jayda Fairfield, Raven Pelfrey, Travis Jones are intentional duplicates —
+    // they're also Production/CSR but Travis wants them shown under Management too.
+    MGMT: ["Andrew Clark", "Anthony Bonomo", "Bradley Crohurst", "Brenda Ochoa", "Conor Smith", "Jayda Fairfield", "Nikolas Pagoulatos", "Raven Pelfrey", "Travis Jones", "Yousef Ayad"].sort(),
+    CSRS: ["Bronté Pisz", "Diva Shahpur", "Khamilah Valles", "Madi Meyers", "Nica Javier", "Travis Jones"].sort(),
+
+    // PRODUCTION / INSURANCE / D2D are live-synced from the Company Team Roster sheet
+    // (Department column) on each People-tab load — see fetchRosterGroups() in popup.js.
+    // These arrays are the OFFLINE FALLBACK used if the sheet fetch fails.
+    PRODUCTION: ["Austin Huffman", "Brandon Jordan", "Brian Carter", "Carter Grant", "Chandler Duffy", "Conor Smith", "Jayda Fairfield", "Raven Pelfrey", "Robert Mcpherson"].sort(),
+    INSURANCE: ["Aaron Munz", "Anthony Espinosa", "Catherine Bonomo", "Khamilah Valles", "Rebekah Fontenot"].sort(),
+    D2D: ["Brandon Cook", "Brenda Ochoa", "Carson Anderson", "Dylan Lopez", "Israel Silva", "James Chernek", "James DeCoursey", "Jordan Depue", "Kory Dumone", "Michael Hurff", "Nahum Sandoval", "Tanner Stephens"].sort(),
 
     // CTM multi_agents user IDs — used to build per-rep CTM calls URLs
     CTM_USER_IDS: {

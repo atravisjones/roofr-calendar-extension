@@ -7,11 +7,12 @@ const rootDir = path.join(__dirname, '..');
 const releasesDir = path.join(rootDir, 'releases');
 const keyPath = path.join(rootDir, 'extension.pem');
 
-// Files to include in the extension
+// Files to include in the extension. Keep in sync with manifest.json references.
 const extensionFiles = [
     'manifest.json',
     'service_worker.js',
     'content.js',
+    'roofr-material-order-newtab.js',
     'popup.html',
     'popup.js',
     'options.html',
@@ -24,44 +25,49 @@ const extensionFiles = [
     'dialer.js',
     'dialer-bridge.js',
     'dialer-bridge-main.js',
-    'dialer-sources.js'
+    'dialer-sources.js',
+    'attachment-viewer.html',
+    'attachment-viewer.js'
 ];
+
+// Directories whose entire contents ship with the extension (e.g. icons/).
+const extensionDirs = ['icons'];
 
 function generatePrivateKey() {
     const { privateKey } = crypto.generateKeyPairSync('rsa', {
         modulusLength: 2048,
-        privateKeyEncoding: {
-            type: 'pkcs1',
-            format: 'pem'
-        },
-        publicKeyEncoding: {
-            type: 'pkcs1',
-            format: 'pem'
-        }
+        privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+        publicKeyEncoding: { type: 'pkcs1', format: 'pem' }
     });
     return privateKey;
 }
 
+function copyDirRecursive(src, dest) {
+    fs.mkdirSync(dest, { recursive: true });
+    for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+        const s = path.join(src, entry.name);
+        const d = path.join(dest, entry.name);
+        if (entry.isDirectory()) copyDirRecursive(s, d);
+        else fs.copyFileSync(s, d);
+    }
+}
+
 async function buildCrx() {
-    // Get version from manifest
     const manifest = JSON.parse(fs.readFileSync(path.join(rootDir, 'manifest.json'), 'utf8'));
     const version = manifest.version;
 
     console.log(`Building CRX for v${version}...`);
 
-    // Ensure releases directory exists
     if (!fs.existsSync(releasesDir)) {
         fs.mkdirSync(releasesDir, { recursive: true });
     }
 
-    // Create a temp directory with only the extension files
     const tempDir = path.join(releasesDir, 'temp-extension');
     if (fs.existsSync(tempDir)) {
         fs.rmSync(tempDir, { recursive: true });
     }
     fs.mkdirSync(tempDir, { recursive: true });
 
-    // Copy extension files to temp directory
     for (const file of extensionFiles) {
         const srcPath = path.join(rootDir, file);
         const destPath = path.join(tempDir, file);
@@ -72,7 +78,15 @@ async function buildCrx() {
         }
     }
 
-    // Load or generate private key
+    for (const dir of extensionDirs) {
+        const srcDir = path.join(rootDir, dir);
+        if (fs.existsSync(srcDir)) {
+            copyDirRecursive(srcDir, path.join(tempDir, dir));
+        } else {
+            console.warn(`Warning: directory ${dir} not found, skipping`);
+        }
+    }
+
     let privateKey;
     if (fs.existsSync(keyPath)) {
         console.log('Using existing private key...');
@@ -95,25 +109,15 @@ async function buildCrx() {
         await crx.load(tempDir);
         const crxBuffer = await crx.pack();
 
-        // Save the .crx file
         const crxPath = path.join(releasesDir, 'roofr-calendar-scraper.crx');
         fs.writeFileSync(crxPath, crxBuffer);
         console.log(`CRX saved to: ${crxPath}`);
-
-        // Get extension ID from the crx
         console.log(`\nExtension ID: ${crx.appId}`);
-        console.log('\nNext steps:');
-        console.log('1. Upload roofr-calendar-scraper.crx to GitHub releases');
-        console.log('2. Update updates.xml with the extension ID');
-        console.log('3. Deploy Chrome policy to force-install the extension');
 
-        // Clean up temp directory
         fs.rmSync(tempDir, { recursive: true });
-
         return crx.appId;
     } catch (err) {
         console.error('Error building CRX:', err);
-        // Clean up temp directory
         if (fs.existsSync(tempDir)) {
             fs.rmSync(tempDir, { recursive: true });
         }

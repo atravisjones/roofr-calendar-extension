@@ -283,6 +283,101 @@
       display: flex; align-items: center; gap: 8px;
     }
 
+    /* Leads / Missed Calls tabs */
+    .tab-bar {
+      display: flex; gap: 6px; margin-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tab-btn {
+      flex: 1; padding: 8px 10px; font-size: 13px; font-weight: 600;
+      background: transparent; color: var(--muted); border: none;
+      border-bottom: 2px solid transparent; cursor: pointer; box-shadow: none;
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      transition: color 120ms, border-color 120ms;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--accent-hi); border-bottom-color: var(--accent-hi); }
+    .tab-badge {
+      background: var(--danger); color: #fff; font-size: 11px; font-weight: 700;
+      min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+      display: inline-flex; align-items: center; justify-content: center; line-height: 1;
+    }
+
+    /* Missed-call rows where the caller is already a Roofr customer */
+    #queue li.customer-row {
+      background: rgba(59, 159, 214, 0.14);
+      border-left: 3px solid #3b9fd6;
+    }
+    #queue li.customer-row .name.job-link { color: #1f7fb8; text-decoration: none; }
+    #queue li.customer-row .name.job-link:hover { text-decoration: underline; }
+
+    /* Missed Calls filter chips */
+    .missed-filters {
+      display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px;
+    }
+    .mfilter {
+      font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 12px;
+      background: var(--surface); color: var(--muted);
+      border: 1px solid var(--border); cursor: pointer; box-shadow: none;
+    }
+    .mfilter:hover { color: var(--text); }
+    .mfilter.active { background: var(--accent-hi); color: #fff; border-color: var(--accent-hi); }
+
+    /* ── Sticky-footer dialer layout ── */
+    /* Fill the iframe exactly (NOT 100vh — the iframe is shorter than the
+       viewport, so 100vh overflowed and scrolled the whole panel). */
+    .app { height: 100%; min-height: 0; }
+    /* Clear the fixed footer so the last queue row isn't hidden behind it. */
+    main { padding-bottom: 104px; }
+    /* Fixed top rail (a flex child of .app, OUTSIDE the scroll area) — tabs +
+       filters never scroll, and nothing can peek above them. */
+    .top-rail {
+      flex-shrink: 0;
+      background: var(--bg); padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .top-rail .tab-bar { margin-bottom: 6px; border-bottom: none; }
+    .top-rail .tab-btn { padding: 5px 8px; font-size: 12px; }
+    /* Leads + Missed filters share the SAME collapsible "Filters ▾" dropdown
+       (.filter-panel) and the same chip styling, so they look identical. */
+    #clear-filters-btn { font-size: 10px; padding: 3px 9px; border-radius: 12px; }
+    .filter-panel { background: transparent; border-bottom: none; }
+    .missed-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; }
+    /* Call controls pinned to the bottom — same technique as the popup's bottom
+       dock (.dock): position:fixed so it never scrolls with the queue. */
+    .dialer-footer {
+      position: fixed; bottom: 0; left: 0; width: 100%; box-sizing: border-box;
+      display: flex; flex-direction: column; gap: 6px;
+      background: var(--surface); border-top: 1px solid var(--border); border-bottom: none;
+      padding: 8px 14px 14px;
+      box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.15); z-index: 90;
+    }
+    /* The active-call card lives in the footer too — hide it when idle so the
+       footer stays compact (just controls) until a call is live. */
+    #dialer-footer #current.empty { display: none; }
+    /* In the footer the call card is full-width and flush — no card chrome. */
+    #dialer-footer #current {
+      width: 100%; margin: 0; padding: 2px 0 4px;
+      background: transparent; border: none; border-radius: 0; box-shadow: none;
+    }
+    #dialer-footer #current .hangup-big { width: 100%; margin-top: 6px; }
+    /* Unified chips — Leads source/attempt chips look exactly like the Missed chips */
+    .source-checks { display: flex; flex-wrap: wrap; gap: 6px; }
+    .source-checks label {
+      font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 12px;
+      background: var(--surface); color: var(--muted); border: 1px solid var(--border);
+      cursor: pointer; white-space: nowrap;
+    }
+    .source-checks input { display: none; }
+    .source-checks label:has(input:checked) { background: var(--accent-hi); color: #fff; border-color: var(--accent-hi); }
+    .preset-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+    .preset-btns button {
+      font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 12px;
+      background: var(--surface); color: var(--muted); border: 1px solid var(--border);
+      cursor: pointer; box-shadow: none;
+    }
+    .preset-btns button.active { background: var(--accent-hi); color: #fff; border-color: var(--accent-hi); }
+
     /* Queue filters panel */
     .filter-panel {
       background: var(--surface); border-bottom: 1px solid var(--border);
@@ -307,25 +402,30 @@
     .source-checks {
       display: flex; flex-wrap: wrap; gap: 3px;
     }
+    /* Leads chips — IDENTICAL to the Missed Calls .mfilter chips. */
     .source-checks label {
-      display: flex; align-items: center; gap: 3px;
-      font-size: 11px; color: var(--text); cursor: pointer;
-      padding: 2px 7px; border-radius: 4px; border: 1px solid var(--border);
-      background: var(--surface); user-select: none; transition: all 100ms;
+      display: inline-flex; align-items: center; gap: 3px;
+      font-size: 11px; font-weight: 600; color: var(--muted); cursor: pointer;
+      padding: 4px 10px; border-radius: 12px; border: 1px solid var(--border);
+      background: var(--surface); user-select: none; white-space: nowrap; transition: all 100ms;
     }
-    .source-checks label:hover { border-color: var(--accent); }
-    .source-checks label.checked {
-      background: var(--accent-light); border-color: var(--accent); color: var(--accent-hi);
+    .source-checks label:hover { color: var(--text); }
+    .source-checks label.checked,
+    .source-checks label:has(input:checked) {
+      background: var(--accent-hi); border-color: var(--accent-hi); color: #fff;
     }
     .source-checks label input { display: none; }
     .preset-btns {
-      display: flex; gap: 4px; flex-wrap: wrap;
+      display: flex; gap: 6px; flex-wrap: wrap;
     }
     .preset-btns button {
-      font-size: 11px; padding: 3px 10px; border-radius: 4px; box-shadow: none;
+      font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 12px;
+      color: var(--muted); background: var(--surface); border: 1px solid var(--border);
+      cursor: pointer; box-shadow: none;
     }
+    .preset-btns button:hover { color: var(--text); }
     .preset-btns button.active {
-      background: var(--accent); border-color: var(--accent); color: #fff;
+      background: var(--accent-hi); border-color: var(--accent-hi); color: #fff;
     }
     .filter-stats {
       font-size: 10px; color: var(--light); margin-top: 4px;
@@ -344,6 +444,52 @@
     .src-pill.src-angi { background: #fce7f3; color: #9d174d; border-color: #f472b6; }
     .src-pill.src-gaf  { background: var(--surface-hi); color: var(--muted); border-color: var(--border); }
     .src-pill.src-unk  { background: var(--surface-hi); color: var(--light); border-color: var(--border); }
+
+    /* ── Needs Rescheduled tab ── */
+    .rsched-filter-label {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 11px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--muted);
+    }
+    .rsched-select {
+      font: inherit; font-size: 11px; padding: 3px 6px;
+      border: 1px solid var(--border); border-radius: 4px;
+      background: var(--surface); color: var(--text); cursor: pointer; max-width: 160px;
+    }
+    .rsched-row {
+      display: flex; align-items: flex-start; gap: 6px;
+      padding: 7px 9px; margin-bottom: 4px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+      cursor: pointer; transition: border-color 120ms, background 120ms;
+    }
+    .rsched-row:hover { border-color: var(--accent-hi); background: var(--surface-hi); }
+    .rsched-row.active { border-color: var(--accent-hi); background: var(--surface-hi); }
+    .rsched-row .rsched-name { font-weight: 600; color: var(--text); }
+    .rsched-row .rsched-phone { color: var(--accent-hi); font-weight: 500; margin-top: 1px; font-size: 12px; }
+    .rsched-row .rsched-meta { font-size: 10px; color: var(--muted); margin-top: 2px; }
+    .rsched-card {
+      background: var(--surface); border: 1px solid var(--accent-hi); border-radius: 8px;
+      padding: 12px; margin-bottom: 12px;
+    }
+    .rsched-card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .rsched-card .rsched-name { font-weight: 700; font-size: 15px; color: var(--text); }
+    .rsched-card .rsched-phone { color: var(--accent-hi); font-weight: 600; margin-top: 2px; }
+    .rsched-card .rsched-meta { font-size: 11px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+    .rsched-phase-badge {
+      font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+      padding: 2px 8px; border-radius: 10px;
+      background: var(--surface-hi); color: var(--accent-hi);
+    }
+    .rsched-timer { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--accent-hi); }
+    .rsched-timer.times-up { color: var(--danger); animation: rschedFlash .6s ease-in-out infinite alternate; }
+    .rescheduled-nudge { font-size: 11px; font-weight: 700; color: var(--danger); animation: rschedFlash .6s ease-in-out infinite alternate; }
+    @keyframes rschedFlash { from { opacity: 1; } to { opacity: .35; } }
+    .rescheduled-stage-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+    .rescheduled-stage-row button { flex: 1 1 auto; min-width: 86px; padding: 8px; font-size: 12px; font-weight: 600; }
+    .rescheduled-note {
+      width: 100%; min-height: 48px; margin-top: 8px; resize: vertical;
+      font: inherit; font-size: 12px; padding: 6px 8px;
+      border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text);
+    }
   </style>
 </head>
 <body>
@@ -360,10 +506,137 @@
       <button id="settings-btn" title="Open extension options">⚙</button>
     </header>
 
-    <div class="controls" style="flex-direction:column;gap:6px;">
+    <div class="top-rail" id="top-rail">
+      <div class="tab-bar" id="tab-bar">
+        <button class="tab-btn active" id="tab-leads" data-tab="leads">📋 Leads</button>
+        <button class="tab-btn" id="tab-missed" data-tab="missed">📞 Missed Calls<span class="tab-badge" id="missed-badge" style="display:none;"></span></button>
+        <button class="tab-btn" id="tab-rescheduled" data-tab="rescheduled">🗓 Rescheduled<span class="tab-badge" id="rescheduled-badge" style="display:none;"></span></button>
+      </div>
+      <div class="filter-panel" id="filter-panel">
+        <div class="filter-toggle" id="filter-toggle">Filters <span class="arrow">▾</span> <span id="filter-summary" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--light);margin-left:4px;"></span></div>
+        <div class="filter-body" id="filter-body">
+          <div class="filter-section">
+            <div class="filter-label">Lead source</div>
+            <div class="source-checks" id="source-checks"></div>
+          </div>
+          <div class="filter-section">
+            <div class="filter-label">Attempts</div>
+            <div class="preset-btns" id="attempt-presets">
+              <button data-preset="new">New (0)</button>
+              <button data-preset="followup">Follow-up (1-3)</button>
+              <button data-preset="persistent">Persistent (4-7)</button>
+              <button data-preset="all" class="active">All</button>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-top:4px;">
+            <div class="filter-stats" id="filter-stats"></div>
+            <button id="clear-filters-btn" style="font-size:10px;padding:2px 8px;border-radius:4px;box-shadow:none;">Clear filters</button>
+          </div>
+        </div>
+      </div>
+      <div class="filter-panel" id="missed-filter-panel" style="display:none;">
+        <div class="filter-toggle" id="missed-filter-toggle">Filters <span class="arrow">▾</span> <span id="missed-filter-summary" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--light);margin-left:4px;">All</span></div>
+        <div class="filter-body" id="missed-filter-body">
+          <div class="missed-filters" id="missed-filters">
+            <button class="mfilter active" data-mf="all">All</button>
+            <button class="mfilter" data-mf="new">First-time</button>
+            <button class="mfilter" data-mf="customer">Customers</button>
+            <button class="mfilter" data-mf="uncalled">Uncalled</button>
+            <button class="mfilter" data-mf="followup">Follow-up</button>
+          </div>
+        </div>
+      </div>
+      <div class="filter-panel" id="rescheduled-filter-panel" style="display:none;">
+        <div class="filter-toggle" style="cursor:default;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <label class="rsched-filter-label">Rep
+            <select id="rsched-rep-select" class="rsched-select"></select>
+          </label>
+          <label class="rsched-filter-label">Range
+            <select id="rsched-range-select" class="rsched-select">
+              <option value="30">Last 30 days</option>
+              <option value="60">Last 60 days</option>
+              <option value="90">Last 90 days</option>
+              <option value="0" selected>All time</option>
+            </select>
+          </label>
+          <label class="rsched-filter-label">Review timer
+            <input type="text" id="rsched-timer-input" value="1:00" title="mm:ss review time per card (soft nudge — never force-advances)"
+                   style="width:42px;padding:2px 4px;font-size:11px;text-align:center;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);">
+          </label>
+        </div>
+      </div>
+    </div><!-- /top-rail -->
+
+    <main>
+      <div id="standard-queue-view">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin:14px 0 6px 0;">
+          <h2 id="queue-header" style="margin:0;">Queue</h2>
+          <button id="refresh-btn" title="Resync queue from Google Sheet" style="font-size:11px;padding:3px 8px;border-radius:4px;box-shadow:none;">↻ Refresh</button>
+        </div>
+        <ul id="queue"></ul>
+
+        <h2>Completed today</h2>
+        <ul id="completed" style="list-style:none;margin:0;padding:0;"></ul>
+      </div>
+
+      <div id="rescheduled-main" style="display:none;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin:14px 0 6px 0;">
+          <h2 id="rsched-queue-header" style="margin:0;">Rescheduled Queue</h2>
+          <div style="display:flex;gap:6px;">
+            <button id="rsched-start-btn" class="primary" title="Open the first card and start the review timer" style="font-size:11px;padding:3px 12px;border-radius:4px;">▶ Start</button>
+            <button id="rsched-refresh-btn" title="Reload the rescheduled queue" style="font-size:11px;padding:3px 8px;border-radius:4px;box-shadow:none;">↻ Refresh</button>
+          </div>
+        </div>
+
+        <div id="rsched-review-card" class="rsched-card" style="display:none;">
+          <div class="rsched-card-top">
+            <span class="rsched-phase-badge" id="rsched-phase-badge">Reviewing</span>
+            <span class="rsched-timer" id="rsched-timer-display">1:00</span>
+            <span class="rescheduled-nudge" id="rsched-nudge" style="display:none;">⏰ Time's up — ready?</span>
+            <button id="rsched-reopen-btn" title="Reopen this job card in Roofr" style="margin-left:auto;font-size:10px;padding:2px 6px;border-radius:4px;box-shadow:none;">↗ Card</button>
+          </div>
+          <div class="rsched-name" id="rsched-job-name"></div>
+          <div class="rsched-phone" id="rsched-job-phone"></div>
+          <div class="rsched-meta" id="rsched-job-meta"></div>
+
+          <div id="rsched-stage1" class="rescheduled-stage-row" style="display:none;">
+            <button id="rsched-btn-call" class="primary">☎ Call</button>
+            <button id="rsched-btn-changed-s1">✓ Changed status</button>
+            <button id="rsched-btn-skip" class="danger">Skip</button>
+          </div>
+
+          <div id="rsched-dialing" style="display:none;margin-top:8px;">
+            <span class="rsched-phase-badge" style="background:var(--warn-bg);color:#92400e;">📞 Calling… <span id="rsched-call-timer"></span></span>
+            <button id="rsched-hangup-btn" class="danger" style="width:100%;margin-top:6px;">☎ Hang up → outcome</button>
+          </div>
+
+          <div id="rsched-stage2" style="display:none;margin-top:8px;">
+            <div class="rescheduled-stage-row">
+              <button id="rsched-btn-contacted">Contacted</button>
+              <button id="rsched-btn-leftvm">Left VM</button>
+              <button id="rsched-btn-changed-s2">Changed status</button>
+              <button id="rsched-btn-unqualified">Unqualified</button>
+              <button id="rsched-btn-other">Other</button>
+            </div>
+            <textarea id="rsched-note" class="rescheduled-note" placeholder="Optional note…"></textarea>
+          </div>
+        </div>
+
+        <ul id="rsched-queue" style="list-style:none;margin:0;padding:0;"></ul>
+      </div>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:14px 0 6px 0;">
+        <h2 style="margin:0;">Event log</h2>
+        <button id="log-clear-btn" style="font-size:11px;padding:3px 8px;border-radius:4px;box-shadow:none;">✗ Clear</button>
+        <button id="log-copy-btn" style="font-size:11px;padding:3px 8px;border-radius:4px;box-shadow:none;">📋 Copy</button>
+      </div>
+      <div id="log"></div>
+    </main>
+
+    <div class="dialer-footer controls" id="dialer-footer">
+      <div id="current" class="empty">Press <strong>Start</strong> to begin dialing.</div>
       <div class="controls-row">
-        <button id="start-btn" class="primary" style="flex:1;">▶ Start</button>
-        <button id="pause-btn" disabled style="flex:1;">⏸ Pause</button>
+        <button id="start-btn" class="primary" style="flex:2;">▶ Start</button>
         <button id="stop-btn" class="danger" disabled style="flex:1;">⏹ Stop</button>
       </div>
       <div class="controls-row" style="justify-content:space-between;">
@@ -376,57 +649,15 @@
           <input type="checkbox" id="test-mode-toggle" style="cursor:pointer;">
           Test
         </label>
-      </div>
-      <div class="controls-row" style="font-size:11px;color:var(--muted);gap:4px;flex-wrap:wrap;">
-        <span><span id="queue-count">0</span> queued</span> ·
-        <span><span id="t1-count">0</span> new</span> ·
-        <span><span id="t2-count">0</span> follow-up</span> ·
-        <span><span id="session-count">0</span>/<span id="session-limit-display">25</span> session</span>
-      </div>
-    </div>
-
-    <div class="filter-panel" id="filter-panel">
-      <div class="filter-toggle" id="filter-toggle">Filters <span class="arrow">▾</span> <span id="filter-summary" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--light);margin-left:4px;"></span></div>
-      <div class="filter-body" id="filter-body">
-        <div class="filter-section">
-          <div class="filter-label">Lead source</div>
-          <div class="source-checks" id="source-checks"></div>
-        </div>
-        <div class="filter-section">
-          <div class="filter-label">Attempts</div>
-          <div class="preset-btns" id="attempt-presets">
-            <button data-preset="new">New (0)</button>
-            <button data-preset="followup">Follow-up (1-3)</button>
-            <button data-preset="persistent">Persistent (4-7)</button>
-            <button data-preset="all" class="active">All</button>
-          </div>
-        </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:4px;">
-          <div class="filter-stats" id="filter-stats"></div>
-          <button id="clear-filters-btn" style="font-size:10px;padding:2px 8px;border-radius:4px;box-shadow:none;">Clear filters</button>
-        </div>
+        <span style="font-size:11px;color:var(--muted);">
+          <span id="done-today" style="color:var(--success);font-weight:600;">0</span> today ·
+          <span id="queue-count">0</span> queued ·
+          <span id="t1-count">0</span> new ·
+          <span id="t2-count">0</span> fu ·
+          <span id="session-count">0</span>/<span id="session-limit-display">25</span>
+        </span>
       </div>
     </div>
-
-    <main>
-      <div id="current" class="empty">Press <strong>Start</strong> to begin dialing.</div>
-
-      <div style="display:flex;align-items:center;justify-content:space-between;margin:14px 0 6px 0;">
-        <h2 id="queue-header" style="margin:0;">Queue</h2>
-        <button id="refresh-btn" title="Resync queue from Google Sheet" style="font-size:11px;padding:3px 8px;border-radius:4px;box-shadow:none;">↻ Refresh</button>
-      </div>
-      <ul id="queue"></ul>
-
-      <h2>Completed this session</h2>
-      <ul id="completed" style="list-style:none;margin:0;padding:0;"></ul>
-
-      <div style="display:flex;align-items:center;justify-content:space-between;margin:14px 0 6px 0;">
-        <h2 style="margin:0;">Event log</h2>
-        <button id="log-clear-btn" style="font-size:11px;padding:3px 8px;border-radius:4px;box-shadow:none;">✗ Clear</button>
-        <button id="log-copy-btn" style="font-size:11px;padding:3px 8px;border-radius:4px;box-shadow:none;">📋 Copy</button>
-      </div>
-      <div id="log"></div>
-    </main>
   </div>
 
   <div class="scrim" id="wrapup-scrim">
@@ -450,7 +681,7 @@
         <button id="wrapup-save-next" class="primary">Save → Next</button>
         <button id="wrapup-save-stop">Save → Stop</button>
       </div>
-      <div class="auto-advance" id="wrapup-help">Disposition is required — click Save → Next or Save → Stop.</div>
+      <div class="auto-advance" id="wrapup-help">Enter → Note → Enter Save·Next · Esc Save·Stop</div>
     </div>
   </div>
 

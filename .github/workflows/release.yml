@@ -42,22 +42,46 @@ jobs:
             metadata.json \
             -x "*.map"
 
+      - name: Build & sign CRX
+        env:
+          CRX_PRIVATE_KEY: ${{ secrets.CRX_PRIVATE_KEY }}
+        run: |
+          if [ -z "$CRX_PRIVATE_KEY" ]; then
+            echo "::error::CRX_PRIVATE_KEY secret is empty. Refusing to build — a missing key would generate a NEW key and break the force-installed extension ID."
+            exit 1
+          fi
+          printf '%s\n' "$CRX_PRIVATE_KEY" > extension.pem
+          node scripts/build-crx.cjs
+          EXPECTED=fkldnfkfppeicfcgmlnpknfkmnfkaabo
+          ACTUAL=$(node scripts/get-crx-id.cjs | sed -n 's/^Extension ID: //p')
+          echo "Built CRX ID: $ACTUAL (expected: $EXPECTED)"
+          rm -f extension.pem
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::Signed CRX ID ($ACTUAL) does not match the force-installed ID ($EXPECTED). Wrong signing key — aborting so we never publish an undeployable crx."
+            exit 1
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: release/roofr-calendar-scraper-v${{ steps.get_version.outputs.VERSION }}.zip
+          files: |
+            release/roofr-calendar-scraper-v${{ steps.get_version.outputs.VERSION }}.zip
+            releases/roofr-calendar-scraper.crx
           generate_release_notes: true
           body: |
-            ## Installation Instructions
+            ## Roofr Calendar Scraper v${{ steps.get_version.outputs.VERSION }}
 
-            1. Download the `.zip` file below
-            2. Extract it to a folder on your computer
-            3. Open Chrome and go to `chrome://extensions`
-            4. Enable "Developer mode" (toggle in top right)
-            5. Click "Load unpacked" and select the extracted folder
-            6. The extension will be updated automatically
+            ### How updates reach the team (automatic)
+            This extension is force-installed company-wide via Google Workspace
+            (Admin console -> Devices -> Chrome -> Apps & extensions). Every managed
+            Chrome auto-updates from `updates.xml` within a few hours of this release.
+            No one needs to download or reload anything.
 
-            ---
-            *This release was automatically generated.*
+            To pull the update immediately on a machine: open `chrome://policy` and
+            click **Reload policies**, then check `chrome://extensions`.
+
+            ### Manual install (testing only)
+            Download `roofr-calendar-scraper.crx` below, or extract the `.zip` and
+            load it unpacked at `chrome://extensions` with Developer mode enabled.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

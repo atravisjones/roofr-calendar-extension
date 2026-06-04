@@ -1,12 +1,13 @@
 {
   "name": "roofr-calendar-extension",
   "private": true,
-  "version": "2.0.71",
+  "version": "2.1.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "ship": "node scripts/ship.cjs",
     "bump:patch": "node scripts/bump-version.cjs patch",
     "bump:minor": "node scripts/bump-version.cjs minor",
     "bump:major": "node scripts/bump-version.cjs major",

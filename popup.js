@@ -505,6 +505,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             customers: new Map(),
             addresses: new Map(),
             phones: new Map(),
+            claims: new Map(),
             stages: new Map(),
             cities: new Map(),
             tags: new Map(),
@@ -540,6 +541,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 catalog.phones.get(job._nPhone).jobs.push(job);
             }
+            // Insurance claim # (normalize to alphanumerics so dashes/spaces don't block matches)
+            const claimRaw = (job['Claim #'] || '').toString().trim();
+            if (claimRaw) {
+                const ckey = claimRaw.toLowerCase().replace(/[^a-z0-9]/g, '');
+                if (ckey.length >= 3) {
+                    if (!catalog.claims.has(ckey)) {
+                        catalog.claims.set(ckey, { display: claimRaw, jobs: [] });
+                    }
+                    catalog.claims.get(ckey).jobs.push(job);
+                }
+            }
             // Stage
             const stage = job.Stage?.trim();
             if (stage) catalog.stages.set(stage, (catalog.stages.get(stage) || 0) + 1);
@@ -564,7 +576,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const qLow = q.toLowerCase().trim();
         const qNAddr = _normalizeAddress(q);
         const qNPhone = _normalizePhone(q);
-        const results = { customers: [], addresses: [], phones: [], stages: [], cities: [], tags: [] };
+        const results = { customers: [], addresses: [], phones: [], claims: [], stages: [], cities: [], tags: [] };
         let total = 0;
 
         // Customers
@@ -598,6 +610,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
             results.phones = results.phones.slice(0, 3);
+        }
+
+        // Claim # (need 4+ alphanumerics; match dashes/spaces-insensitively)
+        const qNClaim = qLow.replace(/[^a-z0-9]/g, '');
+        if (qNClaim.length >= 4) {
+            for (const [key, entry] of catalog.claims) {
+                if (key.includes(qNClaim)) {
+                    results.claims.push(entry);
+                    total++;
+                }
+            }
+            results.claims = results.claims.slice(0, 4);
         }
 
         // Stages
@@ -685,7 +709,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        if (suggestion.group === 'Address' || suggestion.group === 'Phone') {
+        if (suggestion.group === 'Address' || suggestion.group === 'Phone' || suggestion.group === 'Claim') {
             const jobs = suggestion.jobs || [];
             if (jobs.length > 0) {
                 await openJobCard(jobs[0]);
@@ -1123,6 +1147,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                 verifiedAddressesList.appendChild(el);
                 _suggestionItems.push(el);
                 el.__suggestion = { group: 'Phone', display: entry.display, jobs: entry.jobs };
+                hasResults = true;
+            });
+
+            // Claim # → click opens job card directly
+            addGroup('Claim #', catalogResults.claims, (entry) => {
+                const el = document.createElement('div');
+                el.className = 'suggestion-item sheet-match';
+                const firstJob = entry.jobs[0];
+                el.innerHTML = `<div class="match-primary">${_highlightMatch(entry.display, query)}</div>` +
+                    `<div class="match-meta">${_escapeHtml(firstJob?.Customer || '')} — ${_escapeHtml(firstJob?.Address || '')}</div>`;
+                el.addEventListener('mousedown', (e) => e.preventDefault());
+                el.addEventListener('click', () => {
+                    verifiedAddressesList.classList.add('hidden');
+                    selectCalendarSuggestion({ group: 'Claim', display: entry.display, jobs: entry.jobs });
+                });
+                verifiedAddressesList.appendChild(el);
+                _suggestionItems.push(el);
+                el.__suggestion = { group: 'Claim', display: entry.display, jobs: entry.jobs };
                 hasResults = true;
             });
 
@@ -5239,6 +5281,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                 window.__selectedRoofrJob = null;
                 window.__selectedRoofrJobInputValue = null;
                 return;
+            }
+
+            // Check if input is an exact insurance claim number (before phone — some claims are all-digits).
+            // Only an EXACT normalized match short-circuits, so partial digit overlap with phones is unaffected.
+            const qClaim = inputValue.toLowerCase().replace(/[^a-z0-9]/g, '');
+            if (qClaim.length >= 4 && _roofrDataCache && _roofrDataCache.length) {
+                const claimMatch = _roofrDataCache.find(job => {
+                    const jc = String(job['Claim #'] || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                    return jc && jc === qClaim;
+                });
+                if (claimMatch && claimMatch.Link) {
+                    showToast(`Opening claim ${inputValue.trim()}...`);
+                    await openJobCard(claimMatch);
+                    return;
+                }
             }
 
             // Check if input is a phone number

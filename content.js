@@ -1317,13 +1317,17 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
         }
       }
 
-      // Then try any visible text input
+      // Then try any visible SEARCH-LIKE input. Never type into a random text field:
+      // it silently "succeeds" (ok:true) without filtering the board, which makes the
+      // results checker open whatever job is on top (wrong job).
       if (!searchInput) {
         const allInputs = document.querySelectorAll('input[type="text"], input[type="search"], input:not([type])');
         for (const input of allInputs) {
-          if (input.offsetParent !== null && input.offsetWidth > 0) {
+          if (input.offsetParent === null || input.offsetWidth === 0) continue;
+          const hint = ((input.placeholder || '') + ' ' + (input.className || '') + ' ' + (input.getAttribute('aria-label') || '') + ' ' + (input.getAttribute('data-testid') || '')).toLowerCase();
+          if (/search|filter|address/.test(hint)) {
             searchInput = input;
-            console.log('[Roofr Extension] Using first visible text input as fallback');
+            console.log('[Roofr Extension] Using visible search-like input as fallback');
             break;
           }
         }

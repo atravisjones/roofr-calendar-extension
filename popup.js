@@ -1229,7 +1229,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (looksLikeAddress) {
             let geoHeaderAdded = false;
             const geoSuggestionItems = []; // track geo items for re-ordering _suggestionItems
-            const addGeoOption = (address) => {
+            const addGeoOption = (address, lat, lng) => {
                 if (!address || address.length <= 3) return;
                 const titleCaseAddress = toTitleCase(address);
                 const norm = _normalizeAddress(titleCaseAddress);
@@ -1260,6 +1260,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     window.__selectedRoofrJobLink = null;
                     window.__selectedRoofrJob = null;
                     window.__selectedRoofrJobInputValue = null;
+                    // Pin GPS to THIS suggestion's exact coords (set after the input event so it isn't cleared)
+                    window.__selectedAddrCoords = (lat != null && lng != null && !isNaN(+lat) && !isNaN(+lng)) ? { lat: +lat, lng: +lng } : null;
                     verifiedAddressesList.classList.add('hidden');
                     updateGoButtonState();
                 });
@@ -1275,16 +1277,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             };
 
             try {
+                // Strip a trailing unit/suite/lot so geocoders return base-address suggestions
+                // (LocationIQ/Geoapify return "Unable to geocode" when "#473" is in the query)
+                const geoQuery = query.replace(/(?:#|\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot)\s*)\s*[A-Za-z0-9-]+\s*$/i, '').replace(/\s{2,}/g, ' ').trim() || query;
+                // Preserve the unit/lot the rep typed so it shows in (and is selected from) the suggestion
+                const _unitMatch = query.match(/((?:#|\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot)\s*)\s*[A-Za-z0-9-]+)\s*$/i);
+                const unitDisplay = _unitMatch ? _unitMatch[1].replace(/\s+/g, ' ').trim() : '';
+                const withUnit = (fmt) => (unitDisplay && fmt) ? fmt.replace(/^([^,]+)/, `$1 ${unitDisplay}`) : fmt;
                 // LocationIQ autocomplete
-                const locationIQKey = 'pk.c79c63c7e7d0dcbde7a65c67af5de77f';
-                const locationIQUrl = `https://us1.locationiq.com/v1/autocomplete?key=${locationIQKey}&q=${encodeURIComponent(query)}&countrycodes=us&limit=10&dedupe=1&tag=place:house,place:address,highway:residential`;
+                const locationIQKey = 'pk.8191a90010a7b5c191b4232ce0cafb93';
+                const locationIQUrl = `https://us1.locationiq.com/v1/autocomplete?key=${locationIQKey}&q=${encodeURIComponent(geoQuery)}&countrycodes=us&viewbox=-114.85,37.05,-109.0,31.30&limit=10&dedupe=1`;
                 const locationIQResponse = await fetch(locationIQUrl);
                 if (locationIQResponse.ok) {
                     const locationIQData = await locationIQResponse.json();
                     for (const result of locationIQData) {
                         const addr = result.address || {};
                         const st = addr.state || '';
-                        if (st && !['Arizona'].includes(st) && !['Nevada', 'California', 'New Mexico', 'Utah'].includes(st)) continue;
+                        if (st && st !== 'Arizona') continue;
                         let parts = [];
                         if (addr.house_number && addr.road) parts.push(`${addr.house_number} ${addr.road}`);
                         else if (addr.road) parts.push(addr.road);
@@ -1294,14 +1303,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (st) { const stateMap = { 'Arizona': 'AZ', 'Nevada': 'NV', 'California': 'CA', 'New Mexico': 'NM', 'Utah': 'UT' }; parts.push(stateMap[st] || st); }
                         if (addr.postcode) parts.push(addr.postcode);
                         const formatted = parts.join(', ');
-                        if (formatted.length > 5) addGeoOption(formatted);
+                        if (formatted.length > 5) addGeoOption(withUnit(formatted), result.lat, result.lon);
                     }
                 }
 
                 // Geoapify fallback
                 if (addedNormalized.size < 10) {
                     const geoapifyKey = 'a23dc46289844c50a3b12c3ab8b6759b';
-                    const geoapifyUrl = `https://api.geoapify.com/v1/geocode/autocomplete?text=${encodeURIComponent(query)}&filter=countrycode:us&bias=proximity:-112.07,33.45&limit=8&apiKey=${geoapifyKey}`;
+                    const geoapifyUrl = `https://api.geoapify.com/v1/geocode/autocomplete?text=${encodeURIComponent(geoQuery)}&filter=countrycode:us&bias=proximity:-112.07,33.45&limit=8&apiKey=${geoapifyKey}`;
                     try {
                         const geoapifyResponse = await fetch(geoapifyUrl);
                         if (geoapifyResponse.ok) {
@@ -1312,7 +1321,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 if (st && !['Arizona', 'AZ'].includes(st) && !['Nevada', 'NV', 'California', 'CA', 'New Mexico', 'NM', 'Utah', 'UT'].includes(st)) continue;
                                 let formattedAddress = props.formatted || '';
                                 formattedAddress = formattedAddress.replace(/,?\s*United States\s*$/i, '').trim();
-                                addGeoOption(formattedAddress);
+                                addGeoOption(withUnit(formattedAddress), props.lat, props.lon);
                             }
                         }
                     } catch (e) { console.log('Geoapify error', e); }
@@ -1320,7 +1329,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 // Census Bureau geocoder
                 if (addedNormalized.size < 8) {
-                    const censusUrl = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(query + ', AZ')}&benchmark=Public_AR_Current&format=json`;
+                    const censusUrl = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(geoQuery + ', AZ')}&benchmark=Public_AR_Current&format=json`;
                     try {
                         const censusResponse = await fetch(censusUrl);
                         if (censusResponse.ok) {
@@ -1328,7 +1337,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             const matches = censusData.result?.addressMatches || [];
                             for (const match of matches) {
                                 const formatted = match.matchedAddress;
-                                if (formatted) addGeoOption(formatted.replace(/,\s*USA?\s*$/i, '').trim());
+                                if (formatted) addGeoOption(withUnit(formatted.replace(/,\s*USA?\s*$/i, '').trim()), match.coordinates && match.coordinates.y, match.coordinates && match.coordinates.x);
                             }
                         }
                     } catch (e) { /* Census API can be slow */ }
@@ -5423,6 +5432,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                             if (pd.propertyValueFormatted) geminiMessage += `\nProperty Value: ${pd.propertyValueFormatted}`;
                             if (pd.salePriceFormatted) geminiMessage += `\nLast Sale: ${pd.salePriceFormatted}`;
                             if (pd.saleDate) geminiMessage += ` (${pd.saleDate})`;
+                            if (pd.deedDate) geminiMessage += `\nDeed Recorded: ${pd.deedDate}`;
+                            if (pd.ownerType) geminiMessage += `\nOwner Type: ${pd.ownerType}`;
+                            if (pd.absentee) geminiMessage += `\nABSENTEE OWNER (mails to ${pd.absenteeLocation})`;
+                            if (pd.mailAddress) geminiMessage += `\nOwner Mailing: ${pd.mailAddress}`;
+                            if (pd.inCareOf) geminiMessage += `\nIn Care Of: ${pd.inCareOf}`;
+                            if (pd.roofType) geminiMessage += `\nRoof Type: ${pd.roofType}`;
+                            if (pd.qualityGrade) geminiMessage += `\nQuality Grade: ${pd.qualityGrade}`;
+                            if (pd.suite) geminiMessage += `\nUnit: ${pd.suite}`;
+                            if (pd.lat != null && pd.lng != null) geminiMessage += `\nGPS: ${pd.lat}, ${pd.lng}`;
 
                             // Append active call phone number
                             const geminiPhones = window.__activeCallPhones || [];
@@ -5462,6 +5480,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 // Property details from county assessor (real data, not AI-generated)
                                 const pd = apnResult.propertyData || {};
                                 const detailLines = [];
+                                if (apnResult.ambiguous) detailLines.push(`<span style="color:#d93025;font-weight:600;">⚠ ${apnResult.matchCount} units at this address — re-search with the unit # (e.g. "#2020") to lock the exact one</span>`);
                                 if (pd.yearBuilt) detailLines.push(`Built: ${pd.yearBuilt} (${pd.roofAge}yrs)`);
                                 if (pd.sqftFormatted) detailLines.push(`Sq Ft: ${pd.sqftFormatted}`);
                                 if (pd.stories) detailLines.push(`Stories: ${pd.stories}`);
@@ -5472,6 +5491,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                                     if (pd.saleDate) saleLine += ` (${pd.saleDate})`;
                                     detailLines.push(saleLine);
                                 }
+                                // Added 2026-06-05: absentee / owner-occupancy / deed recency
+                                if (pd.ownerType) detailLines.push(`Owner Type: ${pd.ownerType}`);
+                                if (pd.absentee) detailLines.push(`<span style="color:#d93025;font-weight:600;">⚠ Absentee owner — mails to ${pd.absenteeLocation}</span>`);
+                                if (pd.absentee && pd.mailAddress) detailLines.push(`Mailing: ${pd.mailAddress}`);
+                                if (pd.deedDate) detailLines.push(`Deed: ${pd.deedDate}`);
+                                if (pd.inCareOf) detailLines.push(`In Care Of: ${pd.inCareOf}`);
+                                if (pd.roofType) detailLines.push(`<span style="color:#188038;font-weight:600;">🏠 Roof: ${pd.roofType}</span>`);
+                                if (pd.qualityGrade) detailLines.push(`Quality: ${pd.qualityGrade}`);
+                                if (pd.suite) detailLines.push(`Unit: ${pd.suite}`);
+                                if (pd.lotNum) detailLines.push(`Lot: ${pd.lotNum}`);
+                                if (pd.lat != null && pd.lng != null) detailLines.push(`📍 <a href="https://earth.google.com/web/search/${pd.lat},${pd.lng}" target="_blank" style="color:#1a73e8;text-decoration:underline;">${(+pd.lat).toFixed(5)}, ${(+pd.lng).toFixed(5)}</a>`);
 
                                 if (detailLines.length > 0) {
                                     propertyInfo += detailLines.map(l => `<div>${l}</div>`).join('');
@@ -5511,7 +5541,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                         // Find or create Google Earth tab in target window (reuse existing if found)
                         if (settings.search_google_earth !== false) {
-                        const googleEarthUrl = `https://earth.google.com/web/search/${encodeURIComponent(verifiedAddress)}`;
+                        // Only trust coordinates from a REAL county parcel — that centroid sits on the
+                        // actual rooftop for a normal lot. For mobile/RV parks, tribal land, new builds,
+                        // or any address with no individual county parcel, the geocoder (LocationIQ/Census)
+                        // only knows the park CENTER, not the specific space — that's the wrong-GPS problem.
+                        // In that case let Google Earth search the address text and use Google's own
+                        // geocoder, which places the unit/space far better than the centroid ever could.
+                        const _gpsLat = (apnResult && apnResult.success && apnResult.propertyData) ? apnResult.propertyData.lat : null;
+                        const _gpsLng = (apnResult && apnResult.success && apnResult.propertyData) ? apnResult.propertyData.lng : null;
+                        // For the address-search fallback, Google Earth pins a unit address FAR more
+                        // accurately from the bare "street #unit" than from the full string with
+                        // city/state/zip (the ZIP makes it land mid-street). So when there's a unit/lot,
+                        // search only the first segment; otherwise keep the full address for disambiguation.
+                        const _firstSeg = verifiedAddress.split(',')[0].trim();
+                        const _hasUnit = /(#\s*[A-Za-z0-9-]+|\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot|trlr|trailer|rm|room)\s*#?\s*[A-Za-z0-9-]+)\s*$/i.test(_firstSeg);
+                        const _earthQuery = _hasUnit ? _firstSeg : verifiedAddress;
+                        const googleEarthUrl = (_gpsLat != null && _gpsLng != null && !isNaN(_gpsLat) && !isNaN(_gpsLng))
+                            ? `https://earth.google.com/web/search/${_gpsLat},${_gpsLng}`
+                            : `https://earth.google.com/web/search/${encodeURIComponent(_earthQuery)}`;
                         const earthQueryOpts = { url: "*://earth.google.com/*" };
                         if (window.__targetWindowId) earthQueryOpts.windowId = window.__targetWindowId;
                         const existingEarthTabs = await chrome.tabs.query(earthQueryOpts);
@@ -5845,7 +5892,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                         // Fall back to DOM search if no known job selected
                         } else if (settings.search_roofr !== false) {
-                        // Extract street address for search (e.g., "1310 N Lesueur" from "1310 N Lesueur, Mesa, Az, 85203")
+                        // Extract street address for search, INCLUDING any unit/lot. Roofr's search indexes
+                        // the job NAME (verified live: searching "Vader" returns that job), and every unit in
+                        // a complex shares the SAME base address — so searching WITH the unit is what finds the
+                        // exact job (whose name carries the unit) and cleanly returns "No jobs found" for a new
+                        // unit, instead of pulling up a neighbor's job at the same shared address.
                         const streetAddress = verifiedAddress.split(',')[0].trim();
                         // Expand abbreviations for search: N -> North, Ln -> Lane, etc.
                         const expandedStreetAddress = streetAddress
@@ -5878,10 +5929,20 @@ document.addEventListener('DOMContentLoaded', async () => {
                             .replace(/\bAlley\.?$/gi, 'Alley')
                             .replace(/\bAly\.?$/gi, 'Alley');
 
+                        // Roofr's job search is a CONTIGUOUS-substring match (verified live): a multi-word term
+                        // must appear verbatim in the stored address. Geocoders routinely drop or reformat the
+                        // directional ("1310 Lesueur" vs the stored "1310 North Lesueur", or "N" vs "North"), so
+                        // searching the full street MISSES existing jobs and creates duplicates. The house NUMBER
+                        // is always a contiguous token that reliably returns the job; the precise row-matcher
+                        // (house# + street word + unit) then picks the exact one. Fall back to the full street
+                        // only if there's no house number.
+                        const _houseNumberForSearch = (streetAddress.match(/\b\d{1,6}\b/) || [])[0] || '';
+                        const roofrSearchTerm = _houseNumberForSearch || expandedStreetAddress;
+
                         // Build search URL - navigate to base list view (will inject search via content script)
                         const roofrSearchUrl = 'https://app.roofr.com/dashboard/team/239329/jobs/list-view';
                         const roofrJobsUrl = 'https://app.roofr.com/dashboard/team/239329/jobs';
-                        addLog(`Searching Roofr for: ${expandedStreetAddress}`);
+                        addLog(`Searching Roofr for: ${roofrSearchTerm} (full address: ${verifiedAddress})`);
 
                         let jobsNeedsPageLoad = false;
 
@@ -5902,7 +5963,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                     // Add extra delay to ensure React has fully rendered
                                     setTimeout(() => {
                                         // Inject the address into the search bar with retry logic
-                                        addLog(`Injecting job search: ${expandedStreetAddress}`);
+                                        addLog(`Injecting job search: ${roofrSearchTerm}`);
 
                                         const attemptInjection = (attemptNum) => {
                                             if (attemptNum > 3) {
@@ -5912,7 +5973,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                                             chrome.tabs.sendMessage(jobsTab.id, {
                                                 type: 'INJECT_JOB_SEARCH',
-                                                address: expandedStreetAddress
+                                                address: roofrSearchTerm
                                             }).then(result => {
                                                 if (result && result.ok) {
                                                     addLog(`Job search injected successfully (attempt ${attemptNum})`);
@@ -5941,6 +6002,59 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 target: { tabId: tabId },
                                 func: (address, jobsUrl) => {
                                     console.log('[Roofr Extension] Checking search results for:', address);
+
+                                    // Derive the house number + a distinctive street word so we ONLY open a
+                                    // row that actually matches the searched address. Roofr's search bar
+                                    // sometimes fails to filter (or the inject hits the wrong field); without
+                                    // this we'd open whatever job sits on top — an unrelated job card.
+                                    const _addrLc = String(address || '').toLowerCase();
+                                    const _houseNum = (_addrLc.match(/\b(\d{1,6})\b/) || [])[1] || '';
+                                    const _streetWord = (() => {
+                                        const seg = _addrLc.split(',')[0]
+                                            .replace(/\s*(?:#|\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot|trlr|trailer|rm|room)\s*#?)\s*[a-z0-9-]+\s*$/i, '');
+                                        const stop = new Set(['north','south','east','west','northeast','northwest','southeast','southwest','avenue','ave','street','st','drive','dr','road','rd','lane','ln','court','ct','place','pl','boulevard','blvd','circle','cir','trail','trl','way','terrace','ter','parkway','pkwy','highway','hwy','loop','pass','point','pt']);
+                                        const words = seg.replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(w => w.length >= 3 && !stop.has(w));
+                                        return words.sort((a, b) => b.length - a.length)[0] || '';
+                                    })();
+                                    // Roofr stores EVERY unit in a complex under the same base address — the
+                                    // unit/lot lives ONLY in the job NAME column. So when the searched address
+                                    // has a unit, a row matches only if its NAME cell carries that same unit;
+                                    // the shared address alone must NOT count as a hit (it'd open a neighbor's job).
+                                    const _unitM = _addrLc.split(',')[0].match(/(?:#|\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot|trlr|trailer|rm|room)\s*#?)\s*([a-z0-9-]+)\s*$/i);
+                                    const _unitNum = _unitM ? _unitM[1].replace(/[^a-z0-9]/gi, '').replace(/^0+/, '') : '';
+                                    const _cell = (row, col) => { const c = row.querySelector('[col-id="' + col + '"]'); return c ? (c.textContent || '').toLowerCase() : ''; };
+                                    const _addrMatches = (el) => {
+                                        const a = _cell(el, 'address') || (el.textContent || '').toLowerCase();
+                                        if (_houseNum && !a.includes(_houseNum)) return false;
+                                        if (_streetWord && !a.includes(_streetWord)) return false;
+                                        return !!(_houseNum || _streetWord);
+                                    };
+                                    const _unitMatches = (el) => {
+                                        if (!_unitNum) return true; // no unit to disambiguate
+                                        const hay = (_cell(el, 'name') || el.textContent || '').toLowerCase();
+                                        return new RegExp('(?:#|\\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot|trlr|trailer|rm|room)\\s*#?)\\s*0*' + _unitNum + '\\b', 'i').test(hay);
+                                    };
+                                    // Only the center/data rows (the pinned-right container holds a duplicate row with the View button).
+                                    const _dataRows = () => Array.from(document.querySelectorAll('.ag-row:not(.ag-header-row), table tbody tr')).filter(r => !r.closest('.ag-pinned-right-cols-container'));
+                                    const findMatchingRow = () => { for (const r of _dataRows()) { if (_addrMatches(r) && _unitMatches(r)) return r; } return null; };
+                                    const hasBaseAddressRow = () => _dataRows().some(r => _addrMatches(r));
+                                    const clickRow = (row) => {
+                                        if (!row) return false;
+                                        // The "View" button lives in a sibling pinned-right .ag-row that shares row-id (= job id).
+                                        const rid = row.getAttribute('row-id');
+                                        const ridx = row.getAttribute('row-index');
+                                        let scope = [row];
+                                        if (rid != null) scope = Array.from(document.querySelectorAll('.ag-row[row-id="' + rid + '"]'));
+                                        else if (ridx != null) scope = Array.from(document.querySelectorAll('.ag-row[row-index="' + ridx + '"]'));
+                                        for (const r of scope) {
+                                            for (const b of r.querySelectorAll('button, a, [role="button"]')) {
+                                                const tx = b.textContent?.trim();
+                                                if (tx === 'View' || (tx && tx.includes('View'))) { b.click(); return true; }
+                                            }
+                                        }
+                                        (row.querySelector('[role="gridcell"], .ag-cell') || row).click();
+                                        return true;
+                                    };
 
                                     // Function to count job rows in the list view
                                     const countJobRows = () => {
@@ -6113,7 +6227,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                                     // Step 3: Fill address in modal
                                     const fillAddressInModal = (addr) => {
-                                        const addressInput = document.querySelector('input[id*="address-resolution-input"], input[placeholder="Enter address and select"]');
+                                        const addressInput = document.querySelector('input[data-testid="create-job-address-input"], input[id*="address-resolution-input"], input[placeholder="Enter address and select"]');
                                         if (addressInput) {
                                             addressInput.focus();
                                             addressInput.value = addr;
@@ -6124,6 +6238,43 @@ document.addEventListener('DOMContentLoaded', async () => {
                                         }
                                         return false;
                                     };
+
+                                    // --- Mirror lot/unit into the Job name (Roofr drops it from the address) ---
+                                    const extractUnit = (addr) => {
+                                        const seg = String(addr || '').split(',')[0];
+                                        const m = seg.match(/(#\s*[A-Za-z0-9-]+|\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot|trlr|trailer|rm|room)\s*#?\s*[A-Za-z0-9-]+)\s*$/i);
+                                        return m ? m[1].replace(/\s+/g, ' ').trim() : '';
+                                    };
+                                    const setReactValue = (el, val) => {
+                                        const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                                        const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                                        setter.call(el, val);
+                                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                                    };
+                                    const fillJobName = () => {
+                                        const unit = extractUnit(address);
+                                        if (!unit) return true; // no unit/lot — nothing to add
+                                        let nameInput = null;
+                                        const opt = document.querySelector('input[data-testid="create-job-name-input"], input[placeholder="Optional"]');
+                                        if (opt && opt.offsetParent !== null) nameInput = opt;
+                                        if (!nameInput) {
+                                            for (const lb of document.querySelectorAll('label')) {
+                                                if (lb.textContent && lb.textContent.trim().toLowerCase() === 'job name') {
+                                                    const grp = lb.closest('.form-group, [class*="form-group"], div');
+                                                    const cand = grp && grp.querySelector('input:not([role="combobox"])');
+                                                    if (cand && cand.offsetParent !== null) { nameInput = cand; break; }
+                                                }
+                                            }
+                                        }
+                                        if (!nameInput) return false;
+                                        if (nameInput.value && nameInput.value.trim()) return true; // never clobber a typed name
+                                        nameInput.focus();
+                                        setReactValue(nameInput, unit);
+                                        console.log('[Roofr Extension] Filled Job name with unit/lot:', unit);
+                                        return true;
+                                    };
+                                    const tryFillJobName = (a = 1) => { if (fillJobName()) return; if (a < 8) setTimeout(() => tryFillJobName(a + 1), 400); };
 
                                     // Check results with retries (page may still be loading)
                                     let attempts = 0;
@@ -6138,15 +6289,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                                         console.log(`[Roofr Extension] Found ${jobCount} job rows, noResults: ${noResults}`);
 
-                                        if (jobCount >= 1) {
-                                            // Found result(s) - click the first one and STOP
-                                            console.log('[Roofr Extension] Found ' + jobCount + ' result(s) - clicking first one');
-                                            if (clickFirstJobRow()) {
+                                        // Only open a row that ACTUALLY matches the searched address — never
+                                        // blindly open the top row (if the search didn't filter we'd open an
+                                        // unrelated job, e.g. opening "Vader / Hatcher Rd" for a Peoria search).
+                                        const matchRow = findMatchingRow();
+                                        if (matchRow) {
+                                            console.log('[Roofr Extension] Row matches searched address - opening it');
+                                            if (clickRow(matchRow)) {
                                                 return { action: 'clicked_result', count: jobCount };
                                             }
                                         }
 
-                                        if (noResults || (attempts >= maxAttempts && jobCount === 0)) {
+                                        if (noResults || attempts >= maxAttempts) {
                                             // No results found - create new job directly on this page
                                             console.log('[Roofr Extension] No results found - creating new job');
 
@@ -6158,6 +6312,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                                         // Wait for modal, then fill address
                                                         setTimeout(() => {
                                                             fillAddressInModal(address);
+                                                            tryFillJobName();
                                                         }, 1500);
                                                     }
                                                 }, 1000);
@@ -6321,7 +6476,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                         // - It's inside an address-field form-group
 
                                         // Primary: Find input with exact placeholder from the modal
-                                        const modalInput = document.querySelector('input[placeholder="Enter address and select"]');
+                                        const modalInput = document.querySelector('input[data-testid="create-job-address-input"], input[placeholder="Enter address and select"]');
                                         if (modalInput) {
                                             console.log('[Roofr Extension] Found modal address input via placeholder');
                                             modalInput.focus();
@@ -6392,6 +6547,43 @@ document.addEventListener('DOMContentLoaded', async () => {
                                         return false;
                                     };
 
+                                    // --- Mirror lot/unit into the Job name (Roofr drops it from the address) ---
+                                    const extractUnit = (addr) => {
+                                        const seg = String(addr || '').split(',')[0];
+                                        const m = seg.match(/(#\s*[A-Za-z0-9-]+|\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot|trlr|trailer|rm|room)\s*#?\s*[A-Za-z0-9-]+)\s*$/i);
+                                        return m ? m[1].replace(/\s+/g, ' ').trim() : '';
+                                    };
+                                    const setReactValue = (el, val) => {
+                                        const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                                        const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                                        setter.call(el, val);
+                                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                                    };
+                                    const fillJobName = () => {
+                                        const unit = extractUnit(address);
+                                        if (!unit) return true; // no unit/lot — nothing to add
+                                        let nameInput = null;
+                                        const opt = document.querySelector('input[data-testid="create-job-name-input"], input[placeholder="Optional"]');
+                                        if (opt && opt.offsetParent !== null) nameInput = opt;
+                                        if (!nameInput) {
+                                            for (const lb of document.querySelectorAll('label')) {
+                                                if (lb.textContent && lb.textContent.trim().toLowerCase() === 'job name') {
+                                                    const grp = lb.closest('.form-group, [class*="form-group"], div');
+                                                    const cand = grp && grp.querySelector('input:not([role="combobox"])');
+                                                    if (cand && cand.offsetParent !== null) { nameInput = cand; break; }
+                                                }
+                                            }
+                                        }
+                                        if (!nameInput) return false;
+                                        if (nameInput.value && nameInput.value.trim()) return true; // never clobber a typed name
+                                        nameInput.focus();
+                                        setReactValue(nameInput, unit);
+                                        console.log('[Roofr Extension] Filled Job name with unit/lot:', unit);
+                                        return true;
+                                    };
+                                    const tryFillJobName = (a = 1) => { if (fillJobName()) return; if (a < 8) setTimeout(() => tryFillJobName(a + 1), 400); };
+
                                     // Check if dropdown is visible (Job option should be present)
                                     const isDropdownOpen = () => {
                                         // Look for the Job dropdown item by data-testid or by text
@@ -6426,6 +6618,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                                 console.log(`[Roofr Extension] Attempt ${fillAttempt}/${maxFillAttempts} to fill address`);
                                                 if (fillAddressInput()) {
                                                     console.log('[Roofr Extension] Address filled successfully!');
+                                                    tryFillJobName();
                                                 } else if (fillAttempt < maxFillAttempts) {
                                                     setTimeout(() => tryFillAddress(fillAttempt + 1), 500);
                                                 } else {
@@ -6606,6 +6799,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // The user is typing again → re-enable the suggestion dropdown.
             _suppressAddressSuggestions = false;
+            // Manual edit invalidates any previously-picked suggestion's coordinates.
+            window.__selectedAddrCoords = null;
 
             // Clear Roofr job selection if user manually edits the input
             if (window.__selectedRoofrJobLink && value !== window.__selectedRoofrJobInputValue) {

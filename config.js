@@ -89,6 +89,10 @@ export const CONFIG = {
       addressField: "PHYSICAL_ADDRESS",
       apnField: "APN_DASH",
       ownerField: "OWNER_NAME",
+      suiteField: "PHYSICAL_SUITE",
+      lotField: "LOT_NUM",
+      latField: "LATITUDE",
+      lngField: "LONGITUDE",
       detailUrl: "https://mcassessor.maricopa.gov/mcs/?q=",
       propertyFields: {
         yearBuilt: "CONST_YEAR",
@@ -98,6 +102,13 @@ export const CONFIG = {
         propertyValue: "FCV_CUR",
         salePrice: "SALE_PRICE",
         saleDate: "SALE_DATE",
+        // Added 2026-06-05: absentee-owner + recency signals (Maricopa-only fields)
+        mailAddress: "MAIL_ADDRESS",
+        mailCity: "MAIL_CITY",
+        mailState: "MAIL_STATE",
+        legalClass: "LC_CUR",
+        deedDate: "DEED_DATE",
+        inCareOf: "INCAREOF",
       },
       cities: new Set(["PHOENIX","SCOTTSDALE","TEMPE","MESA","CHANDLER","GILBERT","GLENDALE","PEORIA","SURPRISE","AVONDALE","GOODYEAR","BUCKEYE","QUEEN CREEK","APACHE JUNCTION","FOUNTAIN HILLS","PARADISE VALLEY","CAVE CREEK","CAREFREE","ANTHEM","EL MIRAGE","YOUNGTOWN","LITCHFIELD PARK","TOLLESON","WADDELL","SUN CITY","SUN CITY WEST","NEW RIVER","AHWATUKEE","SUN LAKES","GOLD CANYON","QUEEN VALLEY","WITTMANN","WICKENBURG","MORRISTOWN","LAVEEN","CONGRESS","GLOBE"])
     },
@@ -193,6 +204,13 @@ export const CONFIG = {
       // Extract street address for search (first part before city/state)
       let streetPart = address.split(',')[0].trim().toUpperCase();
 
+      // Detect a unit/suite or lot number in the typed address (exact-parcel lock-down)
+      let unitToken = null, lotToken = null;
+      const _um = address.match(/(?:#\s*|\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building)\s+)([A-Za-z0-9-]+)/i);
+      if (_um) unitToken = _um[1].toUpperCase();
+      const _lm = address.match(/\blot\s*#?\s*([0-9]+[A-Za-z]?)\b/i);
+      if (_lm) lotToken = _lm[1].toUpperCase();
+
       // Extract house number and street name start for flexible matching
       // This helps with variations like "Street" vs "ST", "Avenue" vs "AVE"
       const houseNumMatch = streetPart.match(/^(\d+)\s+(.+)/);
@@ -221,6 +239,10 @@ export const CONFIG = {
         const extraFields = Object.values(county.propertyFields).join(',');
         outFields += `,${extraFields}`;
       }
+      // Geo + unit/lot fields (per-county) for GPS pinning + exact-parcel lock-down
+      for (const k of ['suiteField', 'lotField', 'latField', 'lngField']) {
+        if (county[k]) outFields += `,${county[k]}`;
+      }
 
       const params = new URLSearchParams({
         where: whereClause,
@@ -244,7 +266,29 @@ export const CONFIG = {
       }
 
       if (data.features && data.features.length > 0) {
-        const feature = data.features[0];
+        let features = data.features;
+        const totalMatches = features.length;
+        // Lock to the exact unit/lot if the rep specified one in the address
+        if (features.length > 1 && unitToken && county.suiteField) {
+          const m = features.filter(f => String(f.attributes[county.suiteField] || '').trim().toUpperCase() === unitToken);
+          if (m.length) features = m;
+        }
+        if (features.length > 1 && lotToken && county.lotField) {
+          const m = features.filter(f => String(f.attributes[county.lotField] || '').trim().toUpperCase() === lotToken);
+          if (m.length) features = m;
+        }
+        const ambiguous = features.length > 1;
+        // Candidate list for the picker when still ambiguous (multiple units, none specified)
+        const candidates = ambiguous ? features.slice(0, 25).map(f => ({
+          apn: f.attributes[county.apnField],
+          address: String(f.attributes[county.addressField] || '').replace(/\s+/g, ' ').trim(),
+          suite: county.suiteField ? (String(f.attributes[county.suiteField] || '').trim() || null) : null,
+          lot: county.lotField ? (String(f.attributes[county.lotField] || '').trim() || null) : null,
+          owner: county.ownerField ? f.attributes[county.ownerField] : null,
+          lat: county.latField ? f.attributes[county.latField] : null,
+          lng: county.lngField ? f.attributes[county.lngField] : null
+        })) : null;
+        const feature = features[0];
         const apn = feature.attributes[county.apnField];
         const matchedAddress = feature.attributes[county.addressField];
         const ownerName = county.ownerField ? feature.attributes[county.ownerField] : null;
@@ -316,6 +360,65 @@ export const CONFIG = {
           propertyData.sqftFormatted = propertyData.sqft.toLocaleString();
         }
 
+        // --- Added 2026-06-05: deed recency + owner-occupancy / absentee signals (Maricopa) ---
+        // Format deed date (Maricopa returns epoch ms or a date string)
+        if (propertyData.deedDate) {
+          if (typeof propertyData.deedDate === 'number') {
+            propertyData.deedDate = new Date(propertyData.deedDate).toLocaleDateString('en-US');
+          } else if (typeof propertyData.deedDate === 'string' && propertyData.deedDate.includes('-')) {
+            propertyData.deedDate = new Date(propertyData.deedDate + 'T00:00:00').toLocaleDateString('en-US');
+          }
+        }
+        // Legal class: Maricopa class 3 = owner-occupied primary residence; class 4 = rental / non-primary
+        if (propertyData.legalClass) {
+          const lc = String(propertyData.legalClass).trim();
+          if (lc.startsWith('3')) propertyData.ownerType = 'Owner-occupied';
+          else if (lc.startsWith('4')) propertyData.ownerType = 'Rental / non-primary';
+        }
+        // Absentee owner: mailing location differs from the property (out-of-state OR different city)
+        {
+          const ms = String(propertyData.mailState || '').trim().toUpperCase();
+          const mc = String(propertyData.mailCity || '').trim().toUpperCase();
+          const prop = String(matchedAddress || '').toUpperCase();
+          let absentee = false;
+          if (ms && ms !== 'AZ') absentee = true;                      // out of state
+          else if (mc && prop && !prop.includes(mc)) absentee = true;  // in-state, different city
+          if (absentee) {
+            propertyData.absentee = true;
+            propertyData.absenteeLocation = [mc, ms].filter(Boolean).join(', ') || ms || mc;
+          }
+        }
+
+        // --- Added 2026-06-05: residential characteristics (roof type, etc.) via server-side proxy ---
+        // Token stays on the server (speed-to-lead env: MARICOPA_ASSESSOR_TOKEN). Maricopa only for now.
+        if (county.name === 'Maricopa County') {
+          try {
+            const pr = await fetch(`https://speed-to-leads.vercel.app/api/maricopa-property?apn=${encodeURIComponent(apn)}`, {
+              headers: { 'X-Dialer-Client': 'roofr-extension' }
+            });
+            if (pr.ok) {
+              const pj = await pr.json();
+              const r = pj && pj.success ? pj.residential : null;
+              if (r) {
+                if (r.roofType) propertyData.roofType = r.roofType;
+                if (r.qualityGrade) propertyData.qualityGrade = r.qualityGrade;
+                if (r.garages) propertyData.garages = r.garages;
+                if (r.cooling) propertyData.cooling = r.cooling;
+                if (!propertyData.sqftFormatted && r.livableSqft) {
+                  const n = Number(r.livableSqft);
+                  if (!isNaN(n)) propertyData.sqftFormatted = n.toLocaleString();
+                }
+              }
+            }
+          } catch (e) { console.log('[APN Lookup] roof proxy error:', e.message); }
+        }
+
+        // Geo + unit/lot onto propertyData (for GPS pinning + display)
+        if (county.latField && feature.attributes[county.latField] != null) propertyData.lat = feature.attributes[county.latField];
+        if (county.lngField && feature.attributes[county.lngField] != null) propertyData.lng = feature.attributes[county.lngField];
+        if (county.suiteField) { const sv = String(feature.attributes[county.suiteField] || '').trim(); if (sv) propertyData.suite = sv; }
+        if (county.lotField) { const lv = String(feature.attributes[county.lotField] || '').trim(); if (lv) propertyData.lotNum = lv; }
+
         console.log(`[APN Lookup] Found APN: ${apn}, Owner: ${ownerName || 'N/A'}, Property data:`, propertyData);
         return {
           success: true,
@@ -324,7 +427,10 @@ export const CONFIG = {
           county: county.name,
           matchedAddress: matchedAddress,
           detailUrl: detailUrl,
-          propertyData: propertyData
+          propertyData: propertyData,
+          ambiguous: ambiguous,
+          matchCount: totalMatches,
+          candidates: candidates
         };
       }
 

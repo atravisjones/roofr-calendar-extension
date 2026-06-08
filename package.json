@@ -11,7 +11,8 @@
     "bump:patch": "node scripts/bump-version.cjs patch",
     "bump:minor": "node scripts/bump-version.cjs minor",
     "bump:major": "node scripts/bump-version.cjs major",
-    "release": "node scripts/build-release.cjs"
+    "release": "node scripts/build-release.cjs",
+    "test:local": "node scripts/test-build.cjs"
   },
   "dependencies": {
     "react": "^19.2.0",

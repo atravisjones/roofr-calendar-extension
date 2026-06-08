@@ -7,31 +7,9 @@ const rootDir = path.join(__dirname, '..');
 const releasesDir = path.join(rootDir, 'releases');
 const keyPath = path.join(rootDir, 'extension.pem');
 
-// Files to include in the extension. Keep in sync with manifest.json references.
-const extensionFiles = [
-    'manifest.json',
-    'service_worker.js',
-    'content.js',
-    'roofr-material-order-newtab.js',
-    'popup.html',
-    'popup.js',
-    'options.html',
-    'options.js',
-    'config.js',
-    'themes.js',
-    'metadata.json',
-    'batch-dashboard.html',
-    'dialer.html',
-    'dialer.js',
-    'dialer-bridge.js',
-    'dialer-bridge-main.js',
-    'dialer-sources.js',
-    'attachment-viewer.html',
-    'attachment-viewer.js'
-];
-
-// Directories whose entire contents ship with the extension (e.g. icons/).
-const extensionDirs = ['icons'];
+// Files/dirs that make up the extension — single source of truth shared with ship.cjs
+// (see scripts/extension-files.cjs) so the local test folder always matches the CRX.
+const { extensionFiles, extensionDirs } = require('./extension-files.cjs');
 
 function generatePrivateKey() {
     const { privateKey } = crypto.generateKeyPairSync('rsa', {

@@ -5616,9 +5616,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                         let needsPageLoad = false;
 
                         if (existingGeminiTabs.length > 0) {
-                            // Reuse existing Arizona Roofers Note Assistant Gem tab
+                            // Reuse the existing tab but RESET it to a fresh Gem chat (navigate to the
+                            // base Gem URL) so each address search starts a clean conversation instead of
+                            // stacking onto the previous one — and we never pile up extra Gemini tabs.
                             geminiTab = existingGeminiTabs[0];
-                            addLog(`Reusing existing Gemini Gem tab (ID: ${geminiTab.id})`);
+                            // If duplicates already piled up, close all but the one we'll reuse.
+                            if (existingGeminiTabs.length > 1) {
+                                const extras = existingGeminiTabs.slice(1).map(t => t.id);
+                                try { await chrome.tabs.remove(extras); } catch (e) { /* tabs may already be gone */ }
+                                addLog(`Closed ${extras.length} duplicate Gemini tab(s)`);
+                            }
+                            await chrome.tabs.update(geminiTab.id, { url: geminiGemBaseUrl, active: false });
+                            needsPageLoad = true;
+                            addLog(`Reusing Gemini tab ${geminiTab.id} — reset to a fresh Gem chat`);
                         } else {
                             // Create new Gemini tab in target window with the base Gem URL (will start a new chat)
                             const geminiCreateOpts = { url: geminiGemBaseUrl, active: false };

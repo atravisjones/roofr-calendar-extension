@@ -19,8 +19,10 @@ const path = require('path');
 const { extensionFiles, extensionDirs } = require('./extension-files.cjs');
 
 const root = path.join(__dirname, '..');
-// Sibling of the clean clone, OUTSIDE the repo (never tracked, never deployed).
-const dest = process.env.ROOFR_LOCAL_TEST_DIR || path.join(root, '..', 'roofr-calendar-test');
+// Lives next to the (7) test folder in "Arizona Roofers Tools" (OUTSIDE the repo —
+// never tracked, never deployed). Override with ROOFR_LOCAL_TEST_DIR.
+const dest = process.env.ROOFR_LOCAL_TEST_DIR
+  || 'C:\\Users\\atrav\\Downloads\\Arizona Roofers Tools\\roofr-calendar-test';
 
 const copyDir = (src, d) => {
   fs.mkdirSync(d, { recursive: true });

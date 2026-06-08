@@ -217,12 +217,15 @@ export const CONFIG = {
       if (houseNumMatch) {
         const houseNum = houseNumMatch[1];
         const streetWords = houseNumMatch[2].split(/\s+/);
-        // Get first significant street word (skip directional prefixes)
+        // Match on house# + street NAME only, DROPPING any leading directional.
+        // Counties abbreviate directionals inconsistently ("E" vs "EAST") and store
+        // abbreviated street types ("ST" not "STREET"), so including the directional
+        // breaks the LIKE — e.g. "1392 EAST SARAGOSA" never matches "1392 E SARAGOSA ST".
+        // Skipping it matches whether the rep typed "E", "East", or nothing.
         const directions = ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW', 'NORTH', 'SOUTH', 'EAST', 'WEST'];
-        let streetName = streetWords[0];
-        if (directions.includes(streetWords[0]) && streetWords.length > 1) {
-          streetName = streetWords[0] + '%' + streetWords[1];
-        }
+        let idx = 0;
+        if (directions.includes(streetWords[0]) && streetWords.length > 1) idx = 1;
+        const streetName = streetWords[idx];
         streetPart = houseNum + '%' + streetName;
       }
 

@@ -1346,6 +1346,48 @@ document.addEventListener('DOMContentLoaded', async () => {
                 addLog(`Address suggestion error: ${error.message}`, 'WARN');
             }
 
+            // Fallback: always let the rep force the EXACT typed address through. Free geocoders
+            // (LocationIQ/Census) miss some real addresses that Google knows — new/renamed streets,
+            // gated communities — e.g. "6725 E Terrace Dr, Scottsdale" returns nothing/wrong streets.
+            // Coords stay null so Google Earth resolves the pin with Google's own geocoder; Roofr
+            // search/create use the house number.
+            if (/^\s*\d+\s+[A-Za-z]/.test(query) && query.trim().length >= 8) {
+                const typed = toTitleCase(query.trim());
+                const norm = _normalizeAddress(typed);
+                if (!addedNormalized.has(norm)) {
+                    addedNormalized.add(norm);
+                    if (!geoHeaderAdded) {
+                        geoHeaderAdded = true;
+                        const hdr = document.createElement('div');
+                        hdr.className = 'suggestion-section-header';
+                        hdr.textContent = 'Address Suggestions';
+                        if (queryIsSpecific && dbInsertRef) verifiedAddressesList.insertBefore(hdr, dbInsertRef);
+                        else verifiedAddressesList.appendChild(hdr);
+                    }
+                    const el = document.createElement('div');
+                    el.className = 'suggestion-item manual-entry';
+                    el.textContent = '✏️ Use exactly what I typed: ' + typed;
+                    el.addEventListener('mousedown', (e) => e.preventDefault());
+                    el.addEventListener('click', () => {
+                        if (addrInput) {
+                            addrInput.value = typed;
+                            addrInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        }
+                        window.__selectedRoofrJobLink = null;
+                        window.__selectedRoofrJob = null;
+                        window.__selectedRoofrJobInputValue = null;
+                        window.__selectedAddrCoords = null; // no geocoder coords -> Google Earth address-searches it
+                        verifiedAddressesList.classList.add('hidden');
+                        updateGoButtonState();
+                    });
+                    if (queryIsSpecific && dbInsertRef) verifiedAddressesList.insertBefore(el, dbInsertRef);
+                    else verifiedAddressesList.appendChild(el);
+                    _suggestionItems.push(el);
+                    el.__suggestion = null;
+                    hasResults = true;
+                }
+            }
+
             // Re-order keyboard nav to match visual order: geo items first when specific
             if (queryIsSpecific && geoSuggestionItems.length > 0) {
                 const dbItems = _suggestionItems.filter(el => !geoSuggestionItems.includes(el));

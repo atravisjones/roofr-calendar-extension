@@ -2748,11 +2748,17 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       return { ok: true, wasOpen: false, matchesAddress: false };
     }
 
-    // If we have an address to match, check if the open popup matches it
+    // If we have an address to match, check if the open popup matches it.
+    // Digit-boundary match on the house number PLUS at least one street word —
+    // "123 Main St" must not be satisfied by a stale popup for "123 Oak St".
     if (keepIfMatchesAddress) {
       const popupAddress = (addressButton.title || addressButton.textContent || '').toLowerCase();
       const addressNumber = keepIfMatchesAddress.match(/^\d+/)?.[0] || '';
-      if (addressNumber && popupAddress.includes(addressNumber)) {
+      const streetWords = keepIfMatchesAddress.split(',')[0].toLowerCase().split(/\s+/)
+        .filter(w => w.length > 1 && !/^\d+$/.test(w));
+      const numOk = addressNumber && new RegExp('(^|\\D)' + addressNumber + '(\\D|$)').test(popupAddress);
+      const streetOk = streetWords.length === 0 || streetWords.some(w => popupAddress.includes(w));
+      if (numOk && streetOk) {
         console.log('[Batch] Popup already open for correct address, keeping it open');
         return { ok: true, wasOpen: true, matchesAddress: true };
       }
@@ -2782,7 +2788,11 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       await batchSleep(300);
     }
 
-    return { ok: true, wasOpen: true, matchesAddress: false };
+    // Report honestly whether the popup actually closed — callers use this to
+    // decide whether the calendar tab needs a recovery reload.
+    const stillOpenAfter = !!document.querySelector('[data-testid="job-map-options-dropdown-trigger"]');
+    if (stillOpenAfter) console.warn('[Batch] Popup did NOT close after Escape + background click');
+    return { ok: true, wasOpen: true, matchesAddress: false, stillOpen: stillOpenAfter };
   }
 
   // Find and click a calendar event by address
@@ -2851,25 +2861,36 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       return tm ? normalizeTimeToMinutes(tm[1]) : null;
     };
 
+    // SAFETY: match the house number on digit boundaries, never as a raw
+    // substring — "123" must not match "1234", phone numbers, or note text.
+    const houseNumRe = addressNumber ? new RegExp('(^|\\D)' + addressNumber + '(\\D|$)') : null;
+
     const findMatches = (candidateEvents) => {
       const addrMatches = [];
       for (const event of candidateEvents) {
         const eventText = event.textContent?.toLowerCase() || '';
-        if (addressNumber && eventText.includes(addressNumber)) {
+        if (houseNumRe && houseNumRe.test(eventText)) {
           addrMatches.push({ event, text: eventText });
         }
       }
-      // SAFETY: when an expected time is known and the same address appears more
-      // than once (duplicate/recurring events), require the event start time to
-      // match before touching it. Address-only matching previously let the
-      // automation open/save the WRONG event. If none match the time, refuse to
-      // guess (return empty → caller aborts) rather than edit a random duplicate.
-      if (wantMinutes != null && addrMatches.length > 1) {
+      // SAFETY: when an expected time is known, require the event start time to
+      // match before touching it — even for a SINGLE address match (a lone match
+      // at the wrong time is a different appointment, e.g. a rescheduled
+      // duplicate on another day in the same view). Address-only matching
+      // previously let the automation open/save the WRONG event. Events whose
+      // time can't be extracted are only trusted when they're the sole match.
+      if (wantMinutes != null && addrMatches.length >= 1) {
         const timed = addrMatches.filter(m => {
           const em = eventStartMinutes(m.event);
           return em != null && Math.abs(em - wantMinutes) <= 5;
         });
         if (timed.length >= 1) return timed;
+        // No verifiable time match. Tolerate ONLY the single-match-with-
+        // unreadable-time case; refuse everything else rather than guess.
+        if (addrMatches.length === 1 && eventStartMinutes(addrMatches[0].event) == null) {
+          console.warn('[Batch] Single address match but event time unreadable — proceeding cautiously.');
+          return addrMatches;
+        }
         console.warn('[Batch] Address matched but no event start time matches', time, '— refusing to guess which duplicate to edit.');
         return [];
       }
@@ -2934,32 +2955,40 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
           console.log(`  ${i}: ${m.text.substring(0, 80)}`);
         });
 
-        // Best match: contains the full street address (e.g., "10545 e fanfol ln")
-        const fullAddressMatch = matchingEvents.find(m => m.text.includes(streetPart));
-        if (fullAddressMatch) {
-          match = fullAddressMatch;
-          console.log('[Batch] Selected match containing full street address');
-        } else {
-          // Fallback: prefer the one that also contains city
-          const withCity = matchingEvents.find(m =>
-            m.text.includes(addressNumber) && m.text.includes(cityPart)
-          );
-          if (withCity) {
-            match = withCity;
-            console.log('[Batch] Selected match containing city');
+        // Narrow with FILTERS (not first-match find): full street address,
+        // then city. Whatever survives must be unambiguous.
+        let candidates = matchingEvents;
+        const withFullAddress = candidates.filter(m => m.text.includes(streetPart));
+        if (withFullAddress.length > 0) {
+          candidates = withFullAddress;
+          console.log('[Batch] Narrowed to', candidates.length, 'match(es) containing full street address');
+        } else if (cityPart) {
+          const withCity = candidates.filter(m => m.text.includes(cityPart));
+          if (withCity.length > 0) {
+            candidates = withCity;
+            console.log('[Batch] Narrowed to', candidates.length, 'match(es) containing city');
           }
         }
 
-        // Prefer .rbc-event-content over wrappers (more specific element)
-        for (const m of matchingEvents) {
-          if (m.event.classList?.contains('rbc-event-content')) {
-            const mText = m.text;
-            if (mText.includes(streetPart) || (mText.includes(addressNumber) && mText.includes(cityPart))) {
-              match = m;
-              console.log('[Batch] Selected rbc-event-content element');
-              break;
-            }
+        // SAFETY: if more than one DIFFERENT event survives narrowing, refuse to
+        // guess — editing the first DOM match was a leading cause of wrong-job
+        // assignments. Identical-text survivors are render-duplicates of the
+        // same event, and any of them is fine.
+        if (candidates.length > 1) {
+          const distinctTexts = new Set(candidates.map(m => m.text.trim()));
+          if (distinctTexts.size > 1) {
+            console.warn('[Batch] Ambiguous: ' + candidates.length + ' different events match — refusing to guess.');
+            return { ok: false, error: `Ambiguous match: ${candidates.length} different events match "${address}" at ${time} — refusing to guess` };
           }
+          console.log('[Batch] Candidates are render-duplicates of the same event — using first');
+        }
+        match = candidates[0];
+
+        // Prefer .rbc-event-content over wrappers (more specific element)
+        const contentEl = candidates.find(m => m.event.classList?.contains('rbc-event-content'));
+        if (contentEl) {
+          match = contentEl;
+          console.log('[Batch] Selected rbc-event-content element');
         }
       }
 
@@ -3512,30 +3541,43 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
   // to open the event popup and hunt for an "Open job" link.
   async function openJobViaEventMiddleClick(address, time) {
     const addressNumber = (String(address).match(/^\d+/) || [])[0] || '';
+    // Digit-boundary match — "123" must not match "1234" or phone numbers.
+    const numRe = addressNumber ? new RegExp('(^|\\D)' + addressNumber + '(\\D|$)') : null;
     const wantMin = (typeof normalizeTimeToMinutes === 'function') ? normalizeTimeToMinutes(time) : null;
     const getEvents = () => {
       let evs = Array.from(document.querySelectorAll('.rbc-event-content'));
       if (!evs.length) evs = Array.from(document.querySelectorAll('.rbc-event button, button.rbc-event, .rbc-event'));
       return evs;
     };
+    const eventMinutes = (e) => {
+      const host = e.closest('[class*="rbcalendar-event"]') || e.closest('.rbc-event') || e;
+      const dt = extractDateTimeFromClass((host.className || '').toString());
+      return dt ? dt.getHours() * 60 + dt.getMinutes() : null;
+    };
 
     let target = null;
     for (let i = 0; i < 20 && !target; i++) {
-      const matches = getEvents().filter(e => addressNumber && (e.textContent || '').includes(addressNumber));
+      const matches = getEvents().filter(e => numRe && numRe.test(e.textContent || ''));
       if (matches.length) {
-        if (wantMin != null && matches.length > 1) {
+        if (wantMin != null) {
+          // Require the start time to agree whenever we expect one — a lone
+          // match at the wrong time is a different appointment.
           target = matches.find(e => {
-            const host = e.closest('[class*="rbcalendar-event"]') || e.closest('.rbc-event') || e;
-            const dt = extractDateTimeFromClass((host.className || '').toString());
-            return dt && Math.abs((dt.getHours() * 60 + dt.getMinutes()) - wantMin) <= 5;
+            const em = eventMinutes(e);
+            return em != null && Math.abs(em - wantMin) <= 5;
           }) || null;
-        } else {
+          if (!target && matches.length === 1 && eventMinutes(matches[0]) == null) {
+            target = matches[0]; // single match, time unreadable — accept cautiously
+          }
+        } else if (matches.length === 1) {
           target = matches[0];
+        } else {
+          return { ok: false, error: `Ambiguous: ${matches.length} events match "${address}" and no expected time given` };
         }
       }
       if (!target) await batchSleep(500);
     }
-    if (!target) return { ok: false, error: `Event not found on the visible calendar for: ${address}` };
+    if (!target) return { ok: false, error: `Event not found on the visible calendar for: ${address} at ${time}` };
 
     const clickTarget = target.closest('.rbc-event') || target;
     const opts = { bubbles: true, cancelable: true, view: window, button: 1, buttons: 4 };
@@ -3603,12 +3645,15 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       }
     }
 
-    // Also check data-testid for invitee rows containing rep name
+    // Also check data-testid for invitee rows containing rep name.
+    // Require BOTH first and last name — first-name-only matching skipped the
+    // edit whenever any invitee shared the rep's first name.
     const existingInviteeRowsPreEdit = document.querySelectorAll('[data-testid*="calendar-card-invitees-row"]');
     for (const row of existingInviteeRowsPreEdit) {
       const rowText = row.textContent?.toLowerCase() || '';
-      const rowTestId = row.getAttribute('data-testid')?.toLowerCase() || '';
-      if (rowText.includes(repFirstName) || rowTestId.includes(repFirstName.replace(' ', '_'))) {
+      const rowTestId = (row.getAttribute('data-testid')?.toLowerCase() || '').replace(/_/g, ' ');
+      const hasBoth = (s) => s.includes(repFirstName) && s.includes(repLastName);
+      if (hasBoth(rowText) || hasBoth(rowTestId)) {
         console.log('[Batch] Rep found in invitee row (pre-edit):', row.textContent);
         repAlreadyOnCalendar = true;
         break;
@@ -4125,7 +4170,23 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       throw new Error(`Could not find rep "${repName}" in the invitee dropdown — aborting without saving (refusing to add the whole team).`);
     }
 
-    // Find and click Save button — only reached when the exact rep was selected.
+    // VERIFY the click actually added the rep — a clicked dropdown option that
+    // doesn't materialize as an invitee row means nothing was selected, and
+    // saving anyway silently does nothing (a major source of "ran fine but rep
+    // wasn't assigned"). Poll for the rep's invitee row before trusting it.
+    const repRowAppeared = await waitForEl(() => {
+      const rows = document.querySelectorAll('[data-testid*="calendar-card-invitees-row"], [data-testid*="invitees-row"], [class*="InviteeRow"], [class*="invitee"]');
+      for (const row of rows) {
+        if (nameMatches(row.textContent)) return row;
+      }
+      return null;
+    }, { timeout: 5000, message: `invitee row for "${repName}"` });
+    if (!repRowAppeared) {
+      throw new Error(`Clicked "${repName}" in the dropdown but no invitee row appeared — aborting without saving.`);
+    }
+
+    // Find and click Save button — only reached when the exact rep was selected
+    // AND verified as an invitee row.
     await batchSleep(500); // Small wait before looking for save button
 
     const allButtons = document.querySelectorAll('button');
@@ -4134,33 +4195,37 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     const saveButton = Array.from(allButtons)
       .find(btn => btn.textContent?.trim().toLowerCase() === 'save');
 
-    if (saveButton) {
-      console.log('[Batch] Found Save button, disabled:', saveButton.disabled);
-      if (!saveButton.disabled) {
-        console.log('[Batch] Clicking Save button');
-        saveButton.click();
-        // Wait for save to complete — poll until the edit form/save button disappears
-        await waitForEl(() => {
-          const stillOpen = Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim().toLowerCase() === 'save');
-          return stillOpen ? null : document.body; // Returns body (truthy) when save button is gone
-        }, { timeout: 10000, message: 'save completion' });
-        console.log('[Batch] Save completed');
-
-        // After save, wait for the modal to settle. The popup controller reloads
-        // the calendar tab before the next edit; blindly toggling "Select all"
-        // here can leave Roofr filtered to an empty/partial team state.
-        console.log('[Batch] Save complete — waiting for calendar to settle...');
-        await batchSleep(500);
-      } else {
-        console.warn('[Batch] Save button is disabled - invitee may not be properly selected');
-      }
-    } else {
+    if (!saveButton) {
       console.warn('[Batch] Save button not found');
-      // Debug: list all buttons
       allButtons.forEach((btn, i) => {
         if (i < 10) console.log(`  Button ${i}: "${btn.textContent?.trim().substring(0, 20)}"`);
       });
+      throw new Error('Save button not found after selecting invitee — aborting (edit not saved).');
     }
+    console.log('[Batch] Found Save button, disabled:', saveButton.disabled);
+    if (saveButton.disabled) {
+      throw new Error('Save button is disabled after selecting invitee — aborting (edit not saved).');
+    }
+
+    console.log('[Batch] Clicking Save button');
+    saveButton.click();
+    // Wait for save to complete — poll until the edit form/save button disappears.
+    // A timeout here means the save did NOT go through; report it instead of
+    // pretending success.
+    const saved = await waitForEl(() => {
+      const stillOpen = Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim().toLowerCase() === 'save');
+      return stillOpen ? null : document.body; // Returns body (truthy) when save button is gone
+    }, { timeout: 10000, message: 'save completion' });
+    if (!saved) {
+      throw new Error('Save did not complete within 10s (edit form still open) — edit may not be saved.');
+    }
+    console.log('[Batch] Save completed');
+
+    // After save, wait for the modal to settle. The popup controller reloads
+    // the calendar tab before the next edit; blindly toggling "Select all"
+    // here can leave Roofr filtered to an empty/partial team state.
+    console.log('[Batch] Save complete — waiting for calendar to settle...');
+    await batchSleep(500);
   }
 }
 

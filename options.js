@@ -407,6 +407,17 @@ function setupCallHandlerDropdowns() {
 async function displayRegionsAndCities() {
   const data = await chrome.storage.sync.get({ [DYNAMIC_CITIES_KEY]: {} });
   const dynamicCities = data[DYNAMIC_CITIES_KEY] || { PHX: [], NORTH: [], SOUTH: [] };
+  const normalizedDynamicCities = { PHX: [], NORTH: [], SOUTH: [] };
+
+  for (const requestedRegion of ['PHX', 'NORTH', 'SOUTH']) {
+    for (const city of dynamicCities[requestedRegion] || []) {
+      const normalizedCity = String(city || '').trim().toUpperCase();
+      const region = CONFIG.getRequiredRegionForCity(normalizedCity) || requestedRegion;
+      if (normalizedCity && !normalizedDynamicCities[region].includes(normalizedCity)) {
+        normalizedDynamicCities[region].push(normalizedCity);
+      }
+    }
+  }
 
   const regions = [
     { key: 'PHX', name: 'Greater Phoenix', containerId: 'cities-phx' },
@@ -419,7 +430,7 @@ async function displayRegionsAndCities() {
     if (!container) continue;
 
     const staticSet = CONFIG.REGION_CITY_WHITELISTS[region.key];
-    const dynamicList = dynamicCities[region.key] || [];
+    const dynamicList = normalizedDynamicCities[region.key] || [];
 
     const allCities = new Set([...staticSet, ...dynamicList]);
     const sortedCities = Array.from(allCities).sort();

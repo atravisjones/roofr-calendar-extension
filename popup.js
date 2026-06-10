@@ -352,6 +352,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     const USER_PREFS_KEY = 'roofr_user_prefs';
     const DYNAMIC_CITIES_KEY = 'roofr_dynamic_cities';
 
+    function addCityToRegionWhitelist(city, requestedRegion) {
+        const normalizedCity = String(city || '').trim().toUpperCase();
+        const region = CONFIG.getRequiredRegionForCity(normalizedCity) || requestedRegion;
+        if (normalizedCity && CONFIG.REGION_CITY_WHITELISTS[region]) {
+            CONFIG.REGION_CITY_WHITELISTS[region].add(normalizedCity);
+        }
+        return region;
+    }
+
     // Google Sheet for cities database
     const CITIES_SHEET_ID = '1cFFEZNl7wXt40riZHnuZxGc1Zfm5lTlOz0rDCWGZJ0g';
     const CITIES_SHEET_TAB = 'Appointment Blocks'; // Tab name where cities are stored
@@ -2252,7 +2261,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                             // Add city to whitelist if new
                             if (result.isNewCity && city) {
-                                CONFIG.REGION_CITY_WHITELISTS[region].add(city);
+                                addCityToRegionWhitelist(city, region);
 
                                 // Try to save to Google Sheet first
                                 const savedToSheet = await appendCityToSheet(city, region);
@@ -2345,7 +2354,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 CONFIG.REGION_CITY_WHITELISTS.SOUTH.has(city);
 
                             if (!exists) {
-                                CONFIG.REGION_CITY_WHITELISTS[region].add(city);
+                                addCityToRegionWhitelist(city, region);
 
                                 // Try to save to Google Sheet first
                                 const savedToSheet = await appendCityToSheet(city, region);
@@ -4482,7 +4491,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                     // Add city to whitelist if new
                     if (result.isNewCity && city) {
-                        CONFIG.REGION_CITY_WHITELISTS[region].add(city);
+                        addCityToRegionWhitelist(city, region);
 
                         // Try to save to Google Sheet
                         await appendCityToSheet(city, region);
@@ -5158,9 +5167,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
 
                     // Also add to CONFIG whitelist so it works immediately
-                    if (CONFIG.REGION_CITY_WHITELISTS[selectedRegion]) {
-                        CONFIG.REGION_CITY_WHITELISTS[selectedRegion].add(primaryCity.toUpperCase());
-                    }
+                    addCityToRegionWhitelist(primaryCity, selectedRegion);
 
                     showToast(`${primaryCity} added to ${selectedRegion} region`);
                 } catch (e) {
@@ -8579,7 +8586,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             for (const region of ['PHX', 'NORTH', 'SOUTH']) {
                 if (sheetCities[region] && sheetCities[region].length > 0) {
                     for (const city of sheetCities[region]) {
-                        CONFIG.REGION_CITY_WHITELISTS[region].add(city);
+                        addCityToRegionWhitelist(city, region);
                     }
                 }
             }
@@ -8591,17 +8598,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             const loadedCities = data[DYNAMIC_CITIES_KEY] || {};
 
             // Safely merge loaded cities into our local variable
-            userAddedCities = {
-                PHX: loadedCities.PHX || [],
-                NORTH: loadedCities.NORTH || [],
-                SOUTH: loadedCities.SOUTH || [],
-            };
+            userAddedCities = { PHX: [], NORTH: [], SOUTH: [] };
 
             // Merge locally-stored cities into CONFIG (may overlap with sheet cities, Sets handle duplicates)
             for (const region of ['PHX', 'NORTH', 'SOUTH']) {
-                if (userAddedCities[region] && userAddedCities[region].length > 0) {
-                    for (const city of userAddedCities[region]) {
-                        CONFIG.REGION_CITY_WHITELISTS[region].add(city);
+                if (loadedCities[region] && loadedCities[region].length > 0) {
+                    for (const city of loadedCities[region]) {
+                        const normalizedCity = String(city || '').trim().toUpperCase();
+                        const effectiveRegion = addCityToRegionWhitelist(normalizedCity, region);
+                        if (normalizedCity && !userAddedCities[effectiveRegion].includes(normalizedCity)) {
+                            userAddedCities[effectiveRegion].push(normalizedCity);
+                        }
                     }
                 }
             }

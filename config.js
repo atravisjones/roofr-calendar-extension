@@ -75,9 +75,21 @@ export const CONFIG = {
     "RED ROCK", "ORACLE", "MARANA", "ORO VALLEY", "SADDLEBROOKE", "TUCSON", "SOUTH TUCSON", "SAHUARITA", "GREEN VALLEY", "VAIL", "RIO RICO", "NOGALES"
   ],
 
+  UP_NORTH_TRAVEL_CITIES: new Set([
+    "PRESCOTT", "PRESCOTT VALLEY", "CHINO VALLEY", "DEWEY", "MAYER",
+    "SEDONA", "COTTONWOOD", "CLARKDALE", "CAMP VERDE", "VILLAGE OF OAK CREEK",
+    "PAYSON", "PINE", "STRAWBERRY", "STAR VALLEY"
+  ]),
+
+  REQUIRED_NORTH_CITIES: new Set([
+    "FLAGSTAFF", "WILLIAMS", "MUNDS PARK", "PARKS",
+    "PAGE", "TUBA CITY", "KAYENTA", "FREDONIA",
+    "KINGMAN", "WINKELMAN", "RIO VERDE"
+  ]),
+
   REGION_CITY_WHITELISTS: {
-      PHX: new Set(["PHOENIX","SCOTTSDALE","TEMPE","MESA","CHANDLER","GILBERT","GLENDALE","PEORIA","SURPRISE", "AVONDALE","GOODYEAR","BUCKEYE","QUEEN CREEK","SAN TAN VALLEY","APACHE JUNCTION","FOUNTAIN HILLS", "PARADISE VALLEY","CAVE CREEK","CAREFREE","ANTHEM","EL MIRAGE","YOUNGTOWN","LITCHFIELD PARK", "TOLLESON","WADDELL","SUN CITY","SUN CITY WEST","NEW RIVER","AHWATUKEE","MARICOPA","CASA GRANDE", "FLORENCE","SUN LAKES","GOLD CANYON","QUEEN VALLEY","WITTMANN","WICKENBURG","MORRISTOWN","LAVEEN","BLACK CANYON CITY","CONGRESS","STANFIELD","GLOBE"]),
-      NORTH: new Set(["PRESCOTT","PRESCOTT VALLEY","FLAGSTAFF","PAYSON","SEDONA","COTTONWOOD","CAMP VERDE","CHINO VALLEY", "DEWEY","WILLIAMS","KINGMAN","CLARKDALE","PINE","STRAWBERRY","STAR VALLEY","VILLAGE OF OAK CREEK","MUNDS PARK","MAYER","WINKELMAN","RIO VERDE"]),
+      PHX: new Set(["PHOENIX","SCOTTSDALE","TEMPE","MESA","CHANDLER","GILBERT","GLENDALE","PEORIA","SURPRISE", "AVONDALE","GOODYEAR","BUCKEYE","QUEEN CREEK","SAN TAN VALLEY","APACHE JUNCTION","FOUNTAIN HILLS", "PARADISE VALLEY","CAVE CREEK","CAREFREE","ANTHEM","EL MIRAGE","YOUNGTOWN","LITCHFIELD PARK", "TOLLESON","WADDELL","SUN CITY","SUN CITY WEST","NEW RIVER","AHWATUKEE","MARICOPA","CASA GRANDE", "FLORENCE","SUN LAKES","GOLD CANYON","QUEEN VALLEY","WITTMANN","WICKENBURG","MORRISTOWN","LAVEEN","BLACK CANYON CITY","CONGRESS","STANFIELD","GLOBE","PRESCOTT","PRESCOTT VALLEY","CHINO VALLEY","DEWEY","MAYER","SEDONA","COTTONWOOD","CLARKDALE","CAMP VERDE","VILLAGE OF OAK CREEK","PAYSON","PINE","STRAWBERRY","STAR VALLEY"]),
+      NORTH: new Set(["FLAGSTAFF","WILLIAMS","MUNDS PARK","PARKS","PAGE","TUBA CITY","KAYENTA","FREDONIA","KINGMAN","WINKELMAN","RIO VERDE"]),
       SOUTH: new Set(["TUCSON","SOUTH TUCSON","MARANA","ORO VALLEY","SAHUARITA","GREEN VALLEY","VAIL","NOGALES","RIO RICO", "SADDLEBROOKE","ELOY","ARIZONA CITY","COOLIDGE","VALLEY FARMS","RED ROCK","ORACLE"]),
   },
 
@@ -500,10 +512,17 @@ export const CONFIG = {
   },
   
   getRegionForCity(city) {
-      const C = city.toUpperCase();
+      const C = String(city || "").trim().toUpperCase();
       if(this.REGION_CITY_WHITELISTS.PHX.has(C)) return 'PHX';
       if(this.REGION_CITY_WHITELISTS.NORTH.has(C)) return 'NORTH';
       if(this.REGION_CITY_WHITELISTS.SOUTH.has(C)) return 'SOUTH';
+      return null;
+  },
+
+  getRequiredRegionForCity(city) {
+      const C = String(city || "").trim().toUpperCase();
+      if (this.UP_NORTH_TRAVEL_CITIES.has(C)) return 'PHX';
+      if (this.REQUIRED_NORTH_CITIES.has(C)) return 'NORTH';
       return null;
   },
   
@@ -535,11 +554,21 @@ export const CONFIG = {
     const blocks = this.blockWindowForDate(d);
     
     for (const ev of eventsForDay) {
+      const occupiedKeys = new Set();
       for (const blk of blocks) {
         if (this.overlapMinutes({ start: ev.start, end: ev.end }, blk) >= 15) {
-          perBlockBooked[blk.key]++;
+          occupiedKeys.add(blk.key);
         }
       }
+
+      const city = this.getCityFromEvent(ev);
+      if ((region === 'PHX' || region === 'ALL') && city && this.UP_NORTH_TRAVEL_CITIES.has(city) && occupiedKeys.size) {
+        const primaryIndex = blocks.findIndex(blk => blk.key === occupiedKeys.values().next().value);
+        const travelIndex = primaryIndex === blocks.length - 1 ? primaryIndex - 1 : primaryIndex + 1;
+        if (travelIndex >= 0) occupiedKeys.add(blocks[travelIndex].key);
+      }
+
+      for (const key of occupiedKeys) perBlockBooked[key]++;
     }
 
     let capacity = 0;
@@ -831,6 +860,8 @@ export const CONFIG = {
 
   // Suggest a region based on coordinates (rough geographic boundaries for Arizona)
   suggestRegionForCity(city, coordinates) {
+    const knownRegion = this.getRegionForCity(city);
+    if (knownRegion) return knownRegion;
     if (!coordinates) return 'PHX'; // Default to PHX if no coordinates
 
     const lat = coordinates.y;

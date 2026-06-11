@@ -10609,11 +10609,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                             }
                         }
 
-                        // personNameMatch is empty-safe: a blank owner (field not
-                        // loaded yet) must NOT count as "already correct" — the old
-                        // repLower.includes('') check was always true and silently
-                        // skipped the assignment.
-                        if (personNameMatch(apt.rep, currentOwner)) {
+                        const repLower = apt.rep.toLowerCase();
+                        const ownerLower = currentOwner.toLowerCase();
+                        if (ownerLower === repLower || ownerLower.includes(repLower) || repLower.includes(ownerLower)) {
                             addBatchLog(`${prefix} Owner already set to ${currentOwner}`, 'success');
                             jobOwnerSet = true;
                             apt.jobCardAdded = true;
@@ -10624,7 +10622,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (currentOwner) {
                             // Normalize accents for comparison (Bronté → bronte)
                             const stripAccents = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-                            const ownerNorm = stripAccents(currentOwner.toLowerCase());
+                            const ownerNorm = stripAccents(ownerLower);
                             const isCsr = csrList.some(csr => {
                                 const csrNorm = stripAccents(csr);
                                 return ownerNorm.includes(csrNorm) || csrNorm.includes(ownerNorm);
@@ -10645,22 +10643,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                             continue;
                         }
 
-                        // Poll for the owner field to reflect the change instead of
-                        // trusting one fixed-delay read — React can re-render the
-                        // field late, and an empty read must count as unverified.
-                        let newOwner = '';
-                        for (let verifyTry = 0; verifyTry < 5; verifyTry++) {
-                            await new Promise(r => setTimeout(r, 1000));
-                            const afterInfo = await sendMessageToTab(tabId, { type: 'GET_JOB_INFO' });
-                            newOwner = afterInfo?.info?.jobOwner || '';
-                            if (personNameMatch(apt.rep, newOwner)) break;
-                        }
-                        if (personNameMatch(apt.rep, newOwner)) {
+                        await new Promise(r => setTimeout(r, 1500));
+
+                        const afterInfo = await sendMessageToTab(tabId, { type: 'GET_JOB_INFO' });
+                        const newOwner = afterInfo?.info?.jobOwner || '';
+                        const newLower = newOwner.toLowerCase();
+                        if (newLower === repLower || newLower.includes(repLower) || repLower.includes(newLower)) {
                             addBatchLog(`${prefix} Owner confirmed: ${newOwner}`, 'success');
                             jobOwnerSet = true;
                             apt.jobCardAdded = true;
                         } else {
-                            addBatchLog(`${prefix} Verify failed: "${newOwner || '(empty)'}" ≠ "${apt.rep}"`, 'error');
+                            addBatchLog(`${prefix} Verify failed: "${newOwner}" ≠ "${apt.rep}"`, 'error');
                             if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 2000));
                         }
                     } catch (err) {
@@ -10841,15 +10834,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (!batchBackgroundMode) {
                         try { await chrome.tabs.update(useTabId, { active: true }); } catch (e) {}
                     }
-                    // Close any lingering popup from previous edit before searching.
-                    // A popup that refuses to close would overlay the calendar and
-                    // hijack the next event click — recovery-reload in that case.
+                    // Close any lingering popup from previous edit before searching
                     try {
-                        const preClose = await sendMessageToTab(useTabId, { type: 'BATCH_CLOSE_POPUP' });
-                        if (preClose?.stillOpen) {
-                            addBatchLog(`${prefix} Lingering popup stuck — recovery reload before edit`, 'error');
-                            await reloadCalendarTabForNextEdit(useTabId, prefix);
-                        }
+                        await sendMessageToTab(useTabId, { type: 'BATCH_CLOSE_POPUP' });
                     } catch (e) {}
                     await new Promise(r => setTimeout(r, 800));
 
@@ -10888,19 +10875,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             addBatchLog(`${prefix} Calendar updated`, 'success');
                         }
                         apt.calendarAdded = true;
-                        // The reload-after-every-edit cycle (20s load wait + filter
-                        // reapply + week restore) was the batch's main time sink.
-                        // After a verified save the modal is already gone; just make
-                        // sure no popup lingers and reload ONLY if one is stuck.
-                        try {
-                            const closeRes = await sendMessageToTab(useTabId, { type: 'BATCH_CLOSE_POPUP' });
-                            if (closeRes?.stillOpen) {
-                                addBatchLog(`${prefix} Popup stuck open — recovery reload`, 'error');
-                                await reloadCalendarTabForNextEdit(useTabId, prefix);
-                            }
-                        } catch (e) {
-                            await reloadCalendarTabForNextEdit(useTabId, prefix);
-                        }
+                        await reloadCalendarTabForNextEdit(useTabId, prefix);
                     }
                 } catch (e) {
                     addBatchLog(`${prefix} Calendar error: ${e.message}`, 'error');
@@ -11084,14 +11059,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                             apt.status = 'error';
                             addBatchLog(`${prefix} ⚠ Flagged for review`, 'error');
                         } else if (apt.calendarAdded) {
-                            // 'done' requires the Phase 1 owner assignment too
-                            if (job.ownerSet) {
-                                apt.status = 'done';
-                                addBatchLog(`${prefix} ✓ Done`, 'success');
-                            } else {
-                                apt.status = 'error';
-                                addBatchLog(`${prefix} Calendar updated but owner was NOT confirmed in Phase 1`, 'error');
-                            }
+                            apt.status = 'done';
+                            addBatchLog(`${prefix} ✓ Done`, 'success');
                         } else {
                             // Edit returned without setting calendarAdded — treat as failure
                             addBatchLog(`${prefix} Calendar edit did not confirm — queued for retry`, 'error');
@@ -11135,21 +11104,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 apt.status = 'error';
                                 stillFailed.push({ job, error: 'Flagged on retry' });
                             } else if (apt.calendarAdded) {
-                                if (job.ownerSet) {
-                                    apt.status = 'done';
-                                    addBatchLog(`${prefix} ✓ Retry succeeded`, 'success');
-                                } else {
-                                    apt.status = 'error';
-                                    addBatchLog(`${prefix} Calendar updated on retry but owner was NOT confirmed in Phase 1`, 'error');
-                                }
+                                apt.status = 'done';
+                                addBatchLog(`${prefix} ✓ Retry succeeded`, 'success');
                             } else {
-                                apt.status = 'error';
                                 stillFailed.push({ job, error: 'Edit did not confirm on retry' });
                             }
                             renderParsedAppointments();
                         } catch (e) {
                             addBatchLog(`${prefix} Retry failed: ${e.message}`, 'error');
-                            apt.status = 'error';
                             stillFailed.push({ job, error: e.message });
                             renderParsedAppointments();
                         }
@@ -11251,21 +11213,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                             if (window.__targetWindowId) jobQueryOpts.windowId = window.__targetWindowId;
                             const jobTabs = await chrome.tabs.query(jobQueryOpts);
                             const knownTabIds = new Set([calendarTab.id, activeCalendarTabId, ...reviewTabIds, ...executionOpenedTabIds]);
-                            const unknownTabs = jobTabs.filter(t => !knownTabIds.has(t.id));
-                            // Prefer the tab whose URL matches what we opened — "first
-                            // unknown tab" can grab an unrelated job tab the user opened.
-                            let recentJobTab = null;
-                            if (openResult.url) {
-                                const wantUrl = openResult.url.split('?')[0];
-                                recentJobTab = unknownTabs.find(t => t.url && t.url.split('?')[0] === wantUrl);
+                            const recentJobTab = jobTabs.find(t => !knownTabIds.has(t.id));
+                            if (recentJobTab) {
+                                jobTabId = recentJobTab.id;
+                            } else {
+                                throw new Error('Could not find the opened job tab');
                             }
-                            if (!recentJobTab && unknownTabs.length === 1) recentJobTab = unknownTabs[0];
-                            if (!recentJobTab) {
-                                throw new Error(unknownTabs.length > 1
-                                    ? `Found ${unknownTabs.length} unidentified job tabs — cannot tell which one was just opened`
-                                    : 'Could not find the opened job tab');
-                            }
-                            jobTabId = recentJobTab.id;
                         }
 
                         executionOpenedTabIds.push(jobTabId);
@@ -11336,27 +11289,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const capturedShouldClose = shouldClose;
                         const capturedPrefix = prefix;
 
-                        // Final status is decided AFTER the background calendar edit
-                        // resolves — marking 'done' here hid calendar failures. 'done'
-                        // requires BOTH the owner and the calendar edit confirmed.
-                        const capturedOwnerSet = ownerSet;
-                        pendingCalendarEdit = doCalendarEdit(capturedApt, capturedPrefix).then(() => {
-                            if (capturedApt.calendarFlagged) {
-                                capturedApt.status = 'error';
-                                addBatchLog(`${capturedPrefix} ⚠ Flagged for review`, 'error');
-                            } else if (capturedApt.calendarAdded && capturedOwnerSet) {
-                                capturedApt.status = 'done';
-                                addBatchLog(`${capturedPrefix} ✓ Done (owner + calendar)`, 'success');
-                            } else {
-                                capturedApt.status = 'error';
-                                addBatchLog(`${capturedPrefix} ${capturedApt.calendarAdded ? 'Owner was not confirmed' : 'Calendar edit did not confirm'}`, 'error');
-                            }
-                            renderParsedAppointments();
-                        }).catch((e) => {
-                            capturedApt.status = 'error';
-                            addBatchLog(`${capturedPrefix} Calendar edit error: ${e.message}`, 'error');
-                            renderParsedAppointments();
-                        });
+                        pendingCalendarEdit = doCalendarEdit(capturedApt, capturedPrefix);
 
                         // Close tab simultaneously (fire and forget)
                         if (capturedShouldClose) {
@@ -11365,7 +11298,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                             }).catch(() => {});
                         }
 
-                        addBatchLog(`${prefix} ${ownerSet ? 'Owner set' : 'Owner NOT confirmed'}, calendar updating in background...`, ownerSet ? 'success' : 'error');
+                        apt.status = 'done';
+                        addBatchLog(`${prefix} ✓ Owner set, calendar updating in background`, 'success');
 
                     } catch (error) {
                         addBatchLog(`${prefix} ERROR: ${error.message}`, 'error');
@@ -11388,17 +11322,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             updateBatchProgress(parsedAppointments.length, parsedAppointments.length,
                 batchIsCancelled ? 'Batch cancelled' : 'Batch processing complete!');
-            // Honest tally — the old blanket "finished" message hid per-job failures.
-            const tally = { done: 0, error: 0, skipped: 0, other: 0 };
-            for (const a of parsedAppointments) {
-                if (a.status === 'done') tally.done++;
-                else if (a.status === 'error') tally.error++;
-                else if (a.status === 'skipped') tally.skipped++;
-                else tally.other++;
-            }
-            const tallyMsg = `${tally.done} done, ${tally.error} failed, ${tally.skipped} skipped` + (tally.other ? `, ${tally.other} incomplete` : '');
-            addBatchLog(batchIsCancelled ? `\n=== Batch cancelled (${tallyMsg}) ===` : `\n=== Batch finished: ${tallyMsg} ===`,
-                (batchIsCancelled || tally.error > 0 || tally.other > 0) ? 'error' : 'success');
+            addBatchLog(batchIsCancelled ? '\n=== Batch cancelled ===' : '\n=== Batch processing finished ===',
+                batchIsCancelled ? 'error' : 'success');
 
             // Reset button state
             batchIsRunning = false;

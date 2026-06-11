@@ -1,6 +1,48 @@
 // content.js (MERGED SCRIPT, GUARDED)
 
 // ==================================================
+// START: Roofr API Gateway
+// ==================================================
+(function registerRoofrApiGateway() {
+  if (!window.location.hostname.endsWith(".roofr.com") || window.__roofrApiGatewayRegistered) return;
+  window.__roofrApiGatewayRegistered = true;
+
+  const handlers = {
+    ROOFR_API_GET_DAY_EVENTS: (msg) => window.RoofrApi.getDayEvents(msg.dateStr),
+    ROOFR_API_GET_EVENT: (msg) => window.RoofrApi.getEvent(msg.id ?? msg.eventId),
+    ROOFR_API_GET_JOB: (msg) => window.RoofrApi.getJob(msg.id ?? msg.jobId),
+    ROOFR_API_ADD_ATTENDEE: async (msg) => {
+      if (msg.dryRun) {
+        const before = await window.RoofrApi.getEvent(msg.eventId);
+        return { ok: true, before, after: before, verified: false, dryRun: true };
+      }
+      return window.RoofrApi.addAttendee(msg.eventId, msg.userId);
+    }
+  };
+
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    const handler = msg && handlers[msg.type];
+    if (!handler) return false;
+    Promise.resolve()
+      .then(() => {
+        if (!window.RoofrApi) throw new Error("RoofrApi is unavailable");
+        return handler(msg);
+      })
+      .then((data) => sendResponse(data && Object.prototype.hasOwnProperty.call(data, "ok") ? data : { ok: true, data }))
+      .catch((error) => {
+        const serialized = window.RoofrApi?.serializeError
+          ? window.RoofrApi.serializeError(error)
+          : { kind: error.kind || "network", message: error.message || String(error), status: error.status };
+        sendResponse({ ok: false, error: serialized });
+      });
+    return true;
+  });
+})();
+// ==================================================
+// END: Roofr API Gateway
+// ==================================================
+
+// ==================================================
 // START: SideFind functionality (guarded by window.__sidefind)
 // ==================================================
 if (typeof window.__sidefind === 'undefined') {

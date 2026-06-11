@@ -953,17 +953,21 @@
     // Claiming is a no-op; just take the lead.
     if (lead && lead.backend === "missed-calls") return true;
     try {
+      // begin-call = claim + instant Attempted/LastContact/LastCSR sheet write,
+      // so every other surface (dashboard, other dialers) sees this lead as
+      // taken on their next poll — not 15 minutes later at wrap-up save.
       const r = await fetch(DISPOSITIONS_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone, rowIndex, action: "claim", rep: repName }),
+        body: JSON.stringify({ phone, rowIndex, action: "begin-call", rep: repName }),
       });
       const data = await r.json();
       if (data.claimed) {
-        log(`claimed ${phone} for ${repName}`, "ok", "lock");
+        log(`claimed ${phone} for ${repName} (begin-call)`, "ok", "lock");
+        startLockHeartbeat(phone, rowIndex);
         return true;
       }
-      log(`claim refused for ${phone}: ${data.reason || "?"} (held by ${data.lockedBy || "?"})`, "warn", "lock");
+      log(`claim refused for ${phone}: ${data.reason || "?"} (held by ${data.lockedBy || data.status || "?"})`, "warn", "lock");
       return false;
     } catch (e) {
       log(`claim error for ${phone}: ${e.message}`, "err", "lock");
@@ -971,12 +975,42 @@
     }
   }
 
+  // Lock renewal heartbeat — the 5-min lock TTL silently expired during long
+  // calls/retries/wrap-up, letting a second rep claim the same lead mid-call
+  // (the Madi/Diva double-call). Renew every 90s from claim until disposition
+  // save or release. Renew is ownership-checked server-side: once the lock is
+  // gone (disposition cleared it) it returns renewed:false and we stop.
+  let _lockHeartbeat = null;
+  function startLockHeartbeat(phone, rowIndex) {
+    stopLockHeartbeat();
+    _lockHeartbeat = setInterval(async () => {
+      try {
+        const r = await fetch(DISPOSITIONS_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ phone, rowIndex, action: "renew", rep: repName }),
+        });
+        const data = await r.json();
+        if (!data.renewed) {
+          log(`lock renew declined for ${phone} (${data.reason || data.error || "?"}) — stopping heartbeat`, "info", "lock");
+          stopLockHeartbeat();
+        }
+      } catch (e) {
+        log(`lock renew error for ${phone}: ${e.message}`, "warn", "lock");
+      }
+    }, 90 * 1000);
+  }
+  function stopLockHeartbeat() {
+    if (_lockHeartbeat) { clearInterval(_lockHeartbeat); _lockHeartbeat = null; }
+  }
+
   async function releaseLead(phone, rowIndex) {
+    stopLockHeartbeat();
     try {
       await fetch(DISPOSITIONS_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone, rowIndex, action: "release" }),
+        body: JSON.stringify({ phone, rowIndex, action: "release", rep: repName }),
       });
       log(`released ${phone} (row ${rowIndex || "?"})`, "info", "lock");
     } catch (e) {
@@ -1053,6 +1087,7 @@
       const data = await r.json();
       if (data.updated) {
         log(`disposition saved ✓ ${phone} → ${status}`, "ok", "wrap");
+        stopLockHeartbeat(); // server cleared the lock with the disposition
       } else {
         log(`disposition save failed: ${data.error || "?"}`, "err", "wrap");
       }

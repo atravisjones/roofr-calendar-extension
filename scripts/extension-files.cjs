@@ -10,6 +10,8 @@ module.exports = {
   extensionFiles: [
     'manifest.json',
     'service_worker.js',
+    'roofr-api.js',
+    'reports-batch.js',
     'content.js',
     'roofr-material-order-newtab.js',
     'popup.html',

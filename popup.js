@@ -1667,7 +1667,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 try {
                     // Inject content script
-                    await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+                    await chrome.scripting.executeScript({ target: { tabId }, files: ["roofr-api.js", "reports-batch.js", "content.js"] });
                     // Wait longer for script to initialize
                     await new Promise(r => setTimeout(r, 500));
                     // Retry sending message
@@ -4034,7 +4034,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (e.message && e.message.includes('Receiving end does not exist')) {
                 // Inject content script and retry
                 try {
-                    await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+                    await chrome.scripting.executeScript({ target: { tabId }, files: ["roofr-api.js", "reports-batch.js", "content.js"] });
                     await new Promise(r => setTimeout(r, 200));
                     return await chrome.tabs.sendMessage(tabId, payload);
                 } catch (retryError) {
@@ -8747,6 +8747,551 @@ document.addEventListener('DOMContentLoaded', async () => {
     // REPORTS AUTOMATION SECTION
     // ========================================
 
+    // Rep Assignment v2 (API). This stays additive to the legacy Reports flow below.
+    const reportsV2Date = document.getElementById('reports-v2-date');
+    const reportsV2LoadBtn = document.getElementById('reports-v2-load');
+    const reportsV2ScanBtn = document.getElementById('reports-v2-scan-directory');
+    const reportsV2DirectoryStatus = document.getElementById('reports-v2-directory-status');
+    const reportsV2Schedule = document.getElementById('reports-v2-schedule');
+    const reportsV2ApplyScheduleBtn = document.getElementById('reports-v2-apply-schedule');
+    const reportsV2ApplyResults = document.getElementById('reports-v2-apply-results');
+    const reportsV2Status = document.getElementById('reports-v2-status');
+    const reportsV2Queue = document.getElementById('reports-v2-queue');
+    const reportsV2DryRun = document.getElementById('reports-v2-dry-run');
+    const reportsV2WriteCap = document.getElementById('reports-v2-write-cap');
+    const reportsV2PreflightBtn = document.getElementById('reports-v2-preflight');
+    const reportsV2ExecuteBtn = document.getElementById('reports-v2-execute');
+    const reportsV2ResumeBtn = document.getElementById('reports-v2-resume');
+    const reportsV2RetryFailedBtn = document.getElementById('reports-v2-retry-failed');
+    const reportsV2ExportBtn = document.getElementById('reports-v2-export');
+    const reportsV2PreflightSummary = document.getElementById('reports-v2-preflight-summary');
+    const reportsV2Progress = document.getElementById('reports-v2-progress');
+    const reportsV2Tally = document.getElementById('reports-v2-tally');
+    const REPORTS_V2_DIRECTORY_KEY = 'roofr_user_directory_v1';
+    const REPORTS_V2_SEED_DIRECTORY = {
+        '443464': { name: 'Travis Jones' },
+        '525242': { name: 'Stephen Chaidez' }
+    };
+    let reportsV2Directory = {};
+    let reportsV2Events = [];
+    let reportsV2Selections = {};
+    let reportsV2PreflightUnits = null;
+    let reportsV2Running = false;
+
+    function reportsV2Escape(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function reportsV2PhoenixDate(date = new Date()) {
+        const parts = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/Phoenix',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        }).formatToParts(date);
+        const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+        return `${values.year}-${values.month}-${values.day}`;
+    }
+
+    function reportsV2SetStatus(message, type = 'info') {
+        if (!reportsV2Status) return;
+        reportsV2Status.style.display = message ? 'block' : 'none';
+        reportsV2Status.textContent = message || '';
+        const colors = type === 'error'
+            ? ['var(--danger-bg)', 'var(--danger)']
+            : type === 'success'
+                ? ['var(--success-bg)', 'var(--success)']
+                : type === 'warning'
+                    ? ['var(--warn-bg)', 'var(--warn)']
+                    : ['var(--primary-light)', 'var(--primary)'];
+        reportsV2Status.style.background = colors[0];
+        reportsV2Status.style.color = colors[1];
+        reportsV2Status.style.border = `1px solid ${colors[1]}`;
+    }
+
+    function reportsV2InvalidatePreflight() {
+        reportsV2PreflightUnits = null;
+        if (reportsV2ExecuteBtn) reportsV2ExecuteBtn.disabled = true;
+        if (reportsV2PreflightSummary) reportsV2PreflightSummary.style.display = 'none';
+    }
+
+    async function reportsV2SaveDirectory() {
+        await chrome.storage.local.set({ [REPORTS_V2_DIRECTORY_KEY]: reportsV2Directory });
+        if (reportsV2DirectoryStatus) {
+            reportsV2DirectoryStatus.textContent = `${Object.keys(reportsV2Directory).length} users`;
+        }
+    }
+
+    async function reportsV2LoadDirectory() {
+        const stored = await chrome.storage.local.get(REPORTS_V2_DIRECTORY_KEY);
+        reportsV2Directory = { ...REPORTS_V2_SEED_DIRECTORY, ...(stored[REPORTS_V2_DIRECTORY_KEY] || {}) };
+        await reportsV2SaveDirectory();
+    }
+
+    async function reportsV2Harvest(detail) {
+        let changed = false;
+        for (const attendee of Array.isArray(detail?.attendees) ? detail.attendees : []) {
+            const resource = attendee?.resource || attendee;
+            const id = resource?.id ?? attendee?.id;
+            const name = resource?.full_name || resource?.name;
+            if (!id || !name) continue;
+            if (reportsV2Directory[String(id)]?.name !== name) {
+                reportsV2Directory[String(id)] = { name };
+                changed = true;
+            }
+        }
+        if (changed) await reportsV2SaveDirectory();
+        return changed;
+    }
+
+    async function reportsV2GetRoofrTab() {
+        if (window.__targetRoofrTabId) {
+            try {
+                const tab = await chrome.tabs.get(window.__targetRoofrTabId);
+                if (tab?.url?.includes('app.roofr.com')) return tab;
+            } catch (_) {
+                window.__targetRoofrTabId = null;
+            }
+        }
+        const query = { url: '*://app.roofr.com/*' };
+        if (window.__targetWindowId) query.windowId = window.__targetWindowId;
+        const tabs = await chrome.tabs.query(query);
+        if (!tabs.length) throw new Error('Open a Roofr tab first');
+        window.__targetRoofrTabId = tabs[0].id;
+        return tabs[0];
+    }
+
+    async function reportsV2Send(message) {
+        const tab = await reportsV2GetRoofrTab();
+        const injectAndRetry = async () => {
+            await chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                files: ['roofr-api.js', 'reports-batch.js', 'content.js']
+            });
+            await new Promise(resolve => setTimeout(resolve, 500));
+            return chrome.tabs.sendMessage(tab.id, message);
+        };
+        let response;
+        try {
+            response = await chrome.tabs.sendMessage(tab.id, message);
+        } catch (error) {
+            if (!String(error?.message || error).match(/Receiving end does not exist|Could not establish connection/)) throw error;
+            return injectAndRetry();
+        }
+        // Tab can be in a mixed state: content.js listening but roofr-api.js never injected
+        // (legacy single-file injection or a tab opened before the extension loaded).
+        if (response && response.ok === false && /RoofrApi is unavailable/.test(response?.error?.message || '')) {
+            return injectAndRetry();
+        }
+        return response;
+    }
+
+    function reportsV2ResponseData(response) {
+        if (!response?.ok) {
+            const error = new Error(response?.error?.message || response?.error || 'Roofr API request failed');
+            if (response?.error?.ambiguous) error.ambiguous = true;
+            error.kind = response?.error?.kind;
+            error.status = response?.error?.status;
+            throw error;
+        }
+        return Object.prototype.hasOwnProperty.call(response, 'data') ? response.data : response;
+    }
+
+    const reportsV2ApiAdapter = {
+        async getEvent(eventId) {
+            const detail = reportsV2ResponseData(await reportsV2Send({ type: 'ROOFR_API_GET_EVENT', eventId }));
+            await reportsV2Harvest(detail);
+            return detail;
+        },
+        async getJob(jobId) {
+            return reportsV2ResponseData(await reportsV2Send({ type: 'ROOFR_API_GET_JOB', jobId }));
+        },
+        async addAttendee(eventId, userId) {
+            const result = await reportsV2Send({ type: 'ROOFR_API_ADD_ATTENDEE', eventId, userId });
+            if (result?.before) await reportsV2Harvest(result.before);
+            if (result?.after) await reportsV2Harvest(result.after);
+            return result || { ok: false, verified: false, error: { message: 'No response from Roofr tab' } };
+        },
+        serializeError(error) {
+            return {
+                kind: error?.kind || 'network',
+                message: error?.message || String(error),
+                ...(error?.status !== undefined ? { status: error.status } : {}),
+                ...(error?.ambiguous ? { ambiguous: true } : {})
+            };
+        }
+    };
+
+    function reportsV2SalesEvent(event) {
+        const typeId = event?.calendar_event_type_id ?? event?.calendar_event_type?.id;
+        return window.RoofrReportsBatch?.SALES_EVENT_TYPE_IDS.has(String(typeId));
+    }
+
+    function reportsV2StructuralEligibility(event) {
+        return window.RoofrReportsBatch.eligibility(event, '__selected__');
+    }
+
+    function reportsV2AttendeeText(event) {
+        const attendees = Array.isArray(event?.attendees) ? event.attendees : [];
+        const ids = attendees.length
+            ? attendees.map(attendee => attendee?.resource?.id ?? attendee?.id).filter(Boolean)
+            : (event?.attendee_user_ids || []);
+        if (!ids.length) return 'None';
+        return ids.map(id => reportsV2Directory[String(id)]?.name || `id:${id}`).join(', ');
+    }
+
+    function reportsV2ParseTimeMinutes(value) {
+        const match = String(value || '').trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
+        if (!match) return null;
+        let hour = Number(match[1]);
+        const minute = Number(match[2] || 0);
+        if (hour < 1 || hour > 12 || minute > 59) return null;
+        hour %= 12;
+        if (match[3].toLowerCase() === 'pm') hour += 12;
+        return hour * 60 + minute;
+    }
+
+    function reportsV2EventStartMinutes(event) {
+        const match = String(event?.start_date_time || '').match(/[T\s](\d{1,2}):(\d{2})/);
+        if (!match) return null;
+        return Number(match[1]) * 60 + Number(match[2]);
+    }
+
+    function reportsV2StartOverlapsRange(event, startMinutes, endMinutes) {
+        const eventMinutes = reportsV2EventStartMinutes(event);
+        if (eventMinutes === null || startMinutes === null || endMinutes === null) return false;
+        return endMinutes >= startMinutes
+            ? eventMinutes >= startMinutes && eventMinutes <= endMinutes
+            : eventMinutes >= startMinutes || eventMinutes <= endMinutes;
+    }
+
+    function reportsV2ParseSchedule(text) {
+        const appointments = [];
+        let currentRep = null;
+        for (const rawLine of String(text || '').split(/\r?\n/)) {
+            const line = rawLine.trim();
+            if (!line) continue;
+            const heading = line.match(/^(.+?)\s*\(\d+\)\s*$/);
+            if (heading) {
+                currentRep = heading[1].trim();
+                continue;
+            }
+            const timeRange = line.match(/^(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*-\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*:/i);
+            if (!timeRange || !currentRep) continue;
+            const jid = line.match(/\[JID:(\d+)\]/);
+            appointments.push({
+                repName: currentRep,
+                jid: jid?.[1] || null,
+                startMinutes: reportsV2ParseTimeMinutes(timeRange[1]),
+                endMinutes: reportsV2ParseTimeMinutes(timeRange[2]),
+                line
+            });
+        }
+        return appointments;
+    }
+
+    function reportsV2ResolveRepId(name) {
+        const target = String(name || '').trim().toLowerCase();
+        const matches = Object.entries(reportsV2Directory)
+            .filter(([, user]) => String(user?.name || '').trim().toLowerCase() === target);
+        return matches.length === 1 ? matches[0][0] : null;
+    }
+
+    function reportsV2RenderApplyResults(result) {
+        if (!reportsV2ApplyResults) return;
+        const details = [];
+        if (result.noJid.length) details.push(`No JID:\n${result.noJid.map(item => `- ${item.line}`).join('\n')}`);
+        if (result.notInDay.length) details.push(`JID not in loaded day:\n${result.notInDay.map(item => `- JID:${item.jid} (${item.repName})`).join('\n')}`);
+        if (result.unresolved.length) details.push(`Rep name unresolved:\n${result.unresolved.map(item => `- ${item.repName} (JID:${item.jid})`).join('\n')}`);
+        if (result.ambiguous.length) details.push(`Ambiguous / needs review:\n${result.ambiguous.map(item => `- JID:${item.jid} (${item.repName})`).join('\n')}`);
+        reportsV2ApplyResults.style.display = 'block';
+        reportsV2ApplyResults.textContent = [
+            `${result.bound} bound`,
+            `${result.noJid.length} no-JID lines`,
+            `${result.notInDay.length} JID-not-in-day`,
+            `${result.unresolved.length} rep-name-unresolved`,
+            `${result.ambiguous.length} ambiguous`,
+            details.join('\n\n')
+        ].filter(Boolean).join('\n');
+    }
+
+    function reportsV2ApplySchedule() {
+        const parsed = reportsV2ParseSchedule(reportsV2Schedule?.value || '');
+        const result = { bound: 0, noJid: [], notInDay: [], unresolved: [], ambiguous: [] };
+        for (const appointment of parsed) {
+            if (!appointment.jid) {
+                result.noJid.push(appointment);
+                continue;
+            }
+            const jobEvents = reportsV2Events.filter(event => String(event?.job_id ?? '') === appointment.jid);
+            if (!jobEvents.length) {
+                result.notInDay.push(appointment);
+                continue;
+            }
+            let matchedEvent = jobEvents.length === 1 ? jobEvents[0] : null;
+            if (!matchedEvent) {
+                const timeMatches = jobEvents.filter(event => reportsV2StartOverlapsRange(
+                    event,
+                    appointment.startMinutes,
+                    appointment.endMinutes
+                ));
+                if (timeMatches.length === 1) matchedEvent = timeMatches[0];
+            }
+            if (!matchedEvent) {
+                result.ambiguous.push(appointment);
+                continue;
+            }
+            const repId = reportsV2ResolveRepId(appointment.repName);
+            if (!repId) {
+                result.unresolved.push(appointment);
+                continue;
+            }
+            reportsV2Selections[String(matchedEvent.id)] = repId;
+            result.bound++;
+        }
+        reportsV2InvalidatePreflight();
+        reportsV2RenderQueue();
+        reportsV2RenderApplyResults(result);
+    }
+
+    function reportsV2Time(value) {
+        const match = String(value || '').match(/\b(\d{2}):(\d{2})/);
+        if (!match) return '--:--';
+        const hour = Number(match[1]);
+        return `${hour % 12 || 12}:${match[2]} ${hour >= 12 ? 'PM' : 'AM'}`;
+    }
+
+    function reportsV2RepOptions(selected) {
+        const entries = Object.entries(reportsV2Directory)
+            .sort((a, b) => a[1].name.localeCompare(b[1].name));
+        return [
+            '<option value="">-- Select REP --</option>',
+            ...entries.map(([id, user]) => `<option value="${reportsV2Escape(id)}" ${String(selected) === id ? 'selected' : ''}>${reportsV2Escape(user.name)} (id:${reportsV2Escape(id)})</option>`),
+            '<option value="__manual__">Manual id:NNNNN...</option>'
+        ].join('');
+    }
+
+    function reportsV2RenderQueue() {
+        if (!reportsV2Queue) return;
+        reportsV2Queue.style.display = reportsV2Events.length ? 'block' : 'none';
+        reportsV2Queue.innerHTML = reportsV2Events.map((event, index) => {
+            const check = reportsV2StructuralEligibility(event);
+            const disabled = !check.eligible;
+            return `<div style="margin-bottom: 6px; padding: 8px; border: 1px solid var(--border); border-left: 3px solid ${disabled ? 'var(--text-muted)' : 'var(--primary)'}; border-radius: 6px; opacity: ${disabled ? '0.55' : '1'};">
+                <div style="display: flex; justify-content: space-between; gap: 8px;">
+                    <strong style="font-size: 0.78rem;">${reportsV2Escape(reportsV2Time(event.start_date_time))}</strong>
+                    ${disabled ? `<span style="font-size: 0.68rem; color: var(--text-muted);">${reportsV2Escape(check.reason)}</span>` : ''}
+                </div>
+                <div style="font-size: 0.8rem; font-weight: 650; overflow-wrap: anywhere;">${reportsV2Escape(event.title || 'Untitled event')}</div>
+                <div style="font-size: 0.66rem; color: var(--text-muted);">eventId:${reportsV2Escape(event.id)} · jobId:${reportsV2Escape(event.job_id ?? 'none')}</div>
+                <div style="margin: 4px 0; font-size: 0.7rem; color: var(--text-muted);">Attendees: ${reportsV2Escape(reportsV2AttendeeText(event))}</div>
+                <select class="reports-v2-rep" data-event-id="${reportsV2Escape(event.id)}" ${disabled ? 'disabled' : ''} style="width: 100%; padding: 5px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text-main);">
+                    ${reportsV2RepOptions(reportsV2Selections[String(event.id)] || '')}
+                </select>
+            </div>`;
+        }).join('');
+
+        reportsV2Queue.querySelectorAll('.reports-v2-rep').forEach(select => {
+            select.addEventListener('change', async event => {
+                const eventId = event.target.dataset.eventId;
+                let userId = event.target.value;
+                if (userId === '__manual__') {
+                    userId = String(prompt('Enter the Roofr user ID') || '').trim();
+                    if (!/^\d+$/.test(userId)) userId = '';
+                    if (userId && !reportsV2Directory[userId]) {
+                        reportsV2Directory[userId] = { name: `id:${userId}` };
+                        await reportsV2SaveDirectory();
+                    }
+                }
+                reportsV2Selections[eventId] = userId;
+                reportsV2InvalidatePreflight();
+                reportsV2RenderQueue();
+            });
+        });
+    }
+
+    async function reportsV2LoadDay() {
+        const dateStr = reportsV2Date?.value;
+        if (!dateStr) return;
+        reportsV2InvalidatePreflight();
+        reportsV2SetStatus(`Loading ${dateStr}...`);
+        if (reportsV2LoadBtn) reportsV2LoadBtn.disabled = true;
+        try {
+            const dayEvents = reportsV2ResponseData(await reportsV2Send({ type: 'ROOFR_API_GET_DAY_EVENTS', dateStr }));
+            const salesEvents = (Array.isArray(dayEvents) ? dayEvents : []).filter(reportsV2SalesEvent);
+            const detailed = [];
+            for (const event of salesEvents) {
+                try {
+                    const detail = await reportsV2ApiAdapter.getEvent(event.id);
+                    detailed.push({ ...event, ...detail, job_id: detail?.job_id ?? event.job_id });
+                } catch (_) {
+                    detailed.push(event);
+                }
+            }
+            reportsV2Events = detailed;
+            reportsV2RenderQueue();
+            reportsV2SetStatus(`Loaded ${detailed.length} sales events`, 'success');
+        } catch (error) {
+            reportsV2SetStatus(error.message, 'error');
+        } finally {
+            if (reportsV2LoadBtn) reportsV2LoadBtn.disabled = false;
+        }
+    }
+
+    async function reportsV2ScanDirectory() {
+        if (reportsV2ScanBtn) reportsV2ScanBtn.disabled = true;
+        const startCount = Object.keys(reportsV2Directory).length;
+        let detailAttempts = 0;
+        let detailsFetched = 0;
+        try {
+            const center = new Date(`${reportsV2Date?.value || reportsV2PhoenixDate()}T12:00:00`);
+            for (let offset = -14; offset <= 14 && detailAttempts < 80; offset++) {
+                const date = new Date(center);
+                date.setDate(center.getDate() + offset);
+                const dateStr = reportsV2PhoenixDate(date);
+                reportsV2SetStatus(`Scanning directory: ${dateStr} (${detailAttempts}/80 details)`);
+                const events = reportsV2ResponseData(await reportsV2Send({ type: 'ROOFR_API_GET_DAY_EVENTS', dateStr }));
+                for (const event of Array.isArray(events) ? events : []) {
+                    if (detailAttempts >= 80) break;
+                    if (!(event?.attendee_user_ids?.length || event?.attendees?.length)) continue;
+                    detailAttempts++;
+                    try {
+                        await reportsV2ApiAdapter.getEvent(event.id);
+                        detailsFetched++;
+                    } catch (_) {
+                        // Keep the directory sweep moving past isolated read failures.
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 150));
+                }
+                await new Promise(resolve => setTimeout(resolve, 150));
+            }
+            const found = Object.keys(reportsV2Directory).length;
+            reportsV2RenderQueue();
+            reportsV2SetStatus(`Directory scan complete: ${found} users (${found - startCount} new, ${detailsFetched} details read)`, 'success');
+        } catch (error) {
+            reportsV2SetStatus(`Directory scan stopped: ${error.message}`, 'error');
+        } finally {
+            if (reportsV2ScanBtn) reportsV2ScanBtn.disabled = false;
+        }
+    }
+
+    function reportsV2MakeUnits() {
+        return reportsV2Events.map(event => window.RoofrReportsBatch.createWorkUnit(
+            event,
+            reportsV2Selections[String(event.id)] || null
+        ));
+    }
+
+    function reportsV2RenderState(state) {
+        if (!state || !reportsV2Progress || !reportsV2Tally) return;
+        reportsV2Progress.style.display = 'block';
+        reportsV2Progress.textContent = state.units.map(unit => {
+            const detail = unit.error?.reason || unit.error?.message || '';
+            return `event:${unit.eventId} -> rep:${unit.repUserId || 'none'} | ${unit.outcome || unit.state}${detail ? ` (${detail})` : ''}`;
+        }).join('\n');
+        const tally = window.RoofrReportsBatch.tally(state.units);
+        reportsV2Tally.style.display = 'block';
+        reportsV2Tally.textContent = [
+            `verified_success ${tally.verified_success}`,
+            `already_correct ${tally.already_correct}`,
+            `dry_run ${tally.dry_run}`,
+            `skipped ${tally.skipped}`,
+            `failed ${tally.failed}`,
+            `needs_review ${tally.needs_review}`,
+            `pending ${tally.pending}`,
+            state.stoppedReason ? `stopped: ${state.stoppedReason}` : ''
+        ].filter(Boolean).join(' · ');
+    }
+
+    function reportsV2Preflight() {
+        reportsV2PreflightUnits = reportsV2MakeUnits();
+        const planned = reportsV2PreflightUnits.filter(unit => unit.state === 'pending');
+        const skipped = reportsV2PreflightUnits.filter(unit => unit.outcome === 'skipped');
+        reportsV2PreflightSummary.style.display = 'block';
+        reportsV2PreflightSummary.textContent = [
+            `Planned writes: ${planned.length}`,
+            ...planned.map(unit => `event:${unit.eventId} job:${unit.jobId} -> ${reportsV2Directory[String(unit.repUserId)]?.name || `id:${unit.repUserId}`}`),
+            `Skipped: ${skipped.length}`,
+            ...skipped.map(unit => `event:${unit.eventId} (${unit.error?.reason || 'unknown'})`)
+        ].join('\n');
+        reportsV2ExecuteBtn.disabled = false;
+    }
+
+    async function reportsV2Run(config) {
+        if (reportsV2Running) return;
+        reportsV2Running = true;
+        [reportsV2ExecuteBtn, reportsV2ResumeBtn, reportsV2RetryFailedBtn].forEach(button => {
+            if (button) button.disabled = true;
+        });
+        const poll = setInterval(async () => {
+            try { reportsV2RenderState(await window.RoofrReportsBatch.loadState()); } catch (_) {}
+        }, 250);
+        try {
+            const result = await window.RoofrReportsBatch.execute({ api: reportsV2ApiAdapter, ...config });
+            reportsV2RenderState(result.state);
+            reportsV2SetStatus(result.state.stoppedReason ? `Stopped: ${result.state.stoppedReason}` : 'Run complete', result.state.stoppedReason ? 'warning' : 'success');
+        } catch (error) {
+            reportsV2SetStatus(`Run failed: ${error.message}`, 'error');
+        } finally {
+            clearInterval(poll);
+            reportsV2Running = false;
+            if (reportsV2ResumeBtn) reportsV2ResumeBtn.disabled = false;
+            if (reportsV2RetryFailedBtn) reportsV2RetryFailedBtn.disabled = false;
+            if (reportsV2ExecuteBtn) reportsV2ExecuteBtn.disabled = !reportsV2PreflightUnits;
+        }
+    }
+
+    async function reportsV2RetryFailed() {
+        const state = await window.RoofrReportsBatch.loadState();
+        const failed = (state?.units || []).filter(unit => unit.outcome === 'failed').map(unit => ({
+            ...unit,
+            state: 'pending',
+            outcome: null,
+            error: null
+        }));
+        if (!failed.length) {
+            reportsV2SetStatus('No failed work units to retry', 'warning');
+            return;
+        }
+        const retryState = window.RoofrReportsBatch.makeState(failed, state.config);
+        await window.RoofrReportsBatch.saveState(retryState);
+        await reportsV2Run({ resume: true });
+    }
+
+    async function reportsV2ExportJournal() {
+        const json = await window.RoofrReportsBatch.exportJournalJson();
+        const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `roofr-reports-v2-journal-${reportsV2PhoenixDate()}.json`;
+        link.click();
+        URL.revokeObjectURL(url);
+    }
+
+    if (reportsV2Date) reportsV2Date.value = reportsV2PhoenixDate();
+    reportsV2LoadDirectory().catch(error => reportsV2SetStatus(error.message, 'error'));
+    window.RoofrReportsBatch.loadState().then(reportsV2RenderState).catch(() => {});
+    reportsV2LoadBtn?.addEventListener('click', reportsV2LoadDay);
+    reportsV2ScanBtn?.addEventListener('click', reportsV2ScanDirectory);
+    reportsV2ApplyScheduleBtn?.addEventListener('click', reportsV2ApplySchedule);
+    reportsV2PreflightBtn?.addEventListener('click', reportsV2Preflight);
+    reportsV2ExecuteBtn?.addEventListener('click', () => reportsV2Run({
+        units: reportsV2PreflightUnits,
+        dryRun: reportsV2DryRun?.checked !== false,
+        maxWrites: reportsV2WriteCap?.value === 'unlimited' ? null : Number(reportsV2WriteCap?.value || 1)
+    }));
+    reportsV2ResumeBtn?.addEventListener('click', () => reportsV2Run({ resume: true }));
+    reportsV2RetryFailedBtn?.addEventListener('click', reportsV2RetryFailed);
+    reportsV2ExportBtn?.addEventListener('click', reportsV2ExportJournal);
+    reportsV2Date?.addEventListener('change', reportsV2InvalidatePreflight);
+    reportsV2DryRun?.addEventListener('change', reportsV2InvalidatePreflight);
+    reportsV2WriteCap?.addEventListener('change', reportsV2InvalidatePreflight);
+
     // Reports Automation DOM refs
     const reportsRepSelect = document.getElementById('reports-rep-select');
     const reportsJobAddress = document.getElementById('reports-job-address');
@@ -8904,7 +9449,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     func: () => { window.__roofrJobAutomationLoaded = false; }
                 });
                 // Inject the content script
-                await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+                await chrome.scripting.executeScript({ target: { tabId }, files: ["roofr-api.js", "reports-batch.js", "content.js"] });
                 await new Promise(r => setTimeout(r, 1000)); // Wait longer for script to initialize
                 const response = await chrome.tabs.sendMessage(tabId, message);
                 return response || { ok: false, error: 'No response after injection' };
@@ -9213,7 +9758,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         let currentRep = null;
 
         for (const line of lines) {
-            const trimmedLine = line.trim();
+            const trimmedLine = line.replace(/\s*\[JID:\d+\]/g, '').trim();
             if (!trimmedLine) continue;
 
             // Check if this is a rep name line (e.g., "Travis Jones (2)" or just "Travis Jones")
@@ -10413,7 +10958,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     } catch (e) {
                         // Content script not loaded — try injecting and retry once
                         try {
-                            await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+                            await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["roofr-api.js", "reports-batch.js", "content.js"] });
                             await new Promise(r => setTimeout(r, 1500));
                             const jobInfo = await sendMessageToTab(tab.id, { type: 'GET_JOB_INFO' });
                             const tabAddress = jobInfo?.info?.address || '';
@@ -11003,7 +11548,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     func: () => { window.__roofrJobAutomationLoaded = false; }
                 });
                 // Inject the content script
-                await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+                await chrome.scripting.executeScript({ target: { tabId }, files: ["roofr-api.js", "reports-batch.js", "content.js"] });
                 await new Promise(r => setTimeout(r, 1000)); // Wait for script to initialize
                 const response = await chrome.tabs.sendMessage(tabId, message);
                 return response || { ok: false, error: 'No response after injection' };

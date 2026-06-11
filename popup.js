@@ -365,6 +365,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const CITIES_SHEET_ID = '1cFFEZNl7wXt40riZHnuZxGc1Zfm5lTlOz0rDCWGZJ0g';
     const CITIES_SHEET_TAB = 'Appointment Blocks'; // Tab name where cities are stored
     const CITIES_RANGE = 'A82:C200'; // PHX in A, North in B, South in C starting at row 82
+    const NORTH_ROUTING_RANGE = 'A40:C45';
 
     let state = {
         currentRegion: "PHX",
@@ -1869,6 +1870,56 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch (e) {
             addLog(`Failed to fetch cities from Google Sheet: ${e.message}`, 'ERROR');
             return null;
+        }
+    }
+
+    async function fetchNorthRoutingFromSheet() {
+        const apiKey = CONFIG.apiKey;
+        if (!apiKey) return false;
+
+        const qTab = `'${CITIES_SHEET_TAB.replace(/'/g, "''")}'`;
+        const url = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(CITIES_SHEET_ID)}&range=${encodeURIComponent(`${qTab}!${NORTH_ROUTING_RANGE}`)}`;
+
+        try {
+            const res = await fetch(url, { cache: "no-store" });
+            if (!res.ok) throw new Error(`API error: ${res.status}`);
+            const data = await res.json();
+            const values = data.values || [];
+            const corridorCities = new Set();
+            const flagstaffCities = new Set();
+
+            for (const row of values) {
+                const route = String(row[0] || '').trim().toUpperCase();
+                const cities = String(row[2] || '').split(',')
+                    .map(city => city.trim().toUpperCase())
+                    .filter(Boolean);
+
+                if (route === 'I17' || route === 'SR87') {
+                    for (const city of cities) corridorCities.add(city);
+                } else if (route === 'FLAGSTAFF') {
+                    for (const city of cities) flagstaffCities.add(city);
+                }
+            }
+
+            if (!corridorCities.size || !flagstaffCities.size) return false;
+
+            CONFIG.UP_NORTH_TRAVEL_CITIES.clear();
+            for (const city of corridorCities) {
+                CONFIG.UP_NORTH_TRAVEL_CITIES.add(city);
+                CONFIG.REGION_CITY_WHITELISTS.PHX.add(city);
+                CONFIG.REGION_CITY_WHITELISTS.NORTH.delete(city);
+            }
+
+            CONFIG.REQUIRED_NORTH_CITIES.clear();
+            for (const city of flagstaffCities) {
+                CONFIG.REQUIRED_NORTH_CITIES.add(city);
+                CONFIG.REGION_CITY_WHITELISTS.NORTH.add(city);
+            }
+
+            return true;
+        } catch (e) {
+            addLog(`Failed to fetch north routing from Google Sheet: ${e.message}`, 'ERROR');
+            return false;
         }
     }
 
@@ -8580,6 +8631,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function loadDynamicCities() {
+        const northRoutingApplied = await fetchNorthRoutingFromSheet();
+        addLog(northRoutingApplied
+            ? 'Applied up-north routing cities from Google Sheet.'
+            : 'Using default up-north routing cities.');
+
         // First, try to load cities from Google Sheet (primary source)
         const sheetCities = await fetchCitiesFromSheet();
         if (sheetCities) {

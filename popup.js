@@ -1318,12 +1318,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (looksLikeAddress) {
             let geoHeaderAdded = false;
             const geoSuggestionItems = []; // track geo items for re-ordering _suggestionItems
+            const _geoByNorm = new Map(); // norm → element, for upgrading repaired entries
             const addGeoOption = (address, lat, lng) => {
                 if (_gen !== _suggestFetchGen) return; // newer keystroke owns the dropdown
                 if (!address || address.length <= 3) return;
                 const titleCaseAddress = toTitleCase(address);
                 const norm = _normalizeAddress(titleCaseAddress);
-                if (addedNormalized.has(norm)) return;
+                const validCoords = (lat != null && lng != null && !isNaN(+lat) && !isNaN(+lng));
+                if (addedNormalized.has(norm)) {
+                    // A repaired (coord-less) entry already holds this slot — give it the real
+                    // coordinates from this exact geocoder hit instead of discarding them
+                    const prior = _geoByNorm.get(norm);
+                    if (prior && !prior.__coords && validCoords) prior.__coords = { lat: +lat, lng: +lng };
+                    return;
+                }
                 addedNormalized.add(norm);
 
                 if (!geoHeaderAdded) {
@@ -1341,6 +1349,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const el = document.createElement('div');
                 el.className = 'suggestion-item api-match';
                 el.textContent = titleCaseAddress;
+                el.__coords = validCoords ? { lat: +lat, lng: +lng } : null;
+                _geoByNorm.set(norm, el);
                 el.addEventListener('mousedown', (e) => e.preventDefault());
                 el.addEventListener('click', () => {
                     if (addrInput) {
@@ -1350,8 +1360,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     window.__selectedRoofrJobLink = null;
                     window.__selectedRoofrJob = null;
                     window.__selectedRoofrJobInputValue = null;
-                    // Pin GPS to THIS suggestion's exact coords (set after the input event so it isn't cleared)
-                    window.__selectedAddrCoords = (lat != null && lng != null && !isNaN(+lat) && !isNaN(+lng)) ? { lat: +lat, lng: +lng } : null;
+                    // Pin GPS to THIS suggestion's coords (set after the input event so it isn't
+                    // cleared); read from the element so a later exact hit can upgrade them
+                    window.__selectedAddrCoords = el.__coords;
                     verifiedAddressesList.classList.add('hidden');
                     updateGoButtonState();
                 });
@@ -1386,6 +1397,37 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const _unitMatch = query.match(/((?:#|\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot)\s*)\s*[A-Za-z0-9-]+)\s*$/i);
                 const unitDisplay = _unitMatch ? _unitMatch[1].replace(/\s+/g, ' ').trim() : '';
                 const withUnit = (fmt) => (unitDisplay && fmt) ? fmt.replace(/^([^,]+)/, `$1 ${unitDisplay}`) : fmt;
+                // Geocoders drop pieces the rep typed: road-level results lose the house number
+                // ("Lesueur"), and OSM road names often lack the directional ("1310 Lesueur" for
+                // "1310 N Lesueur"). Repair from the typed query — the rep's input wins.
+                const _typedStreetM = query.split(',')[0].trim().match(/^(\d+)\s+((?:NE|NW|SE|SW|[NSEW])\b)?\s*(.*)$/i);
+                const _typedHouse = _typedStreetM ? _typedStreetM[1] : '';
+                const _typedDir = (_typedStreetM && _typedStreetM[2]) ? _typedStreetM[2].toUpperCase() : '';
+                const _typedRoadNorm = _typedStreetM ? _normalizeAddress(_typedStreetM[3] || '') : '';
+                // Repairs apply ONLY when the candidate's road is the road the rep typed —
+                // never fabricate "1310 N Star Dr" out of an unrelated "Star Dr" suggestion
+                const _roadMatchesTyped = (road) => {
+                    if (_typedRoadNorm.length < 3) return false;
+                    const rn = _normalizeAddress(String(road || ''));
+                    if (!rn) return false;
+                    // Token-by-token: the rep's LAST token may be mid-word ("lesu" → "Lesueur"),
+                    // every earlier token must match exactly ("main st" must NOT hit "Mainland")
+                    const qT = _typedRoadNorm.split(' ');
+                    const cT = rn.split(' ');
+                    const n = Math.min(qT.length, cT.length);
+                    for (let i = 0; i < n; i++) {
+                        if (i === qT.length - 1) { if (!cT[i].startsWith(qT[i])) return false; }
+                        else if (qT[i] !== cT[i]) return false;
+                    }
+                    return true;
+                };
+                const _graftDir = (street, road) => {
+                    if (!_typedDir || !/^\d/.test(street) || !_roadMatchesTyped(road)) return street;
+                    // Geocoder gave its own directional (abbreviated OR spelled out — OSM often
+                    // returns "North 90th Street") → leave it alone
+                    if (/^\d+\s+(NE|NW|SE|SW|[NSEW]|NORTH(?:EAST|WEST)?|SOUTH(?:EAST|WEST)?|EAST|WEST)\b/i.test(street)) return street;
+                    return street.replace(/^(\d+)\s+/, `$1 ${_typedDir} `);
+                };
                 // LocationIQ autocomplete
                 const locationIQKey = 'pk.8191a90010a7b5c191b4232ce0cafb93';
                 const locationIQUrl = `https://us1.locationiq.com/v1/autocomplete?key=${locationIQKey}&q=${encodeURIComponent(geoQuery)}&countrycodes=us&viewbox=-114.85,37.05,-109.0,31.30&limit=10&dedupe=1`;
@@ -1397,7 +1439,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const st = addr.state || '';
                         if (st && st !== 'Arizona') continue;
                         let parts = [];
-                        if (addr.house_number && addr.road) parts.push(`${addr.house_number} ${addr.road}`);
+                        let repairedHouse = false;
+                        if (addr.house_number && addr.road) parts.push(_graftDir(`${addr.house_number} ${addr.road}`, addr.road));
+                        else if (addr.road && _typedHouse && _roadMatchesTyped(addr.road)) {
+                            // Road-level result for the road the rep typed — graft their house
+                            // number on. Coords go null: street-centroid GPS would pin wrong.
+                            parts.push(_graftDir(`${_typedHouse} ${addr.road}`, addr.road));
+                            repairedHouse = true;
+                        }
                         else if (addr.road) parts.push(addr.road);
                         else if (result.display_name) { const dp = result.display_name.split(','); if (dp[0]) parts.push(dp[0].trim()); }
                         const city = addr.city || addr.town || addr.village || addr.hamlet || addr.municipality;
@@ -1405,7 +1454,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (st) { const stateMap = { 'Arizona': 'AZ', 'Nevada': 'NV', 'California': 'CA', 'New Mexico': 'NM', 'Utah': 'UT' }; parts.push(stateMap[st] || st); }
                         if (addr.postcode) parts.push(addr.postcode);
                         const formatted = parts.join(', ');
-                        if (formatted.length > 5) addGeoOption(withUnit(formatted), result.lat, result.lon);
+                        if (formatted.length > 5) addGeoOption(withUnit(formatted), repairedHouse ? null : result.lat, repairedHouse ? null : result.lon);
                     }
                 }
 
@@ -1423,7 +1472,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 if (st && !['Arizona', 'AZ'].includes(st) && !['Nevada', 'NV', 'California', 'CA', 'New Mexico', 'NM', 'Utah', 'UT'].includes(st)) continue;
                                 let formattedAddress = props.formatted || '';
                                 formattedAddress = formattedAddress.replace(/,?\s*United States\s*$/i, '').trim();
-                                addGeoOption(withUnit(formattedAddress), props.lat, props.lon);
+                                let gRepaired = false;
+                                if (_typedHouse && !props.housenumber && props.street && _roadMatchesTyped(props.street) &&
+                                    formattedAddress.toLowerCase().startsWith(String(props.street).toLowerCase())) {
+                                    // Street-level result for the typed road: graft the typed house
+                                    // number (props.street check also keeps city names safe)
+                                    formattedAddress = `${_typedHouse} ${formattedAddress}`;
+                                    gRepaired = true;
+                                }
+                                formattedAddress = _graftDir(formattedAddress, props.street);
+                                addGeoOption(withUnit(formattedAddress), gRepaired ? null : props.lat, gRepaired ? null : props.lon);
                             }
                         }
                     } catch (e) { console.log('Geoapify error', e); }

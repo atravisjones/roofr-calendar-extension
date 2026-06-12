@@ -419,6 +419,42 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function _normalizePhone(val) { return String(val || '').replace(/\D/g, ''); }
 
+    // Score how well a candidate address matches what the rep typed (higher = better).
+    // Drives dropdown ordering so a near-exact match lands at the top instead of 4-6 down.
+    function _addressMatchScore(candidate, qNorm, qStreetNorm, qHouseNum) {
+        const cNorm = _normalizeAddress(candidate);
+        if (!cNorm || !qStreetNorm) return 0;
+        if (cNorm === qNorm) return 100;
+        if (cNorm === qStreetNorm) return 95;
+        if (cNorm.startsWith(qStreetNorm) || qNorm.startsWith(cNorm) || qStreetNorm.startsWith(cNorm)) {
+            // Same street — break ties on whatever the rep typed beyond it (city/state/zip),
+            // so "123 Main St, Mesa" ranks the Mesa candidate above a Phoenix one.
+            // Token-prefix match: "Mes" hits "mesa", but "az" can't hit inside "plaza".
+            let s = 80;
+            const extra = qNorm.length > qStreetNorm.length ? qNorm.slice(qStreetNorm.length).split(' ').filter(Boolean) : [];
+            if (extra.length) {
+                const cParts = cNorm.split(' ');
+                const matched = extra.filter(t => cParts.some(p => p.startsWith(t))).length;
+                s += Math.round(15 * matched / extra.length);
+            }
+            return s;
+        }
+        let score = 0;
+        const cHouse = (cNorm.match(/^\d+/) || [''])[0];
+        if (qHouseNum) {
+            if (cHouse === qHouseNum) score += 40;
+            else if (cHouse) score -= 30; // different house number = almost certainly the wrong property
+        }
+        const qTokens = qStreetNorm.split(' ').filter(t => t && t !== qHouseNum);
+        if (qTokens.length) {
+            const cTokens = new Set(cNorm.split(' '));
+            let hit = 0;
+            for (const t of qTokens) if (cTokens.has(t)) hit++;
+            score += Math.round(30 * hit / qTokens.length);
+        }
+        return score;
+    }
+
     function _escapeHtml(val) {
         return String(val || '')
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -508,6 +544,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let _suggestionCatalog = null;
     let _activeSuggestionIndex = -1;
     let _suggestionItems = []; // flat list of clickable elements for keyboard nav
+    let _suggestFetchGen = 0; // stale async suggestion fetches must not touch the DOM
 
     function _buildSuggestionCatalog() {
         if (!_roofrDataCache || !_roofrDataCache.length) return null;
@@ -585,6 +622,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!catalog || !q || q.length < 2) return null;
         const qLow = q.toLowerCase().trim();
         const qNAddr = _normalizeAddress(q);
+        // Street-only form: catalog keys are street-only, so a typed city/state ("..., Phoenix, AZ")
+        // must not block the match
+        const qNAddrStreet = _normalizeAddress(q.split(',')[0]) || qNAddr;
+        const qHouseNum = (qNAddrStreet.match(/^\d+/) || [''])[0];
         const qNPhone = _normalizePhone(q);
         const results = { customers: [], addresses: [], phones: [], claims: [], stages: [], cities: [], tags: [] };
         let total = 0;
@@ -596,18 +637,35 @@ document.addEventListener('DOMContentLoaded', async () => {
                 total++;
             }
         }
-        results.customers.sort((a, b) => b.count - a.count || a.display.localeCompare(b.display));
+        results.customers.sort((a, b) => {
+            const aP = a.display.toLowerCase().startsWith(qLow) ? 1 : 0;
+            const bP = b.display.toLowerCase().startsWith(qLow) ? 1 : 0;
+            return (bP - aP) || (b.count - a.count) || a.display.localeCompare(b.display);
+        });
         results.customers = results.customers.slice(0, 5);
 
         // Addresses (need 3+ chars)
-        if (qNAddr.length >= 3) {
+        if (qNAddrStreet.length >= 3) {
             for (const [key, entry] of catalog.addresses) {
-                if (key.includes(qNAddr) || entry.display.toLowerCase().includes(qLow)) {
+                if (key.includes(qNAddrStreet) || entry.display.toLowerCase().includes(qLow)) {
+                    let sc;
+                    if (qNAddr !== qNAddrStreet) {
+                        // Rep typed beyond the street (city/state/zip): judge ONLY by full job
+                        // addresses — the street-only display can't tell cities apart and would
+                        // score a same-street wrong-city entry as near-exact
+                        sc = 0;
+                        for (const j of entry.jobs) {
+                            if (j && j.Address) sc = Math.max(sc, _addressMatchScore(j.Address, qNAddr, qNAddrStreet, qHouseNum));
+                        }
+                    } else {
+                        sc = _addressMatchScore(entry.display, qNAddr, qNAddrStreet, qHouseNum);
+                    }
+                    entry.__score = sc;
                     results.addresses.push(entry);
                     total++;
                 }
             }
-            results.addresses.sort((a, b) => b.count - a.count);
+            results.addresses.sort((a, b) => (b.__score - a.__score) || (b.count - a.count));
             results.addresses = results.addresses.slice(0, 5);
         }
 
@@ -1065,6 +1123,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Fetch address suggestions using multiple geocoding APIs for better coverage
     async function fetchAddressSuggestions(query) {
         if (!verifiedAddressesList) return;
+        const _gen = ++_suggestFetchGen;
         _activeSuggestionIndex = -1;
         _suggestionItems = [];
 
@@ -1232,14 +1291,35 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // ═══ SECTION 2: Geocoding API fallback (address-like queries only) ═══
         const looksLikeAddress = /\d/.test(query) || query.includes(',');
-        // When query is specific (house number + 15+ chars), prioritize new address results
-        // Short queries → DB first (find existing jobs fast). Long queries → geo first (entering a new address).
+        // When query is specific (house number + 15+ chars), prioritize new address results —
+        // UNLESS the DB already has a near-exact match for what was typed (rep is looking up a
+        // verified/existing job, not entering a new address). A strong DB match stays on top.
         const queryIsSpecific = /\d/.test(query) && query.trim().length >= 15;
-        const dbInsertRef = queryIsSpecific ? verifiedAddressesList.firstChild : null;
+        const _qNorm = _normalizeAddress(query);
+        const _qStreetNorm = _normalizeAddress(query.split(',')[0]) || _qNorm;
+        const _qHouseNum = (_qStreetNorm.match(/^\d+/) || [''])[0];
+        // When the rep typed a city/state too, "strong" requires EVERY typed beyond-street token
+        // to appear in a job's full address — a same-street hit in another city (or a same-state
+        // "AZ" coincidence) must not pin the DB section above fresher geo suggestions
+        const _qExtraTokens = _qNorm.length > _qStreetNorm.length
+            ? _qNorm.slice(_qStreetNorm.length).split(' ').filter(t => t.length >= 2) : [];
+        const dbHasStrongMatch = !!(catalogResults && (catalogResults.addresses || []).some(e => {
+            if ((e.__score || 0) < 80) return false;
+            if (!_qExtraTokens.length) return true;
+            return (e.jobs || []).some(j => {
+                const full = _normalizeAddress((j && j.Address) || '');
+                if (!full.startsWith(_qStreetNorm)) return false;
+                // Token-prefix match, not substring — "az" must not hit inside "plaza"
+                const fullParts = full.split(' ');
+                return _qExtraTokens.every(t => fullParts.some(p => p.startsWith(t)));
+            });
+        }));
+        const dbInsertRef = (queryIsSpecific && !dbHasStrongMatch) ? verifiedAddressesList.firstChild : null;
         if (looksLikeAddress) {
             let geoHeaderAdded = false;
             const geoSuggestionItems = []; // track geo items for re-ordering _suggestionItems
             const addGeoOption = (address, lat, lng) => {
+                if (_gen !== _suggestFetchGen) return; // newer keystroke owns the dropdown
                 if (!address || address.length <= 3) return;
                 const titleCaseAddress = toTitleCase(address);
                 const norm = _normalizeAddress(titleCaseAddress);
@@ -1275,12 +1355,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                     verifiedAddressesList.classList.add('hidden');
                     updateGoButtonState();
                 });
-                if (queryIsSpecific && dbInsertRef) {
-                    verifiedAddressesList.insertBefore(el, dbInsertRef);
-                } else {
-                    verifiedAddressesList.appendChild(el);
+                // Insert in relevance order within the geo section — the APIs' own ordering
+                // routinely buries the near-exact match several slots down
+                el.__geoScore = _addressMatchScore(titleCaseAddress, _qNorm, _qStreetNorm, _qHouseNum);
+                let beforeEl = null;
+                for (const g of geoSuggestionItems) {
+                    if ((g.__geoScore || 0) < el.__geoScore) { beforeEl = g; break; }
                 }
-                geoSuggestionItems.push(el);
+                if (beforeEl) {
+                    verifiedAddressesList.insertBefore(el, beforeEl);
+                    geoSuggestionItems.splice(geoSuggestionItems.indexOf(beforeEl), 0, el);
+                } else {
+                    if (queryIsSpecific && dbInsertRef) {
+                        verifiedAddressesList.insertBefore(el, dbInsertRef);
+                    } else {
+                        verifiedAddressesList.appendChild(el);
+                    }
+                    geoSuggestionItems.push(el);
+                }
                 _suggestionItems.push(el);
                 el.__suggestion = null; // geocoding result, not a DB match
                 hasResults = true;
@@ -1356,6 +1448,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 addLog(`Address suggestion error: ${error.message}`, 'WARN');
             }
 
+            if (_gen !== _suggestFetchGen) return; // newer keystroke owns the dropdown now
+
             // Fallback: always let the rep force the EXACT typed address through. Free geocoders
             // (LocationIQ/Census) miss some real addresses that Google knows — new/renamed streets,
             // gated communities — e.g. "6725 E Terrace Dr, Scottsdale" returns nothing/wrong streets.
@@ -1398,11 +1492,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
 
-            // Re-order keyboard nav to match visual order: geo items first when specific
-            if (queryIsSpecific && geoSuggestionItems.length > 0) {
-                const dbItems = _suggestionItems.filter(el => !geoSuggestionItems.includes(el));
-                _suggestionItems = [...geoSuggestionItems, ...dbItems];
-            }
+            // Keyboard nav order must mirror visual order (sorted insertion above reshuffles the DOM)
+            _suggestionItems = Array.from(verifiedAddressesList.querySelectorAll('.suggestion-item'));
         }
 
         // Also add matching cities from our whitelists
@@ -6906,6 +6997,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Update button state when input changes
         addrInput.addEventListener("input", (e) => {
             const value = e.target.value.trim();
+
+            // Invalidate any in-flight suggestion fetch immediately — once the input changes
+            // it must not touch the dropdown (covers the debounce window and cleared input,
+            // where a stale insertBefore against the wiped list would throw)
+            _suggestFetchGen++;
 
             // The user is typing again → re-enable the suggestion dropdown.
             _suppressAddressSuggestions = false;

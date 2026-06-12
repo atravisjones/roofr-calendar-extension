@@ -58,6 +58,15 @@
   "content_scripts": [
     {
       "matches": [
+        "https://*.roofr.com/*"
+      ],
+      "js": [
+        "roofr-dark-mode.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
         "https://*.roofr.com/*",
         "https://*.calltrackingmetrics.com/*",
         "https://earth.google.com/*"

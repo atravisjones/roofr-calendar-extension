@@ -8581,6 +8581,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         saveUserPrefs();
         chrome.storage.sync.set({ theme: themeName });
     });
+    // Dark Mode on Roofr — inverts the Roofr page itself (roofr-dark-mode.js content
+    // script watches this sync key, so writing storage is all the toggle has to do).
+    const settingRoofrDark = document.getElementById('setting-roofr-dark');
+    if (settingRoofrDark) {
+        chrome.storage.sync.get('roofr_dark_mode', (result) => {
+            settingRoofrDark.checked = !!result.roofr_dark_mode;
+        });
+        settingRoofrDark.addEventListener('change', (e) => {
+            chrome.storage.sync.set({ roofr_dark_mode: e.target.checked });
+        });
+    }
     if (settingFontSize) settingFontSize.addEventListener('input', (e) => {
         userPrefs.fontSizeStep = e.target.value;
         saveUserPrefs(); applyUserPrefs();

@@ -13,6 +13,7 @@ module.exports = {
     'roofr-api.js',
     'reports-batch.js',
     'content.js',
+    'roofr-dark-mode.js',
     'roofr-material-order-newtab.js',
     'popup.html',
     'popup.js',

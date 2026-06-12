@@ -23,6 +23,7 @@ const fields = [
   "show_color_indicators",
   "show_icons",
   "animate_transitions",
+  "roofr_dark_mode",
 
   // Interface toggles
   "show_dialer",
@@ -144,6 +145,7 @@ const defaults = {
   show_color_indicators: true,
   show_icons: true,
   animate_transitions: true,
+  roofr_dark_mode: false,
 
   // Interface - Tab visibility
   show_dialer: true,

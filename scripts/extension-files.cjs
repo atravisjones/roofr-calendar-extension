@@ -14,6 +14,8 @@ module.exports = {
     'reports-batch.js',
     'content.js',
     'roofr-dark-mode.js',
+    'roofr-timeline.js',
+    'roofr-timeline.css',
     'roofr-material-order-newtab.js',
     'popup.html',
     'popup.js',

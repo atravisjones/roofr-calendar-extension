@@ -1,0 +1,413 @@
+/* roofr-timeline.css - Job stage timeline bar (see roofr-timeline.js).
+   All rules are namespaced under #rjt-* / html.rjt-timeline-open so nothing
+   leaks into Roofr's own styles. Under the extension's dark-mode invert filter
+   this light palette inherits the inversion and reads as a dark palette. */
+
+:root {
+  --rjt-height: 78px;
+  --rjt-surface: #ffffff;
+  --rjt-surface-muted: #f4f6f8;
+  --rjt-border: #d7dde4;
+  --rjt-text: #202630;
+  --rjt-text-muted: #66717f;
+  --rjt-accent: #1769e0;
+  --rjt-accent-soft: #e9f1ff;
+  --rjt-amber: #b45309;
+  --rjt-amber-soft: #fef3c7;
+  --rjt-red: #b91c1c;
+  --rjt-red-soft: #fee2e2;
+  --rjt-green: #15803d;
+  --rjt-green-soft: #dcfce7;
+  --rjt-violet: #7e22ce;
+  --rjt-violet-soft: #f3e8ff;
+  --rjt-violet-border: #a855f7;
+  --rjt-z-bar: 2147483000;
+  --rjt-z-tooltip: 2147483001;
+}
+
+/* ---- push content up while the bar is open ----
+   Body padding is the graceful fallback if Roofr renames its modal classes;
+   the modal rules do the real work. Removing the class restores everything. */
+html.rjt-timeline-open body {
+  padding-bottom: var(--rjt-height) !important;
+}
+
+html.rjt-timeline-open div.jobs-detail-modal {
+  bottom: var(--rjt-height) !important;
+  max-height: calc(100vh - var(--rjt-height)) !important;
+}
+
+html.rjt-timeline-open div.jobs-detail-modal div.job-detail {
+  max-height: calc(100vh - var(--rjt-height)) !important;
+}
+
+/* ---- component ---- */
+#rjt-root,
+#rjt-root * {
+  box-sizing: border-box;
+}
+
+#rjt-root[hidden],
+#rjt-root [hidden] {
+  display: none !important;
+}
+
+#rjt-bar {
+  position: fixed;
+  z-index: var(--rjt-z-bar);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: var(--rjt-height);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: stretch;
+  color: var(--rjt-text);
+  background: var(--rjt-surface);
+  border-top: 1px solid var(--rjt-border);
+  box-shadow: 0 -4px 14px rgb(30 40 55 / 12%);
+  font: 13px/1.3 Arial, sans-serif;
+}
+
+.rjt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px 10px 16px;
+  border-right: 1px solid var(--rjt-border);
+}
+
+.rjt-header > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.rjt-header strong {
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.rjt-status {
+  color: var(--rjt-text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.rjt-badge {
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.rjt-badge-amber {
+  color: var(--rjt-amber);
+  background: var(--rjt-amber-soft);
+}
+
+.rjt-badge-red {
+  color: var(--rjt-red);
+  background: var(--rjt-red-soft);
+}
+
+.rjt-collapse,
+#rjt-pill,
+.rjt-error button {
+  color: var(--rjt-text);
+  background: var(--rjt-surface);
+  border: 1px solid var(--rjt-border);
+  cursor: pointer;
+}
+
+.rjt-collapse {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 7px;
+  font-size: 20px;
+  line-height: 24px;
+}
+
+.rjt-collapse:hover,
+.rjt-error button:hover {
+  background: var(--rjt-surface-muted);
+}
+
+.rjt-scroll {
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--rjt-border) transparent;
+}
+
+.rjt-list {
+  display: flex;
+  align-items: center;
+  min-width: max-content;
+  height: 100%;
+  padding: 8px 18px;
+  margin: 0;
+  list-style: none;
+}
+
+.rjt-stage {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.rjt-chip {
+  display: grid;
+  gap: 3px;
+  min-width: 132px;
+  max-width: 210px;
+  min-height: 52px;
+  padding: 7px 11px;
+  color: var(--rjt-text);
+  text-align: left;
+  background: var(--rjt-surface-muted);
+  border: 1px solid var(--rjt-border);
+  border-radius: 9px;
+  cursor: default;
+}
+
+.rjt-chip:hover,
+.rjt-chip:focus-visible {
+  border-color: var(--rjt-accent);
+  outline: 2px solid transparent;
+}
+
+/* Duplicate-stage visits (job bounced back): violet links the visits together.
+   Declared before the current/stuck rules so those win on the current chip. */
+.rjt-stage-repeat .rjt-chip {
+  color: var(--rjt-violet);
+  background: var(--rjt-violet-soft);
+  border-color: var(--rjt-violet-border);
+}
+
+.rjt-stage-current .rjt-chip {
+  color: var(--rjt-accent);
+  background: var(--rjt-accent-soft);
+  border-color: var(--rjt-accent);
+  box-shadow: inset 3px 0 0 var(--rjt-accent);
+}
+
+/* Stuck-stage warnings on the current chip */
+.rjt-stage-current.rjt-stuck-amber .rjt-chip {
+  color: var(--rjt-amber);
+  background: var(--rjt-amber-soft);
+  border-color: var(--rjt-amber);
+  box-shadow: inset 3px 0 0 var(--rjt-amber);
+}
+
+.rjt-stage-current.rjt-stuck-red .rjt-chip {
+  color: var(--rjt-red);
+  background: var(--rjt-red-soft);
+  border-color: var(--rjt-red);
+  box-shadow: inset 3px 0 0 var(--rjt-red);
+}
+
+.rjt-stage-name,
+.rjt-stage-meta {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rjt-stage-name {
+  font-weight: 700;
+}
+
+.rjt-stage-meta {
+  color: var(--rjt-text-muted);
+  font-size: 11px;
+}
+
+.rjt-stage-current .rjt-stage-meta {
+  color: inherit;
+}
+
+.rjt-connector {
+  position: relative;
+  width: 30px;
+  height: 1px;
+  margin: 0 5px;
+  background: var(--rjt-border);
+}
+
+.rjt-connector::after {
+  position: absolute;
+  top: -3px;
+  right: -1px;
+  width: 7px;
+  height: 7px;
+  content: "";
+  border-top: 1px solid var(--rjt-border);
+  border-right: 1px solid var(--rjt-border);
+  transform: rotate(45deg);
+}
+
+/* Won/Lost end-cap */
+.rjt-cap {
+  display: inline-block;
+  padding: 8px 14px;
+  margin-left: 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.rjt-cap-won {
+  color: var(--rjt-green);
+  background: var(--rjt-green-soft);
+  border: 1px solid var(--rjt-green);
+}
+
+.rjt-cap-lost {
+  color: var(--rjt-red);
+  background: var(--rjt-red-soft);
+  border: 1px solid var(--rjt-red);
+}
+
+/* Re-open pill (collapsed state) */
+#rjt-pill {
+  position: fixed;
+  z-index: var(--rjt-z-bar);
+  right: 14px;
+  bottom: 14px;
+  padding: 8px 13px;
+  border-radius: 999px;
+  box-shadow: 0 3px 12px rgb(30 40 55 / 20%);
+  font: 600 12px/1 Arial, sans-serif;
+}
+
+#rjt-pill:hover {
+  color: var(--rjt-accent);
+  border-color: var(--rjt-accent);
+}
+
+/* Tooltip (separate fixed portal so the scroll row can't clip it) */
+#rjt-tooltip {
+  position: fixed;
+  z-index: var(--rjt-z-tooltip);
+  width: min(380px, calc(100vw - 20px));
+  max-height: min(440px, calc(100vh - var(--rjt-height) - 20px));
+  padding: 13px;
+  overflow: hidden;
+  color: var(--rjt-text);
+  background: var(--rjt-surface);
+  border: 1px solid var(--rjt-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgb(30 40 55 / 22%);
+  font: 12px/1.4 Arial, sans-serif;
+}
+
+.rjt-tooltip-title {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+.rjt-tooltip-times {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 10px;
+  padding-bottom: 10px;
+  margin: 0 0 10px;
+  border-bottom: 1px solid var(--rjt-border);
+}
+
+.rjt-tooltip-times dt {
+  color: var(--rjt-text-muted);
+}
+
+.rjt-tooltip-times dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.rjt-tooltip-notes-title {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.rjt-tooltip-notes {
+  max-height: 210px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.rjt-tooltip-note {
+  padding: 7px 0;
+  border-top: 1px solid var(--rjt-border);
+}
+
+.rjt-tooltip-note:first-child {
+  border-top: 0;
+}
+
+.rjt-tooltip-note-meta {
+  margin-bottom: 3px;
+  color: var(--rjt-text-muted);
+  font-size: 11px;
+}
+
+.rjt-tooltip-note p,
+.rjt-tooltip-empty {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.rjt-tooltip-empty {
+  color: var(--rjt-text-muted);
+}
+
+/* Loading / error states */
+.rjt-skeleton,
+.rjt-error {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+  padding: 10px 18px;
+  overflow: hidden;
+}
+
+.rjt-skeleton-chip {
+  flex: 0 0 145px;
+  height: 50px;
+  border-radius: 9px;
+  background: linear-gradient(90deg, var(--rjt-surface-muted) 25%, #e7ebf0 50%, var(--rjt-surface-muted) 75%);
+  background-size: 200% 100%;
+  animation: rjt-loading 1.4s infinite linear;
+}
+
+.rjt-error {
+  color: var(--rjt-text-muted);
+}
+
+.rjt-error button {
+  padding: 6px 10px;
+  border-radius: 7px;
+  font: inherit;
+}
+
+@keyframes rjt-loading {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rjt-skeleton-chip {
+    animation: none;
+  }
+}

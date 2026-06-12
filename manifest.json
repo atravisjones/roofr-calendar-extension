@@ -74,7 +74,17 @@
       "js": [
         "roofr-api.js",
         "reports-batch.js",
-        "content.js"
+        "content.js",
+        "roofr-timeline.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.roofr.com/*"
+      ],
+      "css": [
+        "roofr-timeline.css"
       ],
       "run_at": "document_idle"
     },

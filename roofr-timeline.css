@@ -5,9 +5,8 @@
 
 :root {
   --rjt-height: 78px;
-  --rjt-gap: 10px;
-  /* Clearance the page content needs below it: bar height + gaps above/below */
-  --rjt-push: calc(var(--rjt-height) + var(--rjt-gap) * 2);
+  /* Full-width bar sits flush at bottom; push = its height. */
+  --rjt-push: var(--rjt-height);
   --rjt-surface: #ffffff;
   --rjt-surface-muted: #f4f6f8;
   --rjt-border: #d7dde4;
@@ -58,21 +57,54 @@ html.rjt-timeline-open div.jobs-detail-modal div.job-detail {
 #rjt-bar {
   position: fixed;
   z-index: var(--rjt-z-bar);
-  left: 50%;
-  bottom: var(--rjt-gap);
-  transform: translateX(-50%);
-  width: min(920px, calc(100vw - 24px));
+  right: 0;
+  bottom: 0;
+  left: 0;
   height: var(--rjt-height);
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: stretch;
-  overflow: hidden;
   color: var(--rjt-text);
   background: var(--rjt-surface);
-  border: 1px solid var(--rjt-border);
-  border-radius: 14px;
-  box-shadow: 0 6px 24px rgb(30 40 55 / 18%);
+  border-top: 1px solid var(--rjt-border);
+  box-shadow: 0 -4px 14px rgb(30 40 55 / 12%);
   font: 13px/1.3 Arial, sans-serif;
+}
+
+/* viewport = arrows flanking the horizontal scroller */
+.rjt-viewport {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.rjt-arrow {
+  display: none;
+  flex: 0 0 auto;
+  width: 32px;
+  padding: 0;
+  color: var(--rjt-text-muted);
+  background: var(--rjt-surface);
+  border: none;
+  border-left: 1px solid var(--rjt-border);
+  border-right: 1px solid var(--rjt-border);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.rjt-has-overflow .rjt-arrow {
+  display: block;
+}
+
+.rjt-arrow:hover:not(:disabled) {
+  color: var(--rjt-accent);
+  background: var(--rjt-surface-muted);
+}
+
+.rjt-arrow:disabled {
+  opacity: 0.25;
+  cursor: default;
 }
 
 .rjt-header {
@@ -286,9 +318,10 @@ html.rjt-timeline-open div.jobs-detail-modal div.job-detail {
 #rjt-pill {
   position: fixed;
   z-index: var(--rjt-z-bar);
-  right: 14px;
+  left: 50%;
   bottom: 14px;
-  padding: 8px 13px;
+  transform: translateX(-50%);
+  padding: 8px 16px;
   border-radius: 999px;
   box-shadow: 0 3px 12px rgb(30 40 55 / 20%);
   font: 600 12px/1 Arial, sans-serif;
@@ -352,8 +385,10 @@ html.rjt-timeline-open div.jobs-detail-modal div.job-detail {
 }
 
 .rjt-tooltip-note {
-  padding: 7px 0;
+  padding: 7px 0 7px 9px;
+  margin-top: 6px;
   border-top: 1px solid var(--rjt-border);
+  border-left: 3px solid var(--rjt-border);
 }
 
 .rjt-tooltip-note:first-child {
@@ -371,6 +406,37 @@ html.rjt-timeline-open div.jobs-detail-modal div.job-detail {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.rjt-ev-subject {
+  font-weight: 700;
+  margin-bottom: 2px !important;
+}
+
+/* small channel/direction tag chip */
+.rjt-ev-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  vertical-align: middle;
+  color: #fff;
+  background: var(--rjt-text-muted);
+}
+
+/* Channel color: note = gray (default), email = blue, text = green.
+   Direction: outbound solid border / inbound dashed + tinted background. */
+.rjt-ev-email { border-left-color: var(--rjt-accent); }
+.rjt-ev-email .rjt-ev-tag { background: var(--rjt-accent); }
+
+.rjt-ev-sms { border-left-color: var(--rjt-green); }
+.rjt-ev-sms .rjt-ev-tag { background: var(--rjt-green); }
+
+.rjt-ev-inbound {
+  border-left-style: dashed;
+  background: rgb(0 0 0 / 3%);
 }
 
 .rjt-tooltip-empty {

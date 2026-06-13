@@ -8650,6 +8650,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             chrome.storage.sync.set({ roofr_dark_mode: e.target.checked });
         });
     }
+    // Stage Timeline on/off — roofr-timeline.js watches this sync key (default ON).
+    const settingStageTimeline = document.getElementById('setting-stage-timeline');
+    if (settingStageTimeline) {
+        chrome.storage.sync.get('roofr_timeline_enabled', (result) => {
+            settingStageTimeline.checked = result.roofr_timeline_enabled !== false;
+        });
+        settingStageTimeline.addEventListener('change', (e) => {
+            chrome.storage.sync.set({ roofr_timeline_enabled: e.target.checked });
+        });
+    }
     if (settingFontSize) settingFontSize.addEventListener('input', (e) => {
         userPrefs.fontSizeStep = e.target.value;
         saveUserPrefs(); applyUserPrefs();

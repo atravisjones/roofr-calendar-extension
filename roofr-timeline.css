@@ -23,8 +23,14 @@
   --rjt-violet: #7e22ce;
   --rjt-violet-soft: #f3e8ff;
   --rjt-violet-border: #a855f7;
-  --rjt-z-bar: 2147483000;
-  --rjt-z-tooltip: 2147483001;
+  /* Sit ABOVE Roofr's job modal (z 1006) but BELOW its interactive overlay
+     layer (z 9999: comment/note composer, dropdowns, toasts). A max z-index
+     here painted the bar over the bottom of Roofr's note composer, swallowing
+     its Post/Cancel clicks. Keying off the 9999 layer (not a class hash) keeps
+     this robust to Roofr's build-generated class churn. The bar lives in the
+     push-up's reserved bottom strip, so nothing in normal use overlaps it. */
+  --rjt-z-bar: 9000;
+  --rjt-z-tooltip: 9001;
 }
 
 /* ---- push content up while the bar is open ----

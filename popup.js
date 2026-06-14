@@ -426,6 +426,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!cNorm || !qStreetNorm) return 0;
         if (cNorm === qNorm) return 100;
         if (cNorm === qStreetNorm) return 95;
+        // Directional guard: if the rep typed a directional (N/S/E/W after the house number) and
+        // the candidate carries the OPPOSITE one, it's a different street — sink it so it can never
+        // sit at or above the matching-direction result. LocationIQ returns BOTH "265 West McLellan"
+        // and "265 East McLellan" for an ambiguous "265 McLellan", West first; without this they
+        // score identically and West wins the tie.
+        const _dirOf = (s) => { const m = s.match(/^\d+\s+(ne|nw|se|sw|[nsew])\b/); return m ? m[1] : ''; };
+        const _qDir = _dirOf(qStreetNorm), _cDir = _dirOf(cNorm);
+        if (_qDir && _cDir && _qDir !== _cDir) return -100;
         if (cNorm.startsWith(qStreetNorm) || qNorm.startsWith(cNorm) || qStreetNorm.startsWith(cNorm)) {
             // Same street — break ties on whatever the rep typed beyond it (city/state/zip),
             // so "123 Main St, Mesa" ranks the Mesa candidate above a Phoenix one.
@@ -1400,9 +1408,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Geocoders drop pieces the rep typed: road-level results lose the house number
                 // ("Lesueur"), and OSM road names often lack the directional ("1310 Lesueur" for
                 // "1310 N Lesueur"). Repair from the typed query — the rep's input wins.
-                const _typedStreetM = query.split(',')[0].trim().match(/^(\d+)\s+((?:NE|NW|SE|SW|[NSEW])\b)?\s*(.*)$/i);
+                const _typedStreetM = query.split(',')[0].trim().match(/^(\d+)\s+((?:NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST|NORTH|SOUTH|EAST|WEST|NE|NW|SE|SW|[NSEW])\b)?\s*(.*)$/i);
                 const _typedHouse = _typedStreetM ? _typedStreetM[1] : '';
-                const _typedDir = (_typedStreetM && _typedStreetM[2]) ? _typedStreetM[2].toUpperCase() : '';
+                // Normalize the directional to its abbreviation so a rep typing "East" behaves
+                // exactly like "E" — the spelled-out form used to slip past this parser, leaving
+                // _typedDir empty (directional folded into the road name), which silently disabled
+                // both the graft-direction and graft-house repairs below.
+                const _DIR_ABBR = { north: 'N', south: 'S', east: 'E', west: 'W', northeast: 'NE', northwest: 'NW', southeast: 'SE', southwest: 'SW' };
+                const _typedDirRaw = (_typedStreetM && _typedStreetM[2]) ? _typedStreetM[2].toUpperCase() : '';
+                const _typedDir = _DIR_ABBR[_typedDirRaw.toLowerCase()] || _typedDirRaw;
                 const _typedRoadNorm = _typedStreetM ? _normalizeAddress(_typedStreetM[3] || '') : '';
                 // Repairs apply ONLY when the candidate's road is the road the rep typed —
                 // never fabricate "1310 N Star Dr" out of an unrelated "Star Dr" suggestion

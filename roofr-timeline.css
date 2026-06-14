@@ -33,20 +33,21 @@
   --rjt-z-tooltip: 9001;
 }
 
-/* ---- push content up while the bar is open ----
-   Body padding is the graceful fallback if Roofr renames its modal classes;
-   the modal rules do the real work. Removing the class restores everything. */
+/* ---- dock the WHOLE Roofr app above the bar while it's open ----
+   Constrain <body> to the viewport minus the bar AND turn it into a containing
+   block (transform). That single move re-anchors EVERY position:fixed Roofr
+   element — job modal, note/email composer, dropdowns, toasts — to the bottom of
+   the shrunk body instead of the viewport bottom, so none of them hide behind the
+   bar. The app root (body > div.h-100) is height:100%, so it follows for free.
+   The bar lives under <html> (outside body), so it's untouched and owns the strip.
+   No Roofr class names involved → robust to their build-hash churn. Removing the
+   class restores everything instantly. (Class-agnostic; supersedes the old
+   per-.jobs-detail-modal push.) */
 html.rjt-timeline-open body {
-  padding-bottom: var(--rjt-push) !important;
-}
-
-html.rjt-timeline-open div.jobs-detail-modal {
-  bottom: var(--rjt-push) !important;
-  max-height: calc(100vh - var(--rjt-push)) !important;
-}
-
-html.rjt-timeline-open div.jobs-detail-modal div.job-detail {
-  max-height: calc(100vh - var(--rjt-push)) !important;
+  height: calc(100vh - var(--rjt-push)) !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  transform: translateZ(0) !important;
 }
 
 /* ---- component ---- */

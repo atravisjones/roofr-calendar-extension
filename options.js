@@ -147,7 +147,7 @@ const defaults = {
   show_icons: true,
   animate_transitions: true,
   roofr_dark_mode: false,
-  roofr_timeline_enabled: true,
+  roofr_timeline_enabled: false,
 
   // Interface - Tab visibility
   show_dialer: true,

@@ -677,8 +677,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             results.addresses = results.addresses.slice(0, 5);
         }
 
-        // Phones (need 4+ digits)
-        if (qNPhone.length >= 4) {
+        // Phones (need 4+ digits) — but ONLY when the query looks like a phone, not an address.
+        // Typing a street address ("1310 N Lesueur") normalizes to the bare digits "1310", which
+        // would otherwise match any customer whose phone CONTAINS "1310". Phone numbers never
+        // contain letters, so if the query has ANY letters treat it as an address/name and skip
+        // phone matching entirely. (Pure-digit phone searches still work.)
+        const qLooksLikePhone = !/[a-z]/i.test(q);
+        if (qLooksLikePhone && qNPhone.length >= 4) {
             for (const [key, entry] of catalog.phones) {
                 if (key.includes(qNPhone)) {
                     results.phones.push(entry);
@@ -2209,8 +2214,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             row.remove();
         });
     }
+    // Recommended-slot callout disabled per request (slimming down the scanner):
+    // address submit no longer highlights a "suggested" time block or draws the
+    // "Recommendation:" box / prev-next day arrows. We still clear any stale highlight
+    // (so toggling it back on is a one-line revert), then bail before drawing anything.
+    // This is the single choke point for every reco path (address submit, post-scan
+    // re-run, manual day-expand, prev/next nav), so neutering it removes the callout everywhere.
+    const SHOW_SLOT_RECOMMENDATION = false;
     function highlightSuggested(card, blockKey, reasonText, availableReps = []) {
         clearAllSuggested();
+        if (!SHOW_SLOT_RECOMMENDATION) return;
         const target = card.querySelector(`.block-item[data-block-key="${blockKey}"]`);
         if (target) {
             target.classList.add("suggested");
@@ -2389,14 +2402,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             else if (totals.dayOver === 0) badgesHtml += `<span class="badge neutral">Full</span>`;
         }
 
-        // Add recommendation badge if this day has a pre-computed best recommendation
-        const dayReco = state.recoBestPerDay?.[dateStr];
-        if (dayReco && !isPast && !isCutoff && !noAvailability) {
-            const blocks = CONFIG.blockWindowForDate(d);
-            const blockObj = blocks.find(b => b.key === dayReco.blockKey);
-            const timeLabel = blockObj ? blockObj.label : dayReco.blockKey;
-            badgesHtml += ` <span class="badge reco-badge" title="Recommended: ${timeLabel}">★ ${timeLabel}</span>`;
-        }
+        // Recommendation time badge removed per request — keeps the scan list clean.
+        // The address-based tool still highlights a suggested slot when invoked.
 
         const dayName = d.toLocaleDateString(undefined, { weekday: "short" });
         const fullDate = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -2626,6 +2633,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const remaining = Number.isFinite(cap) ? cap - booked : null;
 
             if (remaining !== null && remaining < 0) div.classList.add("over");
+            else if (remaining === 0) div.classList.add("full"); // fully booked -> red highlight
 
             let statusHtml = '';
             if (remaining !== null) {
@@ -2660,7 +2668,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return `<span class="${classes.join(' ')}">${c}</span>`;
             });
 
-            const citiesHtml = cityItems.length > 0 ? `<div class="block-context">Scheduled: ${cityItems.join(", ")}</div>` : '';
+            const citiesHtml = cityItems.length > 0 ? `<span class="block-context" title="Scheduled: ${uniqueCities.join(", ")}">${cityItems.join(", ")}</span>` : '';
 
             // NEW: Find manually assigned events in this block (override set, but no city detected)
             const manuallyAssigned = evsInBlock.filter(ev => {
@@ -2684,14 +2692,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             div.innerHTML = `
-        <div class="block-header">
+        <div class="block-line">
             <span class="time-slot">${blk.label}</span>
+            ${statusHtml ? `<span class="block-sep">·</span>${statusHtml}` : ''}
+            ${citiesHtml ? `<span class="block-sep">·</span>${citiesHtml}` : ''}
             <span class="sheet-cap">${booked}/${cap !== null ? cap : '-'}</span>
         </div>
-        <div class="block-stats">
-            ${statusHtml}
-        </div>
-        ${citiesHtml}
         ${assignedHtml}
     `;
 
@@ -2735,17 +2741,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         footer.innerHTML = `<span class="card-cap">Total Cap: ${totals.capacity}</span><span class="card-booked">Booked: ${totalJobsForDay}</span>`;
         body.appendChild(footer);
 
-        // Copy Day button at bottom
-        const copyDayBtn = document.createElement('button');
-        copyDayBtn.className = 'copy-day-footer-btn btn ghost';
-        copyDayBtn.style.cssText = 'width: 100%; margin-top: 8px; font-size: 11px; padding: 6px; color: var(--textSecondary);';
-        copyDayBtn.textContent = 'Copy Day';
-        copyDayBtn.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            const allDayEvents = (state.allEvents || []).filter(ev => localDayKey(ev.start) === dateStr);
-            await copyToClipboard(buildCopyLinesForDay(dateStr, allDayEvents).join("\n"), e.currentTarget);
-        });
-        body.appendChild(copyDayBtn);
+        // (Removed: full-width "Copy Day" button at the bottom of the card — per request.
+        //  The small "Copy" button in the day header still handles per-day copy.)
 
         card.appendChild(body);
 
@@ -3057,7 +3054,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         renderDays(filteredEvents);
 
-        if (state.recoCandidates && state.recoCandidates.length > 0 && state.recoIndex < state.recoCandidates.length) {
+        if (SHOW_SLOT_RECOMMENDATION && state.recoCandidates && state.recoCandidates.length > 0 && state.recoIndex < state.recoCandidates.length) {
             const current = state.recoCandidates[state.recoIndex];
             const card = document.querySelector(`.day-card[data-date="${current.dateStr}"]`);
             if (card) {
@@ -3084,7 +3081,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             daysWrap.innerHTML = '<div style="text-align: center; padding: 32px; color: #64748b;"><h3 style="font-weight: 600; margin-bottom:8px;">Ready to Scan</h3><p style="font-size: 12px;">Click "Scan Page" to load data.</p></div>';
             return;
         }
-        const week = state.weekDays;
+        // On multi-day views (weekly / agenda / monthly) hide today and earlier — only
+        // future days are bookable and recommendations never target today. The daily view
+        // always shows its single day, even if that day is today.
+        const scanView = userPrefs?.scanView || 'agenda';
+        let week = state.weekDays;
+        if (scanView !== 'daily') {
+            const t = new Date();
+            const todayISO = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+            week = state.weekDays.filter(d => d > todayISO);
+        }
+        if (week.length === 0) {
+            daysWrap.innerHTML = '<div style="text-align: center; padding: 32px; color: #64748b;"><h3 style="font-weight: 600; margin-bottom:8px;">No upcoming days</h3><p style="font-size: 12px;">Every scanned day is today or earlier. Switch to Daily view or scan a future week.</p></div>';
+            footerTotal.textContent = `Total: ${(state.allEvents || []).length} booked`;
+            updateToggleAllLabel();
+            return;
+        }
         const groups = new Map(week.map(iso => [iso, []]));
         for (const e of filteredEvents) {
             const key = localDayKey(e.start);
@@ -4025,13 +4037,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     /* ========= Scan Logic ========= */
+    // Re-entrancy guard: a single "scan page" action can trigger runScanFlow from several
+    // paths at once (the Scan button click, the content script's AUTO_SCAN_READY message,
+    // and ROOFR_DATES_CHANGED). Each run re-applies the scan profile, which re-checks the
+    // Sales group (cascading D2D back on) then drops D2D again — that's the "reselects D2D
+    // and deselects it again" flicker. Allow only ONE scan in flight; ignore duplicate
+    // triggers until it finishes (cleared anywhere scanBtn is re-enabled below).
+    let scanInProgress = false;
     async function runScanFlow(isAuto = false) {
+        if (scanInProgress) {
+            addLog("Scan already in progress — ignoring duplicate trigger.");
+            return;
+        }
+        scanInProgress = true;
         addLog("Scan flow initiated.");
         scanBtn.disabled = true;
         scanBtn.innerHTML = '<span class="scan-spinner"></span> Scanning...';
         if (!settings.NEXT_SHEET_ID) {
             document.getElementById('setup-banner')?.classList.remove('hidden');
             scanBtn.disabled = false; updateScanButtonState();
+            scanInProgress = false;
             return;
         }
 
@@ -4060,6 +4085,38 @@ document.addEventListener('DOMContentLoaded', async () => {
                 await sendFindCommand({ type: "SELECT_ONLY_TEAM_MEMBERS", names: deptNames });
                 await new Promise(r => setTimeout(r, 800));
             }
+        }
+
+        // GATE: do NOT extract events until a toggle has forced Roofr to re-fetch — Roofr
+        // doesn't reload on event-type/profile changes alone, so without this the scan can
+        // read stale data. Reps do this manually by toggling a name; we toggle Yousef Ayad
+        // (his prior state is restored). The content handler waits for the re-fetch to finish
+        // before returning, and skips daily view (daily is exempt per spec).
+        addLog("Refreshing Roofr calendar (team-toggle) before scan...");
+        let refreshed = await sendFindCommand({ type: "REFRESH_CALENDAR_TOGGLE", member: "Yousef Ayad" });
+        if (refreshed && refreshed.skipped) {
+            addLog(`Refresh skipped: ${refreshed.reason}.`);
+        } else if (!refreshed || !refreshed.ok) {
+            // Toggle didn't take (e.g., the Team panel/checkbox wasn't ready). Retry once
+            // before reading, so we don't scan un-refreshed data.
+            addLog("Refresh toggle didn't take — retrying once before scanning...", "WARN");
+            await new Promise(r => setTimeout(r, 800));
+            refreshed = await sendFindCommand({ type: "REFRESH_CALENDAR_TOGGLE", member: "Yousef Ayad" });
+            if (!refreshed || !refreshed.ok) {
+                addLog("Could not toggle Yousef to refresh — check the exact name in Roofr's Team filter. Scan may show stale data.", "ERROR");
+            }
+        }
+        if (refreshed && refreshed.ok) addLog(`Calendar refreshed via ${refreshed.member} toggle.`);
+
+        // GATE 2: don't extract until the (Sales − D2D) filter is applied AND the calendar
+        // content has finished loading. Wait for the event DOM to stop changing so we never
+        // read a half-loaded or pre-refresh set.
+        addLog("Waiting for calendar content to finish loading...");
+        const stableRes = await sendFindCommand({ type: "WAIT_CALENDAR_STABLE" });
+        if (stableRes && stableRes.timedOut) {
+            addLog(`Proceeded after load timeout (~${Math.round((stableRes.ms || 0) / 1000)}s, ${stableRes.count} events visible).`, "WARN");
+        } else if (stableRes && stableRes.ok) {
+            addLog(`Calendar content loaded (${stableRes.count} events).`);
         }
 
         // Polling logic to wait for content (retries ONLY the date/event detection).
@@ -4134,6 +4191,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 await debouncedSaveState();
                 renderUIFromState();
                 scanBtn.disabled = false;
+                scanInProgress = false;
                 updateScanButtonState();
 
                 // Clear the stored target tab ID after successful scan
@@ -4179,6 +4237,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // Final failure
                     if (!isAuto) alert("Could not detect dates on page. Please ensure the calendar is visible.");
                     scanBtn.disabled = false;
+                    scanInProgress = false;
                     updateScanButtonState();
                     // Clear the stored target tab ID on failure
                     window.__targetRoofrTabId = null;
@@ -4188,6 +4247,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         attemptScan();
     }
+
+    // Keep Roofr's calendar fresh while the side panel is open: every 3 minutes, force a
+    // refresh via the same team-toggle the scan uses. The content handler skips daily view
+    // (only weekly/agenda). Paused while a scan is running so it can't clobber one. This
+    // interval lives only as long as the side panel is open (its popup context).
+    setInterval(() => {
+        if (scanInProgress) return;
+        sendFindCommand({ type: "REFRESH_CALENDAR_TOGGLE", member: "Yousef Ayad" }).catch(() => {});
+    }, 3 * 60 * 1000);
 
     // Helper function to send command to a specific tab
     async function sendCommandToTab(tabId, payload) {
@@ -8664,11 +8732,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             chrome.storage.sync.set({ roofr_dark_mode: e.target.checked });
         });
     }
-    // Stage Timeline on/off — roofr-timeline.js watches this sync key (default ON).
+    // Stage Timeline on/off — roofr-timeline.js watches this sync key (default OFF; opt-in).
     const settingStageTimeline = document.getElementById('setting-stage-timeline');
     if (settingStageTimeline) {
         chrome.storage.sync.get('roofr_timeline_enabled', (result) => {
-            settingStageTimeline.checked = result.roofr_timeline_enabled !== false;
+            settingStageTimeline.checked = result.roofr_timeline_enabled === true;
         });
         settingStageTimeline.addEventListener('change', (e) => {
             chrome.storage.sync.set({ roofr_timeline_enabled: e.target.checked });

@@ -2104,52 +2104,20 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     checkForDatesChange();
   }, 2000);
 
-  // Auto-initialize: Check "Sales" checkbox and trigger scan when calendar loads
+  // Auto-initialize: when the calendar loads, just notify the popup so it can run a scan.
+  // We deliberately DO NOT pre-check the "Sales" group here anymore. Doing so cascaded
+  // "D2D Sales appointment" ON, and then the scan's APPLY_SCAN_PROFILE would clean-slate it
+  // OFF, re-check Sales (D2D ON again), and finally drop D2D (OFF) — the visible
+  // "select/deselect D2D, then reselect and deselect again" flicker. The scan profile picks
+  // the correct event types on its own, so this pre-check was both redundant and the flicker.
   function autoInitializeCalendar() {
-    // Look for the "Sales" checkbox in Event types section
-    const labels = document.querySelectorAll('label, span, div');
-    let salesCheckbox = null;
-
-    for (const label of labels) {
-      const text = label.textContent?.trim();
-      if (text === 'Sales') {
-        // Found Sales label, look for checkbox
-        const parent = label.closest('label, div, li');
-        if (parent) {
-          salesCheckbox = parent.querySelector('input[type="checkbox"]');
-          if (!salesCheckbox) {
-            // Try custom checkbox
-            const clickable = parent.querySelector('[role="checkbox"]') || parent;
-            if (clickable) {
-              const isChecked = clickable.getAttribute('aria-checked') === 'true' ||
-                clickable.classList.contains('checked') ||
-                parent.querySelector('input[type="checkbox"]:checked');
-              if (!isChecked) {
-                clickable.click();
-                console.log('[Roofr Extension] Auto-checked Sales');
-              }
-              break;
-            }
-          }
-          if (salesCheckbox && !salesCheckbox.checked) {
-            salesCheckbox.click();
-            console.log('[Roofr Extension] Auto-checked Sales checkbox');
-          }
-          break;
-        }
-      }
+    if (chrome.runtime && chrome.runtime.id) {
+      // Store flag in session storage via service worker (content scripts can't access storage directly in MV3)
+      chrome.runtime.sendMessage({ type: "SET_AUTO_SCAN_PENDING" }).catch(() => { });
+      // Also try to send message in case popup is open
+      chrome.runtime.sendMessage({ type: "AUTO_SCAN_READY" }).catch(() => { });
+      console.log('[Roofr Extension] Calendar loaded — set autoScanPending + sent AUTO_SCAN_READY');
     }
-
-    // After checking Sales, store flag for popup to check and try to notify
-    setTimeout(() => {
-      if (chrome.runtime && chrome.runtime.id) {
-        // Store flag in session storage via service worker (content scripts can't access storage directly in MV3)
-        chrome.runtime.sendMessage({ type: "SET_AUTO_SCAN_PENDING" }).catch(() => { });
-        // Also try to send message in case popup is open
-        chrome.runtime.sendMessage({ type: "AUTO_SCAN_READY" }).catch(() => { });
-        console.log('[Roofr Extension] Set autoScanPending flag and sent AUTO_SCAN_READY');
-      }
-    }, 1500); // Wait for calendar to update after checking Sales
   }
 
   // Run auto-init after page has fully loaded
@@ -2420,6 +2388,24 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
 
     if (msg.type === "SELECT_ONLY_TEAM_MEMBERS") {
       selectOnlyTeamMembers(msg.names).then(result => {
+        sendResponse(result);
+      }).catch(err => {
+        sendResponse({ ok: false, error: err.message });
+      });
+      return true;
+    }
+
+    if (msg.type === "REFRESH_CALENDAR_TOGGLE") {
+      refreshCalendarViaTeamToggle(msg.member).then(result => {
+        sendResponse(result);
+      }).catch(err => {
+        sendResponse({ ok: false, error: err.message });
+      });
+      return true;
+    }
+
+    if (msg.type === "WAIT_CALENDAR_STABLE") {
+      waitForCalendarStable(msg.opts).then(result => {
         sendResponse(result);
       }).catch(err => {
         sendResponse({ ok: false, error: err.message });
@@ -5273,7 +5259,13 @@ const PROFILE_TYPES = {
 };
 // Which group checkbox to click first per profile (cascades to children = few clicks).
 const PROFILE_GROUPS = {
-  retail: ['Sales'],
+  // retail: NO group cascade. Checking the 'Sales' group also turns on 'D2D Sales appointment',
+  // which we then had to uncheck — making D2D visibly flicker on->off every scan. Instead we
+  // select retail's 4 wanted children directly (see PROFILE_TYPES.retail, applied by the
+  // "ensure each child" pass in applyScanProfile), so D2D is never turned on and there's
+  // nothing to undo. 4 child clicks is well under the re-render-storm threshold that made the
+  // group-cascade preferable for the larger production profile.
+  retail: [],
   d2d: [],
   insurance: ['General'],
   production: ['Dropoffs and pickups', 'Production', 'Post-production'],
@@ -5308,7 +5300,8 @@ async function applyScanProfile(profile) {
     if (cb && !cb.checked) { cb.click(); await wait(120); }
   }
 
-  // 4. retail: drop D2D (the Sales group cascade turned it on).
+  // 4. retail: keep D2D off. Now a no-op safety net (we no longer check the Sales group,
+  //    so D2D is never turned on); only fires if D2D was left on by a manual click.
   if (p === 'retail') { await wait(150); setEventTypeFilter('D2D Sales appointment', false); }
 
   await wait(300);
@@ -5346,6 +5339,81 @@ async function selectOnlyTeamMembers(names) {
     if (cb) { if (!cb.checked) { cb.click(); await wait(90); } selected++; }
   }
   return { ok: true, selected, requested: want.length };
+}
+
+// Force Roofr's calendar to re-fetch by toggling a team member's filter checkbox OFF and
+// back ON — exactly the manual "click a name off and on" reps use to refresh, because Roofr
+// doesn't reliably re-fetch when only the event-type/profile filters change. We toggle to the
+// OPPOSITE of the member's current state and back, so their net selection is unchanged whether
+// they started checked or unchecked. Skips DAILY view (only weekly/agenda) per spec.
+async function refreshCalendarViaTeamToggle(memberName) {
+  const name = (memberName && memberName.trim()) || 'Yousef Ayad';
+  if (!window.location.pathname.includes('/calendar')) {
+    return { ok: false, reason: 'Not on calendar page' };
+  }
+  const view = getCurrentCalendarView();
+  if (view === 'daily') {
+    return { ok: false, skipped: true, reason: 'daily view — no refresh', view };
+  }
+  const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  const norm = (s) => (s || '').trim().toLowerCase();
+  const findCb = (t) => {
+    const tn = norm(t);
+    const l = Array.from(document.querySelectorAll('label')).find(x => norm(x.innerText) === tn);
+    return l ? l.querySelector('input[type="checkbox"]') : null;
+  };
+  const cb = findCb(name);
+  if (!cb) return { ok: false, reason: `${name} checkbox not found` };
+  const original = cb.checked;
+  // Toggle to opposite, then back — two clicks = net no-op for his selection, but Roofr
+  // re-fetches the calendar on each filter change. Works whether he started on or off.
+  // Click to opposite then back. We just KICK the re-fetch here and give it a brief head
+  // start; the scan separately waits for the content to settle (WAIT_CALENDAR_STABLE) before
+  // it extracts, so this doesn't need to block for the full load.
+  cb.click(); await wait(650);
+  cb.click(); await wait(700);
+  // Safety: if a click didn't register, correct back to the original state.
+  if (cb.checked !== original) { cb.click(); await wait(400); }
+  return { ok: true, toggled: true, member: name, restoredTo: original, view };
+}
+
+// Wait until the calendar's event DOM stops changing — i.e. Roofr has finished loading /
+// re-fetching after the filters + refresh-toggle — so the scan never reads a half-loaded or
+// pre-refresh set. Polls a signature of the event nodes (count + sorted event ids) and
+// resolves once it's identical across consecutive polls, or after a max timeout (then proceeds
+// anyway so a scan can never hang). An empty week settles immediately (valid).
+async function waitForCalendarStable(opts = {}) {
+  if (!window.location.pathname.includes('/calendar')) {
+    return { ok: false, reason: 'Not on calendar page' };
+  }
+  const interval = opts.interval || 400;
+  const stableNeeded = opts.stableNeeded || 2; // consecutive identical polls = settled
+  const maxMs = opts.maxMs || 7000;
+  const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  const sig = () => {
+    const nodes = getAllEventNodes();
+    const ids = nodes.map(el => {
+      const m = (el.className || '').match(/rbcalendar-event-(\d+)-(\d+)/);
+      return m ? `${m[1]}-${m[2]}` : (el.textContent || '').slice(0, 24);
+    }).sort();
+    return nodes.length + '|' + ids.join(',');
+  };
+  let last = null, stableCount = 0, elapsed = 0;
+  await wait(interval); // let a just-clicked toggle begin its re-fetch
+  while (elapsed < maxMs) {
+    const cur = sig();
+    if (cur === last) {
+      if (++stableCount >= stableNeeded) {
+        return { ok: true, stable: true, count: getAllEventNodes().length, ms: elapsed };
+      }
+    } else {
+      stableCount = 0;
+      last = cur;
+    }
+    await wait(interval);
+    elapsed += interval;
+  }
+  return { ok: true, stable: false, timedOut: true, count: getAllEventNodes().length, ms: elapsed };
 }
 
 // Robust calendar VIEW switch (verified). Roofr's view selector is a dropdown button

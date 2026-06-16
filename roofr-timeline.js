@@ -14,7 +14,7 @@
 
   const TEAM_ID = "239329";
   const COLLAPSE_KEY = "roofr_timeline_collapsed";   // chrome.storage.local — per machine
-  const ENABLE_KEY = "roofr_timeline_enabled";       // chrome.storage.sync — Settings toggle, default ON
+  const ENABLE_KEY = "roofr_timeline_enabled";       // chrome.storage.sync — Settings toggle, default OFF
   const OPEN_CLASS = "rjt-timeline-open";
   const CACHE_TTL_MS = 5 * 60 * 1000;
   const MAX_PAGES = 10;          // 10 pages x 100 entries hard ceiling
@@ -34,7 +34,7 @@
   const COMPANY_EMAIL_RE = /@(?:arizonaroofers|azroofco)\.com$/i;
 
   const state = {
-    enabled: true,
+    enabled: false,
     jobId: null,
     root: null,
     bar: null,
@@ -764,7 +764,7 @@
   function start() {
     try {
       chrome.storage.sync.get(ENABLE_KEY, (r) => {
-        state.enabled = r?.[ENABLE_KEY] !== false; // unset = ON
+        state.enabled = r?.[ENABLE_KEY] === true; // unset = OFF
         reconcile();
       });
       chrome.storage.local.get(COLLAPSE_KEY, (r) => {
@@ -773,7 +773,7 @@
       });
       chrome.storage.onChanged.addListener((changes, area) => {
         if (area === "sync" && changes[ENABLE_KEY]) {
-          state.enabled = changes[ENABLE_KEY].newValue !== false;
+          state.enabled = changes[ENABLE_KEY].newValue === true;
           reconcile();
         }
       });

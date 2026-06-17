@@ -5257,19 +5257,20 @@ const PROFILE_TYPES = {
     'Warranty inspection', 'Final walkthrough', 'Go Backs',
   ],
 };
-// Which group checkbox to click first per profile (cascades to children = few clicks).
+// Which group checkbox to click first per profile. Checking a GROUP cascades to ALL its
+// children in ONE synchronous click (verified live), so they tick on TOGETHER — that's how we
+// select "all at once" fast, instead of clicking children one-by-one (each of which triggers
+// its own Roofr re-render and ticks on sequentially / gets dropped).
 const PROFILE_GROUPS = {
-  // retail: NO group cascade. Checking the 'Sales' group also turns on 'D2D Sales appointment',
-  // which we then had to uncheck — making D2D visibly flicker on->off every scan. Instead we
-  // select retail's 4 wanted children directly (see PROFILE_TYPES.retail, applied by the
-  // "ensure each child" pass in applyScanProfile), so D2D is never turned on and there's
-  // nothing to undo. 4 child clicks is well under the re-render-storm threshold that made the
-  // group-cascade preferable for the larger production profile.
-  retail: [],
+  retail: ['Sales'],
   d2d: [],
   insurance: ['General'],
   production: ['Dropoffs and pickups', 'Production', 'Post-production'],
 };
+
+// Children to DROP from a cascaded group. Removed in the SAME synchronous tick as the cascade
+// (before any await/paint), so they never visibly flash on. retail = Sales group minus D2D.
+const PROFILE_EXCLUDE = { retail: ['D2D Sales appointment'] };
 
 // Apply a team SCAN PROFILE by driving Roofr's event-type filter checkboxes.
 // CLICK-LIGHT to avoid Roofr's re-render storm (many rapid clicks froze it and caused
@@ -5286,23 +5287,36 @@ async function applyScanProfile(profile) {
   const wait = (ms) => new Promise(r => setTimeout(r, ms));
   const p = PROFILE_TYPES[profile] ? profile : 'retail';
 
+  // Wait for the event-type filter to actually render. On a freshly opened / cold-loaded
+  // calendar the scan can fire before these checkboxes exist — then every findEventTypeCheckbox
+  // returns null and NOTHING gets selected. (This regressed when the old load-time Sales
+  // auto-check was removed; that used to mask the timing.) Poll up to ~6s for the Sales group.
+  for (let i = 0; i < 20 && !findEventTypeCheckbox('Sales'); i++) await wait(300);
+  if (!findEventTypeCheckbox('Sales')) return { ok: false, reason: 'event-type filter not rendered yet' };
+
   // 1. Clean slate — uncheck the 5 groups only (cascades to children; few clicks).
   for (const g of Object.keys(EVENT_TYPE_GROUPS)) setEventTypeFilter(g, false);
   await wait(500);
 
-  // 2. Check the profile's group(s) (cascade).
+  // 2. Check the profile's group(s) — Roofr cascades each to ALL its children synchronously,
+  //    so they tick on TOGETHER (all at once).
   for (const g of (PROFILE_GROUPS[p] || [])) setEventTypeFilter(g, true);
+  // 2b. In the SAME synchronous tick (no await yet) drop excluded children. The cascade above
+  //     is synchronous, so an excluded child (retail's D2D) is already checked here; unchecking
+  //     it now — before any paint — means it never visibly appears. Net: the 4 wanted Sales
+  //     types tick on all at once with NO D2D flash.
+  for (const child of (PROFILE_EXCLUDE[p] || [])) setEventTypeFilter(child, false);
   await wait(700);
 
-  // 3. Ensure each desired child is checked (only clicks the ones the cascade missed).
+  // 3. Ensure each desired child ended up checked (catches anything the cascade missed).
   for (const child of PROFILE_TYPES[p]) {
     const cb = findEventTypeCheckbox(child);
     if (cb && !cb.checked) { cb.click(); await wait(120); }
   }
 
-  // 4. retail: keep D2D off. Now a no-op safety net (we no longer check the Sales group,
-  //    so D2D is never turned on); only fires if D2D was left on by a manual click.
-  if (p === 'retail') { await wait(150); setEventTypeFilter('D2D Sales appointment', false); }
+  // 4. Safety: re-assert excluded children are still off (a late re-render could flip one back
+  //    on). Normally a no-op since 2b already dropped them.
+  for (const child of (PROFILE_EXCLUDE[p] || [])) { await wait(80); setEventTypeFilter(child, false); }
 
   await wait(300);
   return { ok: true, profile: p };
@@ -5321,7 +5335,9 @@ async function selectOnlyTeamMembers(names) {
   const norm = (s) => (s || '').trim().toLowerCase();
   const labelCb = (t) => {
     const tn = norm(t);
-    const l = Array.from(document.querySelectorAll('label')).find(x => norm(x.innerText) === tn);
+    const labels = Array.from(document.querySelectorAll('label'));
+    const l = labels.find(x => norm(x.innerText) === tn)
+           || labels.find(x => _looksLikePersonName(x.innerText) && personNameMatches(t, x.innerText)); // nickname: Madi -> Madison
     return l ? l.querySelector('input[type="checkbox"]') : null;
   };
   // Force "Select all" through a known cycle so EVERYONE ends up deselected, regardless
@@ -5359,7 +5375,9 @@ async function refreshCalendarViaTeamToggle(memberName) {
   const norm = (s) => (s || '').trim().toLowerCase();
   const findCb = (t) => {
     const tn = norm(t);
-    const l = Array.from(document.querySelectorAll('label')).find(x => norm(x.innerText) === tn);
+    const labels = Array.from(document.querySelectorAll('label'));
+    const l = labels.find(x => norm(x.innerText) === tn)
+           || labels.find(x => _looksLikePersonName(x.innerText) && personNameMatches(t, x.innerText)); // nickname: Madi -> Madison
     return l ? l.querySelector('input[type="checkbox"]') : null;
   };
   const cb = findCb(name);
@@ -5569,7 +5587,7 @@ async function selectSpecificTeamMembers(names) {
 
   // Process each team member: check if in our list, set accordingly
   for (const member of teamMemberElements) {
-    const shouldBeSelected = namesToSelect.has(member.name);
+    const shouldBeSelected = [...namesToSelect].some(n => personNameMatches(n, member.name));
     let isCurrentlyChecked = false;
 
     if (member.checkbox) {
@@ -5603,6 +5621,35 @@ async function selectSpecificTeamMembers(names) {
   return { ok: true, selectedCount, processedCount };
 }
 
+// ── Nickname-aware team-member name matching ──────────────────────────────────────────────
+// The People tab / roster use nicknames (e.g. "Madi Meyers") but Roofr's calendar team list
+// shows LEGAL names (e.g. "Madison Meyers"). Match case-insensitively: exact wins; otherwise the
+// LAST name must match exactly AND the shorter FIRST name (>=3 chars) must be a prefix of the
+// longer (the nickname). Different last names never match → no wrong-person grabs.
+function _normPersonName(s) {
+  // lower-case, strip accents (e.g. Bronte) via NFD + combining-mark removal, collapse spaces
+  return (s || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
+}
+function _looksLikePersonName(t) {
+  const s = (t || '').trim();
+  if (!s || s.length > 40) return false;
+  const parts = s.split(/\s+/);
+  return parts.length >= 2 && parts.length <= 4 && parts.every(p => /^[A-Za-z\u00C0-\u024F][A-Za-z\u00C0-\u024F'.\-]*$/.test(p));
+}
+function personNameMatches(typed, candidate) {
+  const a = _normPersonName(typed), b = _normPersonName(candidate);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const ta = a.split(' '), tb = b.split(' ');
+  if (ta.length < 2 || tb.length < 2) return false;
+  if (ta[ta.length - 1] !== tb[tb.length - 1]) return false;   // last name must match exactly
+  const fa = ta[0], fb = tb[0];
+  if (fa === fb) return true;
+  const short = fa.length <= fb.length ? fa : fb;
+  const long  = fa.length <= fb.length ? fb : fa;
+  return short.length >= 3 && long.startsWith(short);          // nickname = first-name prefix
+}
+
 // Toggle a team member checkbox in the Roofr calendar sidebar
 function toggleTeamCheckbox(name) {
   // Look for the Team section - find checkboxes/labels containing the name
@@ -5634,8 +5681,8 @@ function toggleTeamCheckbox(name) {
   const labels = searchRoot.querySelectorAll('label, span, div');
   for (const label of labels) {
     const text = label.textContent?.trim();
-    if (text && text.toLowerCase() === nameLower) {
-      // Found the label, look for associated checkbox
+    if (text && (text.toLowerCase() === nameLower || (_looksLikePersonName(text) && personNameMatches(name, text)))) {
+      // Found the label (exact or nickname e.g. "Madi Meyers" -> "Madison Meyers"), look for associated checkbox
       // Could be a sibling, parent's sibling, or nearby input
       const parent = label.closest('label, div, li');
       if (parent) {
@@ -5695,7 +5742,7 @@ function toggleTeamCheckbox(name) {
     const allLabels = document.querySelectorAll('label, span, div');
     for (const label of allLabels) {
       const text = label.textContent?.trim();
-      if (text && text.toLowerCase() === nameLower) {
+      if (text && (text.toLowerCase() === nameLower || (_looksLikePersonName(text) && personNameMatches(name, text)))) {
         const parent = label.closest('label, div, li');
         if (parent) {
           let checkbox = parent.querySelector('input[type="checkbox"]');

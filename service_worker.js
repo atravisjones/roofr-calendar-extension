@@ -260,9 +260,9 @@ async function checkForUpdates(force = false) {
 
             await chrome.storage.local.set({ [UPDATE_AVAILABLE_KEY]: updateData });
 
-            // Set badge to indicate update available
-            await chrome.action.setBadgeText({ text: '!' });
-            await chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
+            // No badge — the extension auto-updates via the managed update_url,
+            // so the orange "!" update indicator is redundant. Clear any stale one.
+            await chrome.action.setBadgeText({ text: '' });
 
             console.log('[Update] New version available:', updateInfo.version);
             return updateData;

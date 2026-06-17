@@ -41,6 +41,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function displayUpdateBanner(update) {
+        // The extension now auto-updates via the managed/enterprise update_url,
+        // so the "Update Available" banner is redundant — suppress it.
+        if (updateBanner) updateBanner.style.display = 'none';
+        return;
+
         if (!updateBanner) return;
 
         updateNewVersion.textContent = `v${update.newVersion}`;
@@ -118,7 +123,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (window.__targetRoofrTabId) {
                 try {
                     const tab = await chrome.tabs.get(window.__targetRoofrTabId);
-                    if (tab?.url?.includes('app.roofr.com')) {
+                    if (tab?.url?.includes('app.roofr.com') && (!window.__targetWindowId || tab.windowId === window.__targetWindowId)) {
                         foundTab = true;
                         console.log('[Popup] Connected to Roofr tab:', tab.id);
                     }
@@ -159,7 +164,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Listen for tab updates to auto-reconnect if a Roofr tab becomes available
         chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-            if (changeInfo.status === 'complete' && tab.url?.includes('app.roofr.com')) {
+            if (changeInfo.status === 'complete' && tab.url?.includes('app.roofr.com')
+                && (!window.__targetWindowId || tab.windowId === window.__targetWindowId)) {
                 if (!window.__targetRoofrTabId) {
                     window.__targetRoofrTabId = tabId;
                     console.log('[Popup] Auto-connected to new Roofr tab:', tabId);
@@ -349,6 +355,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     /* ========= State Management ========= */
     const SHARED_STATE_KEY = 'roofr_shared_state';
     const CLIPBOARDS_KEY = 'roofr_clipboards_data';
+    // Signature of the clipboards array THIS window last saved, so the
+    // storage.onChanged echo of our own write doesn't trigger a full
+    // renderClipboards() that would destroy the card we're typing in.
+    let _lastWrittenClipboardsSig = null;
     const USER_PREFS_KEY = 'roofr_user_prefs';
     const DYNAMIC_CITIES_KEY = 'roofr_dynamic_cities';
 
@@ -818,7 +828,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         idleTimeout: 60000, // Default 1 minute
         defaultRegion: 'PHX',
         scanProfile: 'retail', // retail | d2d | production | insurance — which event types the scan reads
-        scanView: 'agenda',    // agenda | weekly | daily — calendar view used when scanning
+        scanView: 'weekly',    // agenda | weekly | daily — calendar view used when scanning
         showDialerTab: true,
         showPeopleTab: true,
         showClipboardTab: true,
@@ -1663,8 +1673,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         // Listen for clipboard changes (local storage) - sync between popup/sidepanel
         if (changes[CLIPBOARDS_KEY]) {
+            const incoming = changes[CLIPBOARDS_KEY].newValue || [];
+            // Ignore the echo of our own save (fires for both sync + local areas).
+            if (JSON.stringify(incoming) === _lastWrittenClipboardsSig) return;
+            // Don't rebuild the cards while the user is editing one here — that
+            // destroys the contenteditable and drops the caret mid-typing. Leave
+            // the in-memory edits intact (last-write-wins on next save).
+            if (clipboardContainer && clipboardContainer.contains(document.activeElement)) {
+                return;
+            }
             addLog(`Clipboards changed externally (${namespace}). Updating UI.`);
-            clipboards = changes[CLIPBOARDS_KEY].newValue || [];
+            clipboards = incoming;
             renderClipboards();
         }
         // Listen for settings changes from options page (sync storage)
@@ -3084,7 +3103,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // On multi-day views (weekly / agenda / monthly) hide today and earlier — only
         // future days are bookable and recommendations never target today. The daily view
         // always shows its single day, even if that day is today.
-        const scanView = userPrefs?.scanView || 'agenda';
+        const scanView = userPrefs?.scanView || 'weekly';
         let week = state.weekDays;
         if (scanView !== 'daily') {
             const t = new Date();
@@ -3156,6 +3175,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Auto-save dock notes to storage
         const DOCK_NOTE_KEY = 'roofr_dock_note';
         let dockNoteDebounce = null;
+        // Tracks the last value THIS instance wrote, so we can ignore the
+        // storage.onChanged echo of our own save (fires for both sync + local
+        // areas, in every context including this popup window). Without this,
+        // re-assigning innerHTML collapses the caret mid-typing.
+        let dockNoteLastWritten = null;
 
         // Load saved dock note on startup (try sync first for cross-browser, then local)
         chrome.storage.sync.get(DOCK_NOTE_KEY, (result) => {
@@ -3173,9 +3197,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Listen for dock note changes from other instances
         chrome.storage.onChanged.addListener((changes, namespace) => {
-            if (changes[DOCK_NOTE_KEY] && document.activeElement !== dockNoteInput) {
-                dockNoteInput.innerHTML = changes[DOCK_NOTE_KEY].newValue || '';
-            }
+            const change = changes[DOCK_NOTE_KEY];
+            if (!change) return;
+            const incoming = change.newValue || '';
+            // Ignore the echo of our own save (fires for both sync + local areas).
+            if (incoming === dockNoteLastWritten) return;
+            // Never clobber the caret while the user is editing here.
+            if (document.activeElement === dockNoteInput) return;
+            // No-op if the content is already identical (avoids caret reset).
+            if (dockNoteInput.innerHTML === incoming) return;
+            dockNoteInput.innerHTML = incoming;
         });
 
         // Auto-save on input with debounce (to both sync and local)
@@ -3183,6 +3214,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             clearTimeout(dockNoteDebounce);
             dockNoteDebounce = setTimeout(() => {
                 const content = dockNoteInput.innerHTML;
+                // Remember what we wrote so onChanged can skip our own echo.
+                dockNoteLastWritten = content;
                 // Save to sync for cross-browser sync
                 chrome.storage.sync.set({ [DOCK_NOTE_KEY]: content }).catch(() => {
                     console.warn('[Dock Note] Sync storage quota exceeded');
@@ -4044,12 +4077,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     // and deselects it again" flicker. Allow only ONE scan in flight; ignore duplicate
     // triggers until it finishes (cleared anywhere scanBtn is re-enabled below).
     let scanInProgress = false;
+    let _scanGuardTimer = null;
     async function runScanFlow(isAuto = false) {
         if (scanInProgress) {
             addLog("Scan already in progress — ignoring duplicate trigger.");
             return;
         }
         scanInProgress = true;
+        // Backstop: never let the guard stick forever. If a scan ever throws past its normal
+        // clear points, this releases it so future scans aren't permanently blocked.
+        clearTimeout(_scanGuardTimer);
+        _scanGuardTimer = setTimeout(() => { scanInProgress = false; }, 45000);
         addLog("Scan flow initiated.");
         scanBtn.disabled = true;
         scanBtn.innerHTML = '<span class="scan-spinner"></span> Scanning...';
@@ -4069,7 +4107,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         await new Promise(r => setTimeout(r, 600));
 
         // Ensure the calendar is in the chosen scan view (agenda/weekly/daily). Switch only if needed.
-        const desiredView = userPrefs.scanView || 'agenda';
+        const desiredView = userPrefs.scanView || 'weekly';
         const setupViewResult = await sendFindCommand({ type: "GET_CALENDAR_VIEW" });
         if (setupViewResult && setupViewResult.ok && setupViewResult.view !== desiredView) {
             addLog(`Switching from ${setupViewResult.view} to ${desiredView} view...`);
@@ -4278,20 +4316,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    // Setup calendar: switch to AGENDA view, select Sales, select all team members.
-    // Agenda is Roofr's vertical-list view that shows the full month at once, so
-    // the scanner can surface today through end-of-month in one pass.
+    // Setup calendar: switch to the user's scan view (default Weekly), select
+    // Sales, select all team members.
     // (Parameter name kept as forceWeekly for backwards-compatibility with callers;
     // semantics now mean "force switch when navigating to calendar".)
     async function setupCalendarForScan(tabId, forceWeekly = true) {
         addLog("Setting up calendar for scan...");
 
         // Step 1: Check current view.
-        // - If navigating to calendar (forceWeekly=true): land on Agenda (default).
+        // - If navigating to calendar (forceWeekly=true): land on the chosen view (default Weekly).
         // - If already on calendar: accept agenda/weekly/daily and scrape in place.
         //   Only force a switch when the user is on monthly (which doesn't have
         //   per-event details).
-        const desiredView = userPrefs.scanView || 'agenda';
+        const desiredView = userPrefs.scanView || 'weekly';
         const viewResult = await sendCommandToTab(tabId, { type: "GET_CALENDAR_VIEW" });
         if (viewResult?.ok) {
             addLog(`Current view: ${viewResult.view}`);
@@ -4436,15 +4473,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         scanBtn.innerHTML = '<span class="scan-spinner"></span> Scanning...';
 
         try {
-            // Check if we have a stored target tab ID (from popup window)
+            // Resolve the window the user is working in. In popout mode that's the
+            // original browser window (passed as __targetWindowId); otherwise it's
+            // the window this panel is docked to. ALL tab lookups/opens below are
+            // scoped to it so we never latch onto — or open — a calendar in some
+            // OTHER window. (That was the regression: a stored/auto-connected tab
+            // from a different window made the scan skip the open-a-calendar step
+            // and just sit on "Scanning...".)
+            let workingWindowId = window.__targetWindowId || null;
+            if (!workingWindowId) {
+                try { workingWindowId = (await chrome.windows.getCurrent()).id; } catch (_) {}
+            }
+
+            // Reuse a stored target tab ONLY if it's a calendar IN the working window.
             if (window.__targetRoofrTabId) {
                 try {
                     const storedTab = await chrome.tabs.get(window.__targetRoofrTabId);
-                    if (storedTab?.url?.includes('app.roofr.com') && storedTab?.url?.includes('/calendar')) {
+                    const sameWindow = !workingWindowId || storedTab.windowId === workingWindowId;
+                    if (sameWindow && storedTab?.url?.includes('app.roofr.com') && storedTab?.url?.includes('/calendar')) {
                         addLog(`Using stored Roofr calendar tab (ID: ${storedTab.id})`);
                         runScanFlow(false);
                         return;
                     }
+                    // Stale or wrong-window — drop it and fall through to find/open here.
+                    window.__targetRoofrTabId = null;
                 } catch (e) {
                     window.__targetRoofrTabId = null;
                 }
@@ -4467,9 +4519,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             const calendarUrl = "https://app.roofr.com/dashboard/team/239329/calendar";
             let targetTab = null;
 
-            // Search for existing Roofr calendar tabs in target window only
+            // Search for existing Roofr calendar tabs in the working window only.
             const queryOpts = { url: "*://app.roofr.com/dashboard/team/*/calendar*" };
-            if (window.__targetWindowId) queryOpts.windowId = window.__targetWindowId;
+            if (workingWindowId) queryOpts.windowId = workingWindowId;
             const roofrCalendarTabs = await chrome.tabs.query(queryOpts);
 
             if (roofrCalendarTabs.length > 0) {
@@ -4486,10 +4538,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     addLog("Could not focus tab (may be in popup mode)", "INFO");
                 }
             } else {
-                // No existing Roofr calendar tab, open new one in target window
+                // No existing Roofr calendar tab in this window — open one HERE.
                 addLog("No existing Roofr calendar tab found, opening new one...");
                 const createOpts = { url: calendarUrl, active: true };
-                if (window.__targetWindowId) createOpts.windowId = window.__targetWindowId;
+                if (workingWindowId) createOpts.windowId = workingWindowId;
                 targetTab = await chrome.tabs.create(createOpts);
                 window.__targetRoofrTabId = targetTab.id; // Store for popup mode
 
@@ -4709,12 +4761,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             const left = Math.round((screen.width - popupWidth) / 2);
             const top = Math.round((screen.height - popupHeight) / 2);
 
-            // Get the current Roofr tab ID and window ID to pass to the popup
+            // Resolve the browser window to bind the popout to — the panel's own
+            // window when we don't already know it. Passing it through lets the
+            // popout scope its scan to the right window (and open a calendar THERE
+            // if none exists) instead of grabbing one from some other window.
+            let targetWindowId = window.__targetWindowId || null;
+            if (!targetWindowId) {
+                try { targetWindowId = (await chrome.windows.getCurrent()).id; } catch (_) {}
+            }
+
+            // Get the current Roofr tab ID to pass to the popup (from that window).
             let targetTabId = window.__targetRoofrTabId;
             if (!targetTabId) {
-                // Try to find a Roofr calendar tab in target window
                 const queryOpts = { url: "*://app.roofr.com/*" };
-                if (window.__targetWindowId) queryOpts.windowId = window.__targetWindowId;
+                if (targetWindowId) queryOpts.windowId = targetWindowId;
                 const roofrTabs = await chrome.tabs.query(queryOpts);
                 if (roofrTabs.length > 0) {
                     targetTabId = roofrTabs[0].id;
@@ -4725,7 +4785,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             let popupUrl = chrome.runtime.getURL('popup.html');
             const params = [];
             if (targetTabId) params.push(`targetTabId=${targetTabId}`);
-            if (window.__targetWindowId) params.push(`targetWindowId=${window.__targetWindowId}`);
+            if (targetWindowId) params.push(`targetWindowId=${targetWindowId}`);
             if (params.length > 0) popupUrl += '?' + params.join('&');
 
             window.open(
@@ -5850,6 +5910,90 @@ document.addEventListener('DOMContentLoaded', async () => {
                                     }
                                     const ctmLink = `https://app.calltrackingmetrics.com/calls#filter=${phone10}`;
                                     propertyInfo += `<div><a href="${ctmLink}" target="_blank" style="color:#1a73e8;text-decoration:underline;">${phoneFormatted}</a></div>`;
+                                }
+
+                                // Nearby jobs we've already done — social proof for the rep to
+                                // mention ("we did the roof down the street a few weeks ago").
+                                // Computed entirely from the Roofr data already cached client-side
+                                // (_roofrDataCache, preloaded on popup open) — NO extra API call.
+                                // Coords: prefer the county parcel centroid (rooftop), fall back to
+                                // the geocoder coords from the chosen suggestion.
+                                try {
+                                    const _njPd = apnResult.propertyData || {};
+                                    let _njLat = (_njPd.lat != null) ? parseFloat(_njPd.lat) : NaN;
+                                    let _njLng = (_njPd.lng != null) ? parseFloat(_njPd.lng) : NaN;
+                                    if ((isNaN(_njLat) || isNaN(_njLng)) && window.__selectedAddrCoords) {
+                                        _njLat = parseFloat(window.__selectedAddrCoords.lat);
+                                        _njLng = parseFloat(window.__selectedAddrCoords.lng);
+                                    }
+                                    if (!isNaN(_njLat) && !isNaN(_njLng) && Array.isArray(_roofrDataCache) && _roofrDataCache.length) {
+                                        const _njRelative = (val) => {
+                                            if (!val) return '';
+                                            const then = new Date(val);
+                                            if (isNaN(then.getTime())) return '';
+                                            const days = Math.floor((Date.now() - then.getTime()) / 86400000);
+                                            if (days < 0) return 'recently';
+                                            if (days === 0) return 'today';
+                                            if (days === 1) return 'yesterday';
+                                            if (days < 14) return `${days} days ago`;
+                                            if (days < 60) return `${Math.round(days / 7)} weeks ago`;
+                                            if (days < 365) return `${Math.round(days / 30)} months ago`;
+                                            const yrs = days / 365;
+                                            return yrs < 1.5 ? 'about a year ago' : `${Math.round(yrs)} years ago`;
+                                        };
+                                        // Haversine miles between the searched address and each
+                                        // won/completed job that has coordinates.
+                                        const _toRad = (d) => d * Math.PI / 180;
+                                        const _latR = _toRad(_njLat);
+                                        const _cosLat = Math.cos(_latR);
+                                        const _near = [];
+                                        for (const job of _roofrDataCache) {
+                                            const cat = (job['Stage category'] || '').toLowerCase();
+                                            if (cat !== 'won' && cat !== 'completed') continue;
+                                            const jlat = parseFloat(job.Latitude);
+                                            const jlng = parseFloat(job.Longitude);
+                                            if (isNaN(jlat) || isNaN(jlng)) continue;
+                                            const dLat = _toRad(jlat - _njLat);
+                                            const dLng = _toRad(jlng - _njLng);
+                                            const a = Math.sin(dLat / 2) ** 2 + _cosLat * Math.cos(_toRad(jlat)) * Math.sin(dLng / 2) ** 2;
+                                            const dist = 2 * 3959 * Math.asin(Math.min(1, Math.sqrt(a)));
+                                            if (dist > 0.01 && dist <= 1) _near.push({ job, dist, cat });
+                                        }
+                                        _near.sort((a, b) => a.dist - b.dist);
+                                        if (_near.length) {
+                                            propertyInfo += `<div style="margin-top:4px;"><strong>🏠 We've worked nearby:</strong></div>`;
+                                            for (const { job, dist, cat } of _near.slice(0, 3)) {
+                                                const tag = (cat === 'completed') ? '✅ Completed' : '🔨 In production';
+                                                const distTxt = `${dist.toFixed(2)} mi`;
+                                                const _val = parseFloat(job.Value);
+                                                const valTxt = (!isNaN(_val) && _val > 0) ? ` · $${Math.round(_val).toLocaleString('en-US')}` : '';
+                                                const when = _njRelative(job['Job close date']);
+                                                const whenTxt = when ? ` · ${when}` : '';
+                                                const stageTxt = job.Stage ? ` <span style="color:#5f6368;">(${job.Stage})</span>` : '';
+                                                // Customer name → Roofr job card; address → Google Maps.
+                                                const cust = (job.Customer || '').trim();
+                                                const custLink = cust
+                                                    ? (job.Link
+                                                        ? `<a href="${job.Link}" target="_blank" style="color:#1a73e8;text-decoration:underline;">${_escapeHtml(cust)}</a>`
+                                                        : _escapeHtml(cust))
+                                                    : '';
+                                                const custTxt = custLink ? `${custLink}, ` : '';
+                                                const addr = job.Address || 'address n/a';
+                                                const _mLat = parseFloat(job.Latitude);
+                                                const _mLng = parseFloat(job.Longitude);
+                                                const _mapsQuery = (!isNaN(_mLat) && !isNaN(_mLng)) ? `${_mLat},${_mLng}` : addr;
+                                                const _mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(_mapsQuery)}`;
+                                                const addrHtml = `<a href="${_mapsUrl}" target="_blank" style="color:#1a73e8;text-decoration:underline;">${_escapeHtml(addr)}</a>`;
+                                                propertyInfo += `<div>${tag} ${distTxt}${valTxt} — ${custTxt}${addrHtml}${whenTxt}${stageTxt}</div>`;
+                                            }
+                                            const _njExtra = _near.length - Math.min(3, _near.length);
+                                            if (_njExtra > 0) {
+                                                propertyInfo += `<div style="color:#5f6368;">+${_njExtra} more within 1 mile</div>`;
+                                            }
+                                        }
+                                    }
+                                } catch (njErr) {
+                                    addLog('Nearby jobs lookup failed: ' + njErr.message);
                                 }
 
                                 propertyInfo += `<div>---</div>`;
@@ -8067,6 +8211,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     /* ========= Clipboard Functionality ========= */
     const debouncedSaveClipboards = debounce(async () => {
         if (chrome.storage) {
+            // Record what we're about to write so onChanged skips our own echo.
+            _lastWrittenClipboardsSig = JSON.stringify(clipboards);
             // Save to both local (for large data fallback) and sync (for cross-browser sync)
             try {
                 // Try sync first for cross-browser sync
@@ -8088,6 +8234,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.querySelectorAll('.dropdown-menu.show').forEach(m => m.classList.remove('show'));
     });
 
+    // Sticky-note pastel palette. key === null is the default (no color).
+    const NOTE_PASTELS = [
+        { key: null,     bg: null,      label: 'Default' },
+        { key: 'yellow', bg: '#FEF9C3', label: 'Yellow' },
+        { key: 'pink',   bg: '#FCE7F3', label: 'Pink' },
+        { key: 'green',  bg: '#DCFCE7', label: 'Green' },
+        { key: 'blue',   bg: '#DBEAFE', label: 'Blue' },
+        { key: 'purple', bg: '#EDE9FE', label: 'Purple' },
+        { key: 'orange', bg: '#FFEDD5', label: 'Orange' },
+    ];
+
     function renderClipboards() {
         if (!clipboardContainer) return;
         clipboardContainer.innerHTML = '';
@@ -8096,6 +8253,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         clipboards.forEach((item, index) => {
             const card = document.createElement('div');
             card.className = 'note-card';
+            // Apply saved sticky-note color (null/undefined = default surface).
+            const pastel = NOTE_PASTELS.find(c => c.key === (item.color || null));
+            if (pastel && pastel.key) {
+                card.classList.add('note-colored');
+                card.style.setProperty('--note-bg', pastel.bg);
+            }
 
             const header = document.createElement('div');
             header.className = 'note-header';
@@ -8163,6 +8326,26 @@ document.addEventListener('DOMContentLoaded', async () => {
                 btn.addEventListener('click', (e) => { e.stopPropagation(); handler(); menu.classList.remove('show'); });
                 menu.appendChild(btn);
             };
+
+            // Sticky-note color swatches at the top of the menu.
+            const colorRow = document.createElement('div');
+            colorRow.className = 'note-color-row';
+            NOTE_PASTELS.forEach(c => {
+                const sw = document.createElement('button');
+                sw.className = 'note-color-swatch';
+                sw.title = c.label;
+                sw.style.background = c.bg || 'var(--surface)';
+                if (!c.key) sw.textContent = '✕'; // default / clear color
+                if ((item.color || null) === c.key) sw.classList.add('active');
+                sw.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    clipboards[index].color = c.key;
+                    debouncedSaveClipboards();
+                    renderClipboards();
+                });
+                colorRow.appendChild(sw);
+            });
+            menu.appendChild(colorRow);
 
             addAction('Save HTML', () => {
                 const blob = new Blob([item.content], { type: 'text/html' });
@@ -8382,7 +8565,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             id: Date.now().toString(),
             title: initialTitle,
             content: initialContent,
-            locked: isLocked
+            locked: isLocked,
+            color: null
         });
         debouncedSaveClipboards();
         renderClipboards();
@@ -8550,9 +8734,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Interface Toggles
         if (scanProfileSelect) scanProfileSelect.value = userPrefs.scanProfile || 'retail';
-        if (scanViewSelect) scanViewSelect.value = userPrefs.scanView || 'agenda';
+        if (scanViewSelect) scanViewSelect.value = userPrefs.scanView || 'weekly';
         if (settingScanProfile) settingScanProfile.value = userPrefs.scanProfile || 'retail';
-        if (settingScanView) settingScanView.value = userPrefs.scanView || 'agenda';
+        if (settingScanView) settingScanView.value = userPrefs.scanView || 'weekly';
         if (settingShowDialer) settingShowDialer.checked = userPrefs.showDialerTab;
         if (settingShowPeople) settingShowPeople.checked = userPrefs.showPeopleTab;
         if (settingShowClipboard) settingShowClipboard.checked = userPrefs.showClipboardTab;

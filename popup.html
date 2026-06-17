@@ -751,8 +751,8 @@
     .day-card {
       background: var(--surface);
       border-radius: var(--radius);
-      padding: 12px;
-      margin-bottom: 12px;
+      padding: 9px 12px;
+      margin-bottom: 8px;
       box-shadow: var(--shadow-sm);
       border: 1px solid transparent;
       transition: box-shadow 0.2s, transform 0.2s;
@@ -839,11 +839,11 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 8px;
+      margin-bottom: 4px;
       cursor: pointer;
       user-select: none;
-      padding: 6px;
-      margin: -6px -6px 8px -6px;
+      padding: 4px 6px;
+      margin: -4px -6px 4px -6px;
       border-radius: var(--radius);
       transition: background-color 0.15s;
     }
@@ -880,14 +880,14 @@
     }
 
     .day-name {
-      font-size: 1.25rem;
+      font-size: 1.05rem;
       text-transform: uppercase;
       color: var(--text-main);
       margin-right: 2px;
     }
 
     .date-title {
-      font-size: 1.1rem;
+      font-size: 1rem;
       font-weight: 800;
       color: var(--text-muted);
       display: flex;
@@ -962,8 +962,8 @@
     .card-body {
       display: flex;
       flex-direction: column;
-      gap: 10px;
-      margin-top: 4px;
+      gap: 6px;
+      margin-top: 2px;
     }
 
     .card-body.hidden {
@@ -974,14 +974,14 @@
     .blocks-grid {
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 5px;
     }
 
     .block-item {
       background: var(--surface-hover);
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 5px 10px;
+      padding: 3px 10px;
       font-size: 0.9rem;
       white-space: nowrap;
       /* Prevent wrapping in compact views */
@@ -1684,6 +1684,47 @@
       content: 'Type or paste notes here...';
       color: var(--text-light);
     }
+
+    /* Sticky-note pastel coloring. A colored note is always light with dark
+       text, so it stays readable in both light and dark themes. */
+    .note-card.note-colored { background: var(--note-bg); }
+    .note-card.note-colored .note-header {
+      background: rgba(0, 0, 0, 0.05);
+      border-bottom-color: rgba(0, 0, 0, 0.08);
+    }
+    .note-card.note-colored .note-title,
+    .note-card.note-colored .note-content { color: #1f2937; }
+    .note-card.note-colored .note-content:empty::before { color: rgba(31, 41, 55, 0.45); }
+    .note-card.note-colored .note-resize-handle {
+      background: rgba(0, 0, 0, 0.05);
+      border-top-color: rgba(0, 0, 0, 0.08);
+      color: rgba(31, 41, 55, 0.4);
+    }
+
+    .note-color-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .note-color-swatch {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      line-height: 1;
+      color: var(--text-muted);
+      transition: transform 0.1s;
+    }
+    .note-color-swatch:hover { transform: scale(1.15); }
+    .note-color-swatch.active { box-shadow: 0 0 0 2px var(--primary); }
 
     .note-resize-handle {
       height: 8px;
@@ -2748,16 +2789,6 @@
         <div id="days"></div>
         <div id="footerTotal" class="text-right mt-2"
           style="font-size: 0.9rem; font-weight: 800; color: var(--text-muted);"></div>
-        <div class="mt-2" style="text-align: center;">
-          <button id="copyWeekBtn" class="btn secondary">Copy Full Week</button>
-        </div>
-        <div class="mt-2" style="text-align: center;">
-          <button id="copyProductionWeekBtn" class="btn ghost">Copy Production Week</button>
-        </div>
-        <div class="mt-2" style="text-align: center;">
-          <button id="readB6Btn" class="btn ghost" style="font-size: 11px;">Read B6</button>
-          <span id="b6Result" style="margin-left: 8px; font-size: 11px; color: var(--text-muted);"></span>
-        </div>
       </section>
 
 

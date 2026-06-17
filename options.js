@@ -764,6 +764,11 @@ function displayUpdateBanner(update) {
   const versionInfo = document.getElementById('update-version-info');
   const changelogContainer = document.getElementById('update-changelog-container');
 
+  // The extension now auto-updates via the managed/enterprise update_url, so the
+  // "Update Available" notice is redundant — keep it hidden.
+  if (updateCategory) updateCategory.style.display = 'none';
+  return;
+
   if (!updateCategory) return;
 
   // Show the category

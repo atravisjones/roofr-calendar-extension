@@ -1631,11 +1631,18 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     // 5. Parse time range from text content (for display)
     const timeMatch = text.match(/(\d{1,2}:\d{2}\s*(?:AM|PM))\s*[–-]\s*(\d{1,2}:\d{2}\s*(?:AM|PM))/i);
 
-    // 6. Extract title (address/description)
-    let title = text;
-    if (timeMatch) {
-      // Remove time range from title
-      title = text.replace(timeMatch[0], '').trim();
+    // 6. Extract title (address/description). Read it from the dedicated title
+    // element — each agenda/week row also holds a rep Avatar ("TS", "DS", ...)
+    // whose initials would otherwise glue onto the front of the title (e.g.
+    // "TSPHOENIX...") if we derived the title from the row's full textContent.
+    let title;
+    const titleNode = el.querySelector('[class*="EventTitle"]') || el.querySelector('.rbc-event-content');
+    if (titleNode) {
+      title = titleNode.textContent.trim();
+    } else {
+      // Fallback for layouts with no dedicated title element: strip the time.
+      title = text;
+      if (timeMatch) title = text.replace(timeMatch[0], '').trim();
     }
 
     // 7. Calculate end time if we have start time and duration from text
@@ -1708,7 +1715,7 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
   }
 
   function getTitle(el) {
-    const t = el.querySelector(".rbc-event-content");
+    const t = el.querySelector('[class*="EventTitle"]') || el.querySelector(".rbc-event-content");
     return t ? t.textContent.trim() : "";
   }
 

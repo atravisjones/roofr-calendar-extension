@@ -779,6 +779,13 @@
       background-color: #f3f4f6;
     }
 
+    /* Dark theme: stripe-b needs its own wash, otherwise the hardcoded light
+       grey above makes next-week cards look light while the rest goes dark.
+       Use a faint lighter-than-surface tone so the week boundary still reads. */
+    body.dark-theme .day-card.week-stripe-b {
+      background-color: #283649;
+    }
+
     /* Shrunk days (past or no availability) - compact display */
     .day-card.day-shrunk {
       padding: 6px 12px;

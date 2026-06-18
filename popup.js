@@ -2842,7 +2842,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function buildCopyLinesForDay(dateStr, eventsForDay) {
         const day = new Date(dateStr + "T00:00");
-        const sorted = [...eventsForDay].sort((a, b) => new Date(a.start) - new Date(b.start));
+        // Order jobs by time slot first (chronological), then left-to-right by
+        // on-screen position within the same slot (weekly view tiles same-time
+        // appts side by side). So: all the 8-10s left→right, then all the 11-1s,
+        // etc. domLeft comes from the scan; falls back gracefully when position
+        // data is absent (older cached scans, agenda/daily's single column).
+        const sorted = [...eventsForDay].sort((a, b) => {
+            const ts = new Date(a.start) - new Date(b.start);
+            if (ts !== 0) return ts;
+            const la = (a.domLeft ?? Infinity), lb = (b.domLeft ?? Infinity);
+            if (la !== lb) return la - lb;
+            return (a.domTop ?? 0) - (b.domTop ?? 0);
+        });
         const dateHeader = day.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", year: "numeric" });
         const result = [dateHeader, `Total: ${sorted.length} jobs`, ""];
 
@@ -3100,18 +3111,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             daysWrap.innerHTML = '<div style="text-align: center; padding: 32px; color: #64748b;"><h3 style="font-weight: 600; margin-bottom:8px;">Ready to Scan</h3><p style="font-size: 12px;">Click "Scan Page" to load data.</p></div>';
             return;
         }
-        // On multi-day views (weekly / agenda / monthly) hide today and earlier — only
-        // future days are bookable and recommendations never target today. The daily view
-        // always shows its single day, even if that day is today.
+        // On multi-day views (weekly / agenda / monthly) keep yesterday + today +
+        // future, and hide only days before yesterday — reps need to see/copy
+        // today's and yesterday's appointments too. The daily view always shows
+        // its single day.
         const scanView = userPrefs?.scanView || 'weekly';
         let week = state.weekDays;
         if (scanView !== 'daily') {
             const t = new Date();
-            const todayISO = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
-            week = state.weekDays.filter(d => d > todayISO);
+            t.setDate(t.getDate() - 1); // cutoff = yesterday (inclusive)
+            const cutoffISO = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+            week = state.weekDays.filter(d => d >= cutoffISO);
         }
         if (week.length === 0) {
-            daysWrap.innerHTML = '<div style="text-align: center; padding: 32px; color: #64748b;"><h3 style="font-weight: 600; margin-bottom:8px;">No upcoming days</h3><p style="font-size: 12px;">Every scanned day is today or earlier. Switch to Daily view or scan a future week.</p></div>';
+            daysWrap.innerHTML = '<div style="text-align: center; padding: 32px; color: #64748b;"><h3 style="font-weight: 600; margin-bottom:8px;">No recent or upcoming days</h3><p style="font-size: 12px;">Every scanned day is before yesterday. Switch to Daily view or scan a more recent week.</p></div>';
             footerTotal.textContent = `Total: ${(state.allEvents || []).length} booked`;
             updateToggleAllLabel();
             return;

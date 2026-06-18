@@ -2234,6 +2234,14 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       for (const el of nodes) {
         const event = extractEventFromElement(el);
         if (!event.start || !event.end) continue;
+        // Capture on-screen position so the per-day Copy can list jobs in
+        // left-to-right order (weekly view tiles overlapping appts side by side).
+        // Horizontal (left) is unaffected by vertical scroll; top is a tiebreaker.
+        try {
+          const r = el.getBoundingClientRect();
+          event.domLeft = Math.round(r.left);
+          event.domTop = Math.round(r.top);
+        } catch (_) {}
         const m = (el.className || '').match(/rbcalendar-event-(\d+)-(\d+)/);
         const eventId = m ? m[1] : null;
         const repInitials = (el.querySelector('[class*="Avatar"]')?.textContent || '').trim();

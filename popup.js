@@ -564,6 +564,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     let _activeSuggestionIndex = -1;
     let _suggestionItems = []; // flat list of clickable elements for keyboard nav
     let _suggestFetchGen = 0; // stale async suggestion fetches must not touch the DOM
+    let _geoAbort = null; // AbortController for the in-flight address-suggestion fetch (cancelled on next keystroke)
+    let _placesSession = null; // Google Places autocomplete session token — one per address entry, consumed on selection (keeps cost in the free tier)
 
     function _buildSuggestionCatalog() {
         if (!_roofrDataCache || !_roofrDataCache.length) return null;
@@ -1148,6 +1150,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function fetchAddressSuggestions(query) {
         if (!verifiedAddressesList) return;
         const _gen = ++_suggestFetchGen;
+        // Cancel any in-flight address fetch — its result is now stale.
+        if (_geoAbort) { try { _geoAbort.abort(); } catch (e) {} _geoAbort = null; }
         _activeSuggestionIndex = -1;
         _suggestionItems = [];
 
@@ -1313,8 +1317,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         }
 
-        // ═══ SECTION 2: Geocoding API fallback (address-like queries only) ═══
-        const looksLikeAddress = /\d/.test(query) || query.includes(',');
+        // ═══ SECTION 2: Address suggestions (address-like queries only) ═══
+        // Fire for anything that looks like an address — not just queries with a
+        // digit. Catches street-name-first typing ("lesueur dr", "n mclellan")
+        // that the old digit/comma gate ignored (the "rigid" complaint). Bare
+        // city/name/stage queries (no number, directional, or street-type word)
+        // still skip geo so the omni-search dropdown isn't polluted with street noise.
+        const looksLikeAddress = /\d/.test(query)
+            || query.includes(',')
+            || /(^|\s)(n|s|e|w|ne|nw|se|sw)(\s|$)/i.test(query)
+            || /\b(st|street|ave|avenue|dr|drive|rd|road|ln|lane|blvd|boulevard|ct|court|way|pl|place|cir|circle|loop|trl|trail|pkwy|hwy|ter|terrace|cv|cove|pt|point)\b/i.test(query);
         // When query is specific (house number + 15+ chars), prioritize new address results —
         // UNLESS the DB already has a near-exact match for what was typed (rep is looking up a
         // verified/existing job, not entering a new address). A strong DB match stays on top.
@@ -1343,7 +1355,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             let geoHeaderAdded = false;
             const geoSuggestionItems = []; // track geo items for re-ordering _suggestionItems
             const _geoByNorm = new Map(); // norm → element, for upgrading repaired entries
-            const addGeoOption = (address, lat, lng) => {
+            // Strip a trailing unit/suite/lot so the provider returns base-address
+            // suggestions, then re-attach exactly what the rep typed. Declared here
+            // (not inside the try) so addGeoOption's click handler can reuse withUnit.
+            const geoQuery = query.replace(/(?:#|\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot)\s*)\s*[A-Za-z0-9-]+\s*$/i, '').replace(/\s{2,}/g, ' ').trim() || query;
+            const _unitMatch = query.match(/((?:#|\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot)\s*)\s*[A-Za-z0-9-]+)\s*$/i);
+            const unitDisplay = _unitMatch ? _unitMatch[1].replace(/\s+/g, ' ').trim() : '';
+            const withUnit = (fmt) => (unitDisplay && fmt) ? fmt.replace(/^([^,]+)/, `$1 ${unitDisplay}`) : fmt;
+            const addGeoOption = (address, lat, lng, placeId) => {
                 if (_gen !== _suggestFetchGen) return; // newer keystroke owns the dropdown
                 if (!address || address.length <= 3) return;
                 const titleCaseAddress = toTitleCase(address);
@@ -1374,20 +1393,46 @@ document.addEventListener('DOMContentLoaded', async () => {
                 el.className = 'suggestion-item api-match';
                 el.textContent = titleCaseAddress;
                 el.__coords = validCoords ? { lat: +lat, lng: +lng } : null;
+                el.__placeId = placeId || '';
                 _geoByNorm.set(norm, el);
                 el.addEventListener('mousedown', (e) => e.preventDefault());
-                el.addEventListener('click', () => {
-                    if (addrInput) {
-                        addrInput.value = titleCaseAddress;
-                        addrInput.dispatchEvent(new Event('input', { bubbles: true }));
-                    }
+                el.addEventListener('click', async () => {
+                    // Invalidate any in-flight fetch and close. We set the value WITHOUT
+                    // dispatching an 'input' event, so the dropdown can't reopen and we
+                    // don't burn an extra autocomplete call — we just replicate the input
+                    // handler's essential side effects below.
+                    _suggestFetchGen++;
+                    if (_geoAbort) { try { _geoAbort.abort(); } catch (e) {} _geoAbort = null; }
+                    verifiedAddressesList.classList.add('hidden');
                     window.__selectedRoofrJobLink = null;
                     window.__selectedRoofrJob = null;
                     window.__selectedRoofrJobInputValue = null;
-                    // Pin GPS to THIS suggestion's coords (set after the input event so it isn't
-                    // cleared); read from the element so a later exact hit can upgrade them
-                    window.__selectedAddrCoords = el.__coords;
-                    verifiedAddressesList.classList.add('hidden');
+                    // Resolve the canonical address + exact coords via Place Details, reusing
+                    // this entry's session token (completes ONE free Google session). Falls
+                    // back to the suggestion text + null coords (Google Earth resolves the
+                    // pin from the address) if Details is unavailable.
+                    let finalAddr = titleCaseAddress;
+                    let coords = el.__coords || null;
+                    if (el.__placeId) {
+                        try {
+                            const dUrl = `https://speed-to-leads.vercel.app/api/address-autocomplete?placeId=${encodeURIComponent(el.__placeId)}` +
+                                (_placesSession ? `&session=${encodeURIComponent(_placesSession)}` : '');
+                            const dResp = await fetch(dUrl, { headers: { 'X-Dialer-Client': 'roofr-extension' } });
+                            if (dResp.ok) {
+                                const dData = await dResp.json();
+                                if (dData && dData.success) {
+                                    if (dData.display) finalAddr = withUnit(toTitleCase(dData.display));
+                                    if (dData.lat != null && dData.lng != null) coords = { lat: +dData.lat, lng: +dData.lng };
+                                }
+                            }
+                        } catch (e) { /* keep suggestion text + null coords */ }
+                    }
+                    _placesSession = null; // session consumed by this selection
+                    if (addrInput) addrInput.value = finalAddr;
+                    state.addressInput = finalAddr;
+                    window.__selectedAddrCoords = coords;
+                    debouncedSaveState();
+                    if (typeof updateAddressClearButton === 'function') updateAddressClearButton();
                     updateGoButtonState();
                 });
                 // Insert in relevance order within the geo section — the APIs' own ordering
@@ -1414,126 +1459,32 @@ document.addEventListener('DOMContentLoaded', async () => {
             };
 
             try {
-                // Strip a trailing unit/suite/lot so geocoders return base-address suggestions
-                // (LocationIQ/Geoapify return "Unable to geocode" when "#473" is in the query)
-                const geoQuery = query.replace(/(?:#|\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot)\s*)\s*[A-Za-z0-9-]+\s*$/i, '').replace(/\s{2,}/g, ' ').trim() || query;
-                // Preserve the unit/lot the rep typed so it shows in (and is selected from) the suggestion
-                const _unitMatch = query.match(/((?:#|\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot)\s*)\s*[A-Za-z0-9-]+)\s*$/i);
-                const unitDisplay = _unitMatch ? _unitMatch[1].replace(/\s+/g, ' ').trim() : '';
-                const withUnit = (fmt) => (unitDisplay && fmt) ? fmt.replace(/^([^,]+)/, `$1 ${unitDisplay}`) : fmt;
-                // Geocoders drop pieces the rep typed: road-level results lose the house number
-                // ("Lesueur"), and OSM road names often lack the directional ("1310 Lesueur" for
-                // "1310 N Lesueur"). Repair from the typed query — the rep's input wins.
-                const _typedStreetM = query.split(',')[0].trim().match(/^(\d+)\s+((?:NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST|NORTH|SOUTH|EAST|WEST|NE|NW|SE|SW|[NSEW])\b)?\s*(.*)$/i);
-                const _typedHouse = _typedStreetM ? _typedStreetM[1] : '';
-                // Normalize the directional to its abbreviation so a rep typing "East" behaves
-                // exactly like "E" — the spelled-out form used to slip past this parser, leaving
-                // _typedDir empty (directional folded into the road name), which silently disabled
-                // both the graft-direction and graft-house repairs below.
-                const _DIR_ABBR = { north: 'N', south: 'S', east: 'E', west: 'W', northeast: 'NE', northwest: 'NW', southeast: 'SE', southwest: 'SW' };
-                const _typedDirRaw = (_typedStreetM && _typedStreetM[2]) ? _typedStreetM[2].toUpperCase() : '';
-                const _typedDir = _DIR_ABBR[_typedDirRaw.toLowerCase()] || _typedDirRaw;
-                const _typedRoadNorm = _typedStreetM ? _normalizeAddress(_typedStreetM[3] || '') : '';
-                // Repairs apply ONLY when the candidate's road is the road the rep typed —
-                // never fabricate "1310 N Star Dr" out of an unrelated "Star Dr" suggestion
-                const _roadMatchesTyped = (road) => {
-                    if (_typedRoadNorm.length < 3) return false;
-                    const rn = _normalizeAddress(String(road || ''));
-                    if (!rn) return false;
-                    // Token-by-token: the rep's LAST token may be mid-word ("lesu" → "Lesueur"),
-                    // every earlier token must match exactly ("main st" must NOT hit "Mainland")
-                    const qT = _typedRoadNorm.split(' ');
-                    const cT = rn.split(' ');
-                    const n = Math.min(qT.length, cT.length);
-                    for (let i = 0; i < n; i++) {
-                        if (i === qT.length - 1) { if (!cT[i].startsWith(qT[i])) return false; }
-                        else if (qT[i] !== cT[i]) return false;
+                // Single residential-grade source: Google Places Autocomplete (New)
+                // via the speed-to-lead proxy (GOOGLE_PLACES_KEY stays server-side).
+                // Replaces the old LocationIQ → Geoapify → Census waterfall and the
+                // house-number/directional "repair" logic. Google returns complete,
+                // verified US addresses, so we never fabricate a street. Coords arrive
+                // later via Place Details when the rep clicks (see addGeoOption). One
+                // session token spans this address entry → keeps us in the free tier.
+                if (geoQuery.length >= 3) {
+                    const controller = new AbortController();
+                    _geoAbort = controller;
+                    if (!_placesSession) {
+                        _placesSession = (typeof crypto !== 'undefined' && crypto.randomUUID)
+                            ? crypto.randomUUID()
+                            : (String(Date.now()) + Math.random().toString(36).slice(2));
                     }
-                    return true;
-                };
-                const _graftDir = (street, road) => {
-                    if (!_typedDir || !/^\d/.test(street) || !_roadMatchesTyped(road)) return street;
-                    // Geocoder gave its own directional (abbreviated OR spelled out — OSM often
-                    // returns "North 90th Street") → leave it alone
-                    if (/^\d+\s+(NE|NW|SE|SW|[NSEW]|NORTH(?:EAST|WEST)?|SOUTH(?:EAST|WEST)?|EAST|WEST)\b/i.test(street)) return street;
-                    return street.replace(/^(\d+)\s+/, `$1 ${_typedDir} `);
-                };
-                // LocationIQ autocomplete
-                const locationIQKey = 'pk.8191a90010a7b5c191b4232ce0cafb93';
-                const locationIQUrl = `https://us1.locationiq.com/v1/autocomplete?key=${locationIQKey}&q=${encodeURIComponent(geoQuery)}&countrycodes=us&viewbox=-114.85,37.05,-109.0,31.30&limit=10&dedupe=1`;
-                const locationIQResponse = await fetch(locationIQUrl);
-                if (locationIQResponse.ok) {
-                    const locationIQData = await locationIQResponse.json();
-                    for (const result of locationIQData) {
-                        const addr = result.address || {};
-                        const st = addr.state || '';
-                        if (st && st !== 'Arizona') continue;
-                        let parts = [];
-                        let repairedHouse = false;
-                        if (addr.house_number && addr.road) parts.push(_graftDir(`${addr.house_number} ${addr.road}`, addr.road));
-                        else if (addr.road && _typedHouse && _roadMatchesTyped(addr.road)) {
-                            // Road-level result for the road the rep typed — graft their house
-                            // number on. Coords go null: street-centroid GPS would pin wrong.
-                            parts.push(_graftDir(`${_typedHouse} ${addr.road}`, addr.road));
-                            repairedHouse = true;
+                    const proxyUrl = `https://speed-to-leads.vercel.app/api/address-autocomplete?q=${encodeURIComponent(geoQuery)}&session=${encodeURIComponent(_placesSession)}`;
+                    const resp = await fetch(proxyUrl, { headers: { 'X-Dialer-Client': 'roofr-extension' }, signal: controller.signal });
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        for (const s of (data.suggestions || [])) {
+                            if (s && s.display) addGeoOption(withUnit(s.display), null, null, s.placeId);
                         }
-                        else if (addr.road) parts.push(addr.road);
-                        else if (result.display_name) { const dp = result.display_name.split(','); if (dp[0]) parts.push(dp[0].trim()); }
-                        const city = addr.city || addr.town || addr.village || addr.hamlet || addr.municipality;
-                        if (city) parts.push(city);
-                        if (st) { const stateMap = { 'Arizona': 'AZ', 'Nevada': 'NV', 'California': 'CA', 'New Mexico': 'NM', 'Utah': 'UT' }; parts.push(stateMap[st] || st); }
-                        if (addr.postcode) parts.push(addr.postcode);
-                        const formatted = parts.join(', ');
-                        if (formatted.length > 5) addGeoOption(withUnit(formatted), repairedHouse ? null : result.lat, repairedHouse ? null : result.lon);
                     }
-                }
-
-                // Geoapify fallback
-                if (addedNormalized.size < 10) {
-                    const geoapifyKey = 'a23dc46289844c50a3b12c3ab8b6759b';
-                    const geoapifyUrl = `https://api.geoapify.com/v1/geocode/autocomplete?text=${encodeURIComponent(geoQuery)}&filter=countrycode:us&bias=proximity:-112.07,33.45&limit=8&apiKey=${geoapifyKey}`;
-                    try {
-                        const geoapifyResponse = await fetch(geoapifyUrl);
-                        if (geoapifyResponse.ok) {
-                            const geoapifyData = await geoapifyResponse.json();
-                            for (const feature of geoapifyData.features || []) {
-                                const props = feature.properties;
-                                const st = props.state || '';
-                                if (st && !['Arizona', 'AZ'].includes(st) && !['Nevada', 'NV', 'California', 'CA', 'New Mexico', 'NM', 'Utah', 'UT'].includes(st)) continue;
-                                let formattedAddress = props.formatted || '';
-                                formattedAddress = formattedAddress.replace(/,?\s*United States\s*$/i, '').trim();
-                                let gRepaired = false;
-                                if (_typedHouse && !props.housenumber && props.street && _roadMatchesTyped(props.street) &&
-                                    formattedAddress.toLowerCase().startsWith(String(props.street).toLowerCase())) {
-                                    // Street-level result for the typed road: graft the typed house
-                                    // number (props.street check also keeps city names safe)
-                                    formattedAddress = `${_typedHouse} ${formattedAddress}`;
-                                    gRepaired = true;
-                                }
-                                formattedAddress = _graftDir(formattedAddress, props.street);
-                                addGeoOption(withUnit(formattedAddress), gRepaired ? null : props.lat, gRepaired ? null : props.lon);
-                            }
-                        }
-                    } catch (e) { console.log('Geoapify error', e); }
-                }
-
-                // Census Bureau geocoder
-                if (addedNormalized.size < 8) {
-                    const censusUrl = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(geoQuery + ', AZ')}&benchmark=Public_AR_Current&format=json`;
-                    try {
-                        const censusResponse = await fetch(censusUrl);
-                        if (censusResponse.ok) {
-                            const censusData = await censusResponse.json();
-                            const matches = censusData.result?.addressMatches || [];
-                            for (const match of matches) {
-                                const formatted = match.matchedAddress;
-                                if (formatted) addGeoOption(withUnit(formatted.replace(/,\s*USA?\s*$/i, '').trim()), match.coordinates && match.coordinates.y, match.coordinates && match.coordinates.x);
-                            }
-                        }
-                    } catch (e) { /* Census API can be slow */ }
                 }
             } catch (error) {
-                addLog(`Address suggestion error: ${error.message}`, 'WARN');
+                if (error.name !== 'AbortError') addLog(`Address suggestion error: ${error.message}`, 'WARN');
             }
 
             if (_gen !== _suggestFetchGen) return; // newer keystroke owns the dropdown now
@@ -1629,8 +1580,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    // Debounced version for typing
-    const debouncedFetchAddressSuggestions = debounce(fetchAddressSuggestions, 300);
+    // Debounced version for typing. 200ms feels snappy now that each keystroke
+    // fires ONE cancellable Radar request (not a 3-geocoder sequential waterfall).
+    const debouncedFetchAddressSuggestions = debounce(fetchAddressSuggestions, 200);
 
     let _selfSavingState = false; // Flag to prevent re-render when we save state ourselves
     const debouncedSaveState = debounce(async () => {
@@ -5736,6 +5688,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Suppress + collapse the suggestion dropdown for the whole search so a
             // late, in-flight fetch from typing can't flash it open mid-run.
             _suppressAddressSuggestions = true;
+            _placesSession = null; // search fired → next address entry starts a fresh Google session
             if (verifiedAddressesList) verifiedAddressesList.classList.add('hidden');
 
             // Show loading state on Go button
@@ -7388,6 +7341,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // If input is cleared, reset button to "Go"
             if (!value) {
+                _placesSession = null; // box cleared → next address entry starts a fresh Google session
                 if (addrGoBtn) {
                     addrGoBtn.textContent = 'Go';
                     addrGoBtn.classList.remove('secondary');
@@ -7442,6 +7396,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Collapse + suppress the autocomplete dropdown — Enter fires the
                 // search, so block any in-flight fetch from flashing it back open.
                 _suppressAddressSuggestions = true;
+                _placesSession = null; // search fired → next address entry starts a fresh Google session
                 if (verifiedAddressesList) verifiedAddressesList.classList.add('hidden');
                 _activeSuggestionIndex = -1;
 

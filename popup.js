@@ -382,6 +382,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         allEvents: [],
         parsedJobs: [],
         availability: { PHX: null, SOUTH: null, NORTH: null, ALL: null },
+        availabilityByWeek: {}, // Per-week availability keyed by week's Sunday ISO (visible range can span weeks)
         weekDays: [], // This will now store the exact visible days
         addressInput: "",
         highlightedCity: null,
@@ -2161,6 +2162,59 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    // Sunday (UTC) ISO of the calendar week containing dISO — the key for
+    // state.availabilityByWeek. Matches the Sunday math used when fetching.
+    function weekSundayKey(dISO) {
+        const dt = new Date(dISO + "T12:00:00Z");
+        dt.setUTCDate(dt.getUTCDate() - dt.getUTCDay());
+        return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+    }
+
+    // Availability map for the week that dISO falls in. Falls back to the primary
+    // week's data if that week wasn't fetched. This is what lets each day card
+    // read ITS OWN week's capacity when the visible range spans several weeks.
+    function getAvailabilityForDate(dISO) {
+        const byWeek = state.availabilityByWeek;
+        if (byWeek) {
+            const a = byWeek[weekSundayKey(dISO)];
+            if (a) return a;
+        }
+        return state.availability;
+    }
+
+    // Pure availability fetch for one Sunday's week — returns the
+    // {PHX,NORTH,SOUTH,ALL} map without mutating state or alerting. Used to fetch
+    // each additional visible week (see runScanFlow) so multi-week / agenda day
+    // cards don't all inherit the first week's numbers.
+    async function computeAvailabilityForSunday(sISO) {
+        if (!sISO || !CONFIG.apiKey || !settings.NEXT_SHEET_ID) return null;
+        const sunDate = new Date(`${sISO}T12:00:00Z`);
+        const monDate = new Date(sunDate);
+        monDate.setUTCDate(sunDate.getUTCDate() + 1);
+        const [primaryTab, secondaryTab] = await Promise.all([
+            discoverWeeklyTabNameForDate(monDate),
+            discoverWeeklyTabNameForDate(sunDate)
+        ]);
+        const [primaryData, secondaryData] = await Promise.all([
+            fetchCapacitiesForTab(primaryTab),
+            fetchCapacitiesForTab(secondaryTab)
+        ]);
+        const avail = { PHX: null, SOUTH: null, NORTH: null, ALL: null };
+        if (!primaryData && !secondaryData) return avail;
+        for (const region of ['PHX', 'NORTH', 'SOUTH']) {
+            const pData = primaryData?.[region], sData = secondaryData?.[region];
+            if (!pData && !sData) { avail[region] = null; continue; }
+            const m = { B1: [], B2: [], B3: [], B4: [] };
+            for (const key of ['B1', 'B2', 'B3', 'B4']) {
+                for (let i = 0; i < 6; i++) m[key][i] = pData?.[key]?.[i] ?? 0;
+                m[key][6] = sData?.[key]?.[6] ?? 0;
+            }
+            avail[region] = m;
+        }
+        avail.ALL = CONFIG.sumMaps(CONFIG.sumMaps(avail.PHX, avail.NORTH), avail.SOUTH);
+        return avail;
+    }
+
     async function fetchSheetCapacitiesForSunday(sISO) {
         if (!sISO || !CONFIG.apiKey || !settings.NEXT_SHEET_ID) return;
         addLog('Fetching capacities...');
@@ -2364,7 +2418,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function renderDayCard(dateStr, eventsForDay) {
-        const totals = CONFIG.computeDailyTotals(dateStr, eventsForDay, state.availability, state.currentRegion);
+        // Use the availability for THIS date's week (the visible range may span
+        // several weeks; each card must read its own week's capacity).
+        const dayAvail = getAvailabilityForDate(dateStr);
+        const totals = CONFIG.computeDailyTotals(dateStr, eventsForDay, dayAvail, state.currentRegion);
         const d = new Date(dateStr + "T00:00");
         const card = document.createElement("div");
         card.className = "day-card"; card.dataset.date = dateStr;
@@ -2648,7 +2705,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             div.className = "block-item"; div.dataset.blockKey = blk.key;
 
             const booked = totals.perBlockBooked[blk.key] || 0;
-            const cap = CONFIG.getCapacity(state.currentRegion, d.getDay(), blk.key, state.availability);
+            const cap = CONFIG.getCapacity(state.currentRegion, d.getDay(), blk.key, dayAvail);
             const remaining = Number.isFinite(cap) ? cap - booked : null;
 
             if (remaining !== null && remaining < 0) div.classList.add("over");
@@ -4202,13 +4259,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 state.weekDays = visibleDates.datesISO;
                 pageDatesISO = visibleDates.datesISO;
 
-                const firstDate = new Date(state.weekDays[0] + "T12:00:00Z");
-                const dayOfWeek = firstDate.getUTCDay();
-                const sundayDate = new Date(firstDate);
-                sundayDate.setUTCDate(firstDate.getUTCDate() - dayOfWeek);
-                const sundayISO = `${sundayDate.getUTCFullYear()}-${String(sundayDate.getUTCMonth() + 1).padStart(2, '0')}-${String(sundayDate.getUTCDate()).padStart(2, '0')}`;
-
-                await fetchSheetCapacitiesForSunday(sundayISO);
+                // The visible range can cover MULTIPLE calendar weeks (agenda view
+                // shows several weeks at once). Fetch availability for EACH distinct
+                // week so every day card reads ITS OWN week's capacity — otherwise
+                // later weeks wrongly inherit the first week's numbers (e.g. a flex
+                // rep added to next week never shows up).
+                const distinctSundays = [...new Set(state.weekDays.map(weekSundayKey))].sort();
+                const firstSunday = distinctSundays[0];
+                await fetchSheetCapacitiesForSunday(firstSunday); // primary week: sets state.availability, dayCutoffs, empty-alert
+                state.availabilityByWeek = { [firstSunday]: state.availability };
+                const otherSundays = distinctSundays.filter(s => s !== firstSunday);
+                const otherAvail = await Promise.all(otherSundays.map(s => computeAvailabilityForSunday(s)));
+                otherSundays.forEach((s, i) => { if (otherAvail[i]) state.availabilityByWeek[s] = otherAvail[i]; });
 
                 state.allEvents = eventData?.events || [];
                 state.parsedJobs = state.allEvents.map(ev => CONFIG.parseJobDetails(ev));

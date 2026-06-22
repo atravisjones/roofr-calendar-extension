@@ -37,6 +37,8 @@
       state: check.eligible ? "pending" : "terminal",
       outcome: check.eligible ? null : "skipped",
       beforeState: null,
+      ownerOk: null,
+      ownerError: null,
       error: check.eligible ? null : { reason: check.reason }
     };
   }
@@ -125,9 +127,27 @@
       eventId: unit.eventId,
       before: before ?? null,
       after: after ?? null,
+      ownerOk: unit.ownerOk,
+      ownerError: unit.ownerError,
       outcome
     });
     await checkpoint(state);
+  }
+
+  async function setOwnerForUnit(api, unit) {
+    if (typeof api.setJobOwner !== "function") {
+      throw new Error("RoofrApi.setJobOwner is unavailable");
+    }
+    try {
+      const result = await api.setJobOwner(unit.jobId, unit.repUserId);
+      unit.ownerOk = Boolean(result?.ok);
+      unit.ownerError = unit.ownerOk ? null : { reason: "owner_verify_failed" };
+      return result;
+    } catch (error) {
+      unit.ownerOk = false;
+      unit.ownerError = api.serializeError ? api.serializeError(error) : { message: error.message || String(error) };
+      throw error;
+    }
   }
 
   async function execute(config = {}) {
@@ -148,17 +168,17 @@
       let before;
       try {
         before = await api.getEvent(unit.eventId);
+        // The single-event GET omits job_id; restore it from the work unit
+        // (bound from the loaded day-event) so eligibility doesn't skip as null_job_id.
+        if (before && (before.job_id === null || before.job_id === undefined || before.job_id === "")) {
+          before.job_id = unit.jobId;
+        }
         unit.beforeState = before;
         await checkpoint(state);
 
         const freshCheck = eligibility(before, unit.repUserId);
         if (!freshCheck.eligible) {
           await finishUnit(state, unit, "skipped", before, before, { reason: freshCheck.reason });
-          continue;
-        }
-
-        if (detailAttendeeIds(before).has(String(unit.repUserId))) {
-          await finishUnit(state, unit, "already_correct", before, before, null);
           continue;
         }
 
@@ -174,12 +194,32 @@
           break;
         }
 
+        if (detailAttendeeIds(before).has(String(unit.repUserId))) {
+          unit.state = "writing_owner";
+          await checkpoint(state);
+          state.writesThisRun += 1;
+          const ownerResult = await setOwnerForUnit(api, unit);
+          if (ownerResult.ok) {
+            await finishUnit(state, unit, "already_correct", before, before, null);
+          } else {
+            await finishUnit(state, unit, "failed", before, before, unit.ownerError);
+          }
+          continue;
+        }
+
         unit.state = "writing";
         await checkpoint(state);
         const result = await api.addAttendee(unit.eventId, unit.repUserId);
         state.writesThisRun += 1;
         if (result.verified) {
-          await finishUnit(state, unit, "verified_success", result.before, result.after, null);
+          unit.state = "writing_owner";
+          await checkpoint(state);
+          const ownerResult = await setOwnerForUnit(api, unit);
+          if (ownerResult.ok) {
+            await finishUnit(state, unit, "verified_success", result.before, result.after, null);
+          } else {
+            await finishUnit(state, unit, "failed", result.before, result.after, unit.ownerError);
+          }
         } else {
           const ambiguous = Boolean(result.error?.ambiguous);
           await finishUnit(state, unit, ambiguous ? "needs_review" : "failed", result.before || before, result.after, result.error);

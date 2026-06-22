@@ -219,6 +219,24 @@
     return unwrapData(await getWithRetry(`/api/job/${encodeURIComponent(id)}`));
   }
 
+  async function setJobOwner(jobId, userId) {
+    const before = await getJob(jobId);
+    const customerId = before?.customer_id ?? before?.customer?.id;
+    if (customerId === null || customerId === undefined || customerId === "") {
+      throw structuredError("network", `Job ${jobId} is missing customer_id`);
+    }
+    await request(`/api/job/${encodeURIComponent(jobId)}/assignee`, {
+      method: "PUT",
+      body: { assignee_id: userId, customer_id: customerId }
+    });
+    const after = await getJob(jobId);
+    return {
+      ok: String(after?.job_owner?.id ?? "") === String(userId),
+      before,
+      after
+    };
+  }
+
   async function performAttendeeWrite(id, before, payload) {
     const expectedIds = attendeeIdSet(payload.attendees);
     const beforeIds = attendeeIdSet(getDetailAttendees(before));
@@ -286,6 +304,7 @@
     getDayEvents,
     getEvent,
     getJob,
+    setJobOwner,
     setEventAttendees,
     addAttendee,
     deleteEvent,

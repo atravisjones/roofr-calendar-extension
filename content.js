@@ -11,6 +11,7 @@
     ROOFR_API_GET_DAY_EVENTS: (msg) => window.RoofrApi.getDayEvents(msg.dateStr),
     ROOFR_API_GET_EVENT: (msg) => window.RoofrApi.getEvent(msg.id ?? msg.eventId),
     ROOFR_API_GET_JOB: (msg) => window.RoofrApi.getJob(msg.id ?? msg.jobId),
+    ROOFR_API_SET_JOB_OWNER: (msg) => window.RoofrApi.setJobOwner(msg.jobId, msg.userId),
     ROOFR_API_ADD_ATTENDEE: async (msg) => {
       if (msg.dryRun) {
         const before = await window.RoofrApi.getEvent(msg.eventId);
@@ -5397,17 +5398,17 @@ async function refreshCalendarViaTeamToggle(memberName) {
   };
   const cb = findCb(name);
   if (!cb) return { ok: false, reason: `${name} checkbox not found` };
-  const original = cb.checked;
-  // Toggle to opposite, then back — two clicks = net no-op for his selection, but Roofr
-  // re-fetches the calendar on each filter change. Works whether he started on or off.
-  // Click to opposite then back. We just KICK the re-fetch here and give it a brief head
-  // start; the scan separately waits for the content to settle (WAIT_CALENDAR_STABLE) before
-  // it extracts, so this doesn't need to block for the full load.
-  cb.click(); await wait(650);
-  cb.click(); await wait(700);
-  // Safety: if a click didn't register, correct back to the original state.
-  if (cb.checked !== original) { cb.click(); await wait(400); }
-  return { ok: true, toggled: true, member: name, restoredTo: original, view };
+  const before = cb.checked;
+  // SINGLE toggle: flip his checkbox once (check OR uncheck) and LEAVE it flipped. Any filter
+  // change makes Roofr re-fetch the calendar, so one click is enough to KICK the refresh —
+  // we no longer click a second time to restore his prior state. His box simply alternates
+  // on/off across scans (net no-op over any two scans), which halves the work vs the old
+  // toggle-and-restore (that fired a second re-fetch the scan then had to wait out). We give
+  // the re-fetch a brief head start here; the scan separately waits for the content to settle
+  // (WAIT_CALENDAR_STABLE) before it extracts, so this only needs a brief head start — the
+  // stable-wait's own initial poll delay covers the rest.
+  cb.click(); await wait(300);
+  return { ok: true, toggled: true, member: name, from: before, to: cb.checked, view };
 }
 
 // Wait until the calendar's event DOM stops changing — i.e. Roofr has finished loading /

@@ -4100,6 +4100,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     // triggers until it finishes (cleared anywhere scanBtn is re-enabled below).
     let scanInProgress = false;
     let _scanGuardTimer = null;
+    // When Roofr's calendar was last force-reloaded (scan toggle OR the 3-min background
+    // refresh both stamp this). Scans within CALENDAR_FRESH_MS trust the loaded data and skip
+    // the costly reload + stable-wait. 0 = unknown (first scan always forces a reload).
+    let lastCalendarRefreshAt = 0;
+    const CALENDAR_FRESH_MS = 75 * 1000;
     async function runScanFlow(isAuto = false) {
         if (scanInProgress) {
             addLog("Scan already in progress — ignoring duplicate trigger.");
@@ -4126,7 +4131,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const profile = userPrefs.scanProfile || 'retail';
         addLog(`Applying scan profile: ${profile}`);
         await sendFindCommand({ type: "APPLY_SCAN_PROFILE", profile });
-        await new Promise(r => setTimeout(r, 600));
+        await new Promise(r => setTimeout(r, 250));
 
         // Ensure the calendar is in the chosen scan view (agenda/weekly/daily). Switch only if needed.
         const desiredView = userPrefs.scanView || 'weekly';
@@ -4143,40 +4148,53 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (deptNames.length) {
                 addLog(`Narrowing team to ${profile} (${deptNames.length})...`);
                 await sendFindCommand({ type: "SELECT_ONLY_TEAM_MEMBERS", names: deptNames });
+                await new Promise(r => setTimeout(r, 300));
+            }
+        }
+
+        // GATE: a scan can read stale data because Roofr doesn't reload on event-type/profile
+        // changes alone. We fix that by toggling Yousef Ayad's checkbox (a filter change forces
+        // a re-fetch) — a SINGLE click left flipped, alternating each scan. BUT the reload +
+        // settle is the bulk of scan time, so we SKIP it when the calendar was refreshed within
+        // CALENDAR_FRESH_MS (by a prior scan or the 3-min background refresh) and just read the
+        // already-loaded data. The content handler skips daily view (exempt per spec).
+        const freshAgeMs = Date.now() - lastCalendarRefreshAt;
+        const calendarIsFresh = lastCalendarRefreshAt > 0 && freshAgeMs < CALENDAR_FRESH_MS;
+        if (calendarIsFresh) {
+            addLog(`Calendar refreshed ${Math.round(freshAgeMs / 1000)}s ago — skipping reload (fresh).`);
+            // No reload was triggered, so the data is already loaded. Just give the client-side
+            // profile filter a brief moment to finish re-rendering before we extract.
+            await new Promise(r => setTimeout(r, 400));
+        } else {
+            addLog("Refreshing Roofr calendar (team-toggle) before scan...");
+            let refreshed = await sendFindCommand({ type: "REFRESH_CALENDAR_TOGGLE", member: "Yousef Ayad" });
+            if (refreshed && refreshed.skipped) {
+                addLog(`Refresh skipped: ${refreshed.reason}.`);
+            } else if (!refreshed || !refreshed.ok) {
+                // Toggle didn't take (e.g., the Team panel/checkbox wasn't ready). Retry once
+                // before reading, so we don't scan un-refreshed data.
+                addLog("Refresh toggle didn't take — retrying once before scanning...", "WARN");
                 await new Promise(r => setTimeout(r, 800));
+                refreshed = await sendFindCommand({ type: "REFRESH_CALENDAR_TOGGLE", member: "Yousef Ayad" });
+                if (!refreshed || !refreshed.ok) {
+                    addLog("Could not toggle Yousef to refresh — check the exact name in Roofr's Team filter. Scan may show stale data.", "ERROR");
+                }
             }
-        }
-
-        // GATE: do NOT extract events until a toggle has forced Roofr to re-fetch — Roofr
-        // doesn't reload on event-type/profile changes alone, so without this the scan can
-        // read stale data. Reps do this manually by toggling a name; we toggle Yousef Ayad
-        // (his prior state is restored). The content handler waits for the re-fetch to finish
-        // before returning, and skips daily view (daily is exempt per spec).
-        addLog("Refreshing Roofr calendar (team-toggle) before scan...");
-        let refreshed = await sendFindCommand({ type: "REFRESH_CALENDAR_TOGGLE", member: "Yousef Ayad" });
-        if (refreshed && refreshed.skipped) {
-            addLog(`Refresh skipped: ${refreshed.reason}.`);
-        } else if (!refreshed || !refreshed.ok) {
-            // Toggle didn't take (e.g., the Team panel/checkbox wasn't ready). Retry once
-            // before reading, so we don't scan un-refreshed data.
-            addLog("Refresh toggle didn't take — retrying once before scanning...", "WARN");
-            await new Promise(r => setTimeout(r, 800));
-            refreshed = await sendFindCommand({ type: "REFRESH_CALENDAR_TOGGLE", member: "Yousef Ayad" });
-            if (!refreshed || !refreshed.ok) {
-                addLog("Could not toggle Yousef to refresh — check the exact name in Roofr's Team filter. Scan may show stale data.", "ERROR");
+            if (refreshed && refreshed.ok) {
+                lastCalendarRefreshAt = Date.now();
+                addLog(`Calendar refreshed via ${refreshed.member} toggle.`);
             }
-        }
-        if (refreshed && refreshed.ok) addLog(`Calendar refreshed via ${refreshed.member} toggle.`);
 
-        // GATE 2: don't extract until the (Sales − D2D) filter is applied AND the calendar
-        // content has finished loading. Wait for the event DOM to stop changing so we never
-        // read a half-loaded or pre-refresh set.
-        addLog("Waiting for calendar content to finish loading...");
-        const stableRes = await sendFindCommand({ type: "WAIT_CALENDAR_STABLE" });
-        if (stableRes && stableRes.timedOut) {
-            addLog(`Proceeded after load timeout (~${Math.round((stableRes.ms || 0) / 1000)}s, ${stableRes.count} events visible).`, "WARN");
-        } else if (stableRes && stableRes.ok) {
-            addLog(`Calendar content loaded (${stableRes.count} events).`);
+            // GATE 2: a reload was kicked — don't extract until the calendar content has finished
+            // loading. Wait for the event DOM to stop changing so we never read a half-loaded or
+            // pre-refresh set. (Skipped on the fresh path above, where nothing was reloaded.)
+            addLog("Waiting for calendar content to finish loading...");
+            const stableRes = await sendFindCommand({ type: "WAIT_CALENDAR_STABLE" });
+            if (stableRes && stableRes.timedOut) {
+                addLog(`Proceeded after load timeout (~${Math.round((stableRes.ms || 0) / 1000)}s, ${stableRes.count} events visible).`, "WARN");
+            } else if (stableRes && stableRes.ok) {
+                addLog(`Calendar content loaded (${stableRes.count} events).`);
+            }
         }
 
         // Polling logic to wait for content (retries ONLY the date/event detection).
@@ -4319,7 +4337,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // interval lives only as long as the side panel is open (its popup context).
     setInterval(() => {
         if (scanInProgress) return;
-        sendFindCommand({ type: "REFRESH_CALENDAR_TOGGLE", member: "Yousef Ayad" }).catch(() => {});
+        sendFindCommand({ type: "REFRESH_CALENDAR_TOGGLE", member: "Yousef Ayad" })
+            .then(r => { if (r && r.ok) lastCalendarRefreshAt = Date.now(); })
+            .catch(() => {});
     }, 3 * 60 * 1000);
 
     // Helper function to send command to a specific tab
@@ -9382,6 +9402,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         async getJob(jobId) {
             return reportsV2ResponseData(await reportsV2Send({ type: 'ROOFR_API_GET_JOB', jobId }));
         },
+        async setJobOwner(jobId, userId) {
+            const result = await reportsV2Send({ type: 'ROOFR_API_SET_JOB_OWNER', jobId, userId });
+            if (result?.ok === false && result.error) {
+                reportsV2ResponseData(result);
+            }
+            return result || { ok: false, error: { message: 'No response from Roofr tab' } };
+        },
         async addAttendee(eventId, userId) {
             const result = await reportsV2Send({ type: 'ROOFR_API_ADD_ATTENDEE', eventId, userId });
             if (result?.before) await reportsV2Harvest(result.before);
@@ -9663,9 +9690,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         reportsV2Progress.style.display = 'block';
         reportsV2Progress.textContent = state.units.map(unit => {
             const detail = unit.error?.reason || unit.error?.message || '';
-            return `event:${unit.eventId} -> rep:${unit.repUserId || 'none'} | ${unit.outcome || unit.state}${detail ? ` (${detail})` : ''}`;
+            const ownerText = unit.ownerOk === null || unit.ownerOk === undefined ? 'ownerOk:n/a' : `ownerOk:${unit.ownerOk}`;
+            return `event:${unit.eventId} job:${unit.jobId || 'none'} -> rep:${unit.repUserId || 'none'} | ${unit.outcome || unit.state} | ${ownerText}${detail ? ` (${detail})` : ''}`;
         }).join('\n');
         const tally = window.RoofrReportsBatch.tally(state.units);
+        const ownerOk = (state.units || []).filter(unit => unit.ownerOk === true).length;
+        const ownerFailed = (state.units || []).filter(unit => unit.ownerOk === false).length;
         reportsV2Tally.style.display = 'block';
         reportsV2Tally.textContent = [
             `verified_success ${tally.verified_success}`,
@@ -9675,6 +9705,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             `failed ${tally.failed}`,
             `needs_review ${tally.needs_review}`,
             `pending ${tally.pending}`,
+            `owner_ok ${ownerOk}`,
+            `owner_failed ${ownerFailed}`,
             state.stoppedReason ? `stopped: ${state.stoppedReason}` : ''
         ].filter(Boolean).join(' · ');
     }

@@ -78,7 +78,7 @@
     return true;
   }
 
-  function buildEventAttendeePayload(detail, attendees) {
+  function buildEventAttendeePayload(detail, attendees, jobId) {
     if (!detail || !detail.calendar_event_type) {
       throw structuredError("network", "Event detail is missing calendar_event_type");
     }
@@ -93,6 +93,17 @@
       attendees: normalizeAttendees(attendees)
     };
     if (Object.prototype.hasOwnProperty.call(detail, "location")) payload.location = detail.location;
+    // CRITICAL: preserve the event<->job link. A full PUT replaces the whole event,
+    // and Roofr keys the job association on context_type/context_id. The single-event
+    // GET omits these, so the caller passes jobId (from the day-event list). Without
+    // them the write silently detaches the appointment from its job card.
+    const contextId = (jobId !== undefined && jobId !== null && jobId !== "")
+      ? jobId
+      : (detail.context_id ?? detail.job_id);
+    if (contextId !== undefined && contextId !== null && contextId !== "") {
+      payload.context_type = "job";
+      payload.context_id = contextId;
+    }
     return payload;
   }
 
@@ -270,14 +281,14 @@
     });
   }
 
-  async function addAttendee(eventId, userId) {
+  async function addAttendee(eventId, userId, jobId) {
     const before = await getEvent(eventId);
     const attendees = normalizeAttendees(getDetailAttendees(before));
     if (attendeeIdSet(attendees).has(String(userId))) {
       return { ok: true, before, after: before, verified: true, alreadyCorrect: true };
     }
     attendees.push({ id: userId, type: "user" });
-    const payload = buildEventAttendeePayload(before, attendees);
+    const payload = buildEventAttendeePayload(before, attendees, jobId);
     return performAttendeeWrite(eventId, before, payload);
   }
 

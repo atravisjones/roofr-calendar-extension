@@ -1747,6 +1747,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     function startOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
     function toISO(d) { return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); }
     const localDayKey = (isoLocal) => isoLocal ? String(isoLocal).slice(0, 10) : "";
+    // Business-timezone (America/Phoenix) date helpers. Use these for "today"/"tomorrow" so the
+    // scanner's date math matches Arizona for reps anywhere — the machine clock is irrelevant.
+    function phoenixTodayISO() {
+        return new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'America/Phoenix', year: 'numeric', month: '2-digit', day: '2-digit'
+        }).format(new Date());
+    }
+    function addDaysISO(iso, n) {
+        const [y, m, d] = iso.split('-').map(Number);
+        const dt = new Date(Date.UTC(y, m - 1, d));
+        dt.setUTCDate(dt.getUTCDate() + n);
+        return dt.toISOString().slice(0, 10);
+    }
 
     /* ========= Roofr bridge ========= */
     async function sendFindCommand(payload) {
@@ -2378,7 +2391,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const card = document.createElement("div");
         card.className = "day-card"; card.dataset.date = dateStr;
 
-        const todayISO = toISO(startOfDay(new Date()));
+        const todayISO = phoenixTodayISO();
         const isPast = dateStr < todayISO;
         const isToday = dateStr === todayISO;
         if (isToday) card.classList.add("today");
@@ -2391,9 +2404,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const mstHours = (utcHours + mstOffset + 24) % 24;
         const isAfter5pmMST = mstHours >= 17;
 
-        const tomorrow = new Date(startOfDay(new Date()));
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        const tomorrowISO = toISO(tomorrow);
+        const tomorrowISO = addDaysISO(todayISO, 1);
         const isTomorrowAfterCutoff = dateStr === tomorrowISO && isAfter5pmMST;
 
         // Check if this day is cutoff (but not for past days)
@@ -3127,9 +3138,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const scanView = userPrefs?.scanView || 'weekly';
         let week = state.weekDays;
         if (scanView !== 'daily') {
-            const t = new Date();
-            t.setDate(t.getDate() - 1); // cutoff = yesterday (inclusive)
-            const cutoffISO = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+            const cutoffISO = addDaysISO(phoenixTodayISO(), -1); // cutoff = yesterday (Arizona), inclusive
             week = state.weekDays.filter(d => d >= cutoffISO);
         }
         if (week.length === 0) {
@@ -4655,8 +4664,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function openDailyCalendarForDate(dateStr) {
         try {
             const clickedDate = new Date(dateStr + "T00:00:00");
-            const today = startOfDay(new Date());
-            const todayISO = toISO(today);
+            const todayISO = phoenixTodayISO();
+            const today = new Date(todayISO + "T00:00:00");
             const isToday = dateStr === todayISO;
 
             addLog(`Opening daily calendar for ${dateStr} (${isToday ? 'today' : 'future date'})`);
@@ -4956,10 +4965,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     /* ========= Recommendation Logic ========= */
     function findBestSlotStacking(targetCity, weekDays, allEvents, availability, currentRegion) {
         const candidates = [];
-        const today = startOfDay(new Date());
-        const tomorrow = new Date(today);
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        const tomorrowISO = toISO(tomorrow);
+        const tomorrowISO = addDaysISO(phoenixTodayISO(), 1);
         const keyToIndex = { "B1": 0, "B2": 1, "B3": 2, "B4": 3 };
         const cityStr = targetCity.toUpperCase();
 
@@ -5267,10 +5273,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Find the slot with highest availability for each day (fallback when no city matches)
     function findHighestAvailabilitySlots(weekDays, allEvents, availability, currentRegion) {
         const candidates = [];
-        const today = startOfDay(new Date());
-        const tomorrow = new Date(today);
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        const tomorrowISO = toISO(tomorrow);
+        const tomorrowISO = addDaysISO(phoenixTodayISO(), 1);
 
         for (const dateStr of weekDays) {
             // Only recommend tomorrow or later
@@ -5479,8 +5482,7 @@ document.addEventListener('DOMContentLoaded', async () => {
      * No auto-navigation - just shows what's available on the current calendar.
      */
     function filterCandidatesForCurrentWeek(allCandidates) {
-        const today = startOfDay(new Date());
-        const todayISO = toISO(today);
+        const todayISO = phoenixTodayISO();
 
         // If no candidates on this week, just return empty
         if (allCandidates.length === 0) {
@@ -5583,9 +5585,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Update earliest available date tracking for this city
         const cityKey = primaryCity.toUpperCase();
-        const tomorrow = new Date(startOfDay(new Date()));
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        const tomorrowISO = toISO(tomorrow);
+        const tomorrowISO = addDaysISO(phoenixTodayISO(), 1);
 
         // Find earliest candidate from tomorrow onwards on current calendar
         const validCandidates = allCandidates.filter(c => c.dateStr >= tomorrowISO);
@@ -7732,11 +7732,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     let repAvailabilityStatus = {}; // { repName: true/false }
     let selectedDate = null; // The currently selected date for rep availability
 
-    // Initialize selected date to tomorrow
+    // Initialize selected date to tomorrow (in Arizona time, not the machine's local date)
     function initializeSelectedDate() {
-        const tomorrow = new Date();
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        tomorrow.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(addDaysISO(phoenixTodayISO(), 1) + "T00:00:00");
         selectedDate = tomorrow;
         return tomorrow;
     }
@@ -7747,13 +7745,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             const sheetId = settings.NEXT_SHEET_ID;
             if (!apiKey || !sheetId) return {};
 
-            // Use provided date or fall back to tomorrow
-            const checkDate = targetDate || (() => {
-                const tomorrow = new Date();
-                tomorrow.setDate(tomorrow.getDate() + 1);
-                tomorrow.setHours(0, 0, 0, 0);
-                return tomorrow;
-            })();
+            // Use provided date or fall back to tomorrow (Arizona time, not the machine's date)
+            const checkDate = targetDate || new Date(addDaysISO(phoenixTodayISO(), 1) + "T00:00:00");
 
             // Update selected date if not set
             if (!selectedDate) {
@@ -9261,7 +9254,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const REPORTS_V2_DIRECTORY_KEY = 'roofr_user_directory_v1';
     const REPORTS_V2_SEED_DIRECTORY = {
         '443464': { name: 'Travis Jones' },
-        '525242': { name: 'Stephen Chaidez' }
+        '525242': { name: 'Stephen Chaidez' },
+        '500123': { name: 'Connor Hamby' }
     };
     let reportsV2Directory = {};
     let reportsV2Events = [];
@@ -9409,8 +9403,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             return result || { ok: false, error: { message: 'No response from Roofr tab' } };
         },
-        async addAttendee(eventId, userId) {
-            const result = await reportsV2Send({ type: 'ROOFR_API_ADD_ATTENDEE', eventId, userId });
+        async addAttendee(eventId, userId, jobId) {
+            const result = await reportsV2Send({ type: 'ROOFR_API_ADD_ATTENDEE', eventId, userId, jobId });
             if (result?.before) await reportsV2Harvest(result.before);
             if (result?.after) await reportsV2Harvest(result.after);
             return result || { ok: false, verified: false, error: { message: 'No response from Roofr tab' } };

@@ -17,7 +17,7 @@
         const before = await window.RoofrApi.getEvent(msg.eventId);
         return { ok: true, before, after: before, verified: false, dryRun: true };
       }
-      return window.RoofrApi.addAttendee(msg.eventId, msg.userId);
+      return window.RoofrApi.addAttendee(msg.eventId, msg.userId, msg.jobId);
     }
   };
 
@@ -1199,6 +1199,30 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
+  // Project an absolute instant to America/Phoenix (the business timezone) wall-clock as
+  // "YYYY-MM-DDTHH:MM". Roofr encodes event class times in the BROWSER's local timezone, so a
+  // viewer outside Arizona (e.g. a rep on Colombia time, UTC-5 vs MST UTC-7) would otherwise
+  // bucket appointments into the wrong day/time-block — inflating the "X over" count.
+  // extractDateTimeFromClass rebuilds the correct instant from those local components; this pins
+  // the output to Arizona regardless of machine tz. On an Arizona machine Phoenix == local, so
+  // it's a no-op (zero regression).
+  function toPhoenixISO(d) {
+    const p = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Phoenix',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false
+    }).formatToParts(d).reduce((o, x) => (o[x.type] = x.value, o), {});
+    const hh = p.hour === '24' ? '00' : p.hour; // some engines emit '24' at midnight
+    return `${p.year}-${p.month}-${p.day}T${hh}:${p.minute}`;
+  }
+
+  // Today's date in America/Phoenix as "YYYY-MM-DD".
+  function phoenixTodayISO() {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Phoenix', year: 'numeric', month: '2-digit', day: '2-digit'
+    }).format(new Date());
+  }
+
   // Inject phone number into contacts search input (for CTM integration)
   async function injectContactSearch(phoneNumber) {
     console.log('[Roofr Extension] Injecting contact search for:', phoneNumber);
@@ -1688,8 +1712,8 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
           const e = parseTime12h(timeMatch[2]);
           if (s && e) {
             return {
-              start: toLocalISO(new Date(date.getFullYear(), date.getMonth(), date.getDate(), s.h, s.min)),
-              end: toLocalISO(new Date(date.getFullYear(), date.getMonth(), date.getDate(), e.h, e.min)),
+              start: toPhoenixISO(new Date(date.getFullYear(), date.getMonth(), date.getDate(), s.h, s.min)),
+              end: toPhoenixISO(new Date(date.getFullYear(), date.getMonth(), date.getDate(), e.h, e.min)),
               title: title,
               eventType: eventType,
               isAllDay: false
@@ -1700,9 +1724,13 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       return { start: null, end: null, title: title, eventType: eventType, isAllDay: isAllDay };
     }
 
+    // Timed events: pin to Arizona time so day/time-block bucketing is machine-tz-independent.
+    // All-day events are date-anchored (no instant); keep their date components as-is so a
+    // viewer outside Arizona doesn't shift them across midnight.
+    const fmt = isAllDay ? toLocalISO : toPhoenixISO;
     return {
-      start: toLocalISO(startDateTime),
-      end: endDateTime ? toLocalISO(endDateTime) : toLocalISO(startDateTime),
+      start: fmt(startDateTime),
+      end: endDateTime ? fmt(endDateTime) : fmt(startDateTime),
       title: title,
       eventType: eventType,
       isAllDay: isAllDay
@@ -1768,12 +1796,11 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
     // it's still May), we synthesize day 1 → EOM of that month so reps can
     // see the whole month, not just the days Roofr happened to render rows for.
     if (document.querySelector('[class*="AgendaContainer"]')) {
-      const now = new Date();
-      const year = now.getFullYear();
-      const month = now.getMonth();
-      const todayDay = now.getDate();
-      const todayISO = `${year}-${pad(month + 1)}-${pad(todayDay)}`;
-      const todayMonthKey = `${year}-${pad(month + 1)}`;
+      // "Today" in the business timezone (Arizona) so the past-day filter is correct for
+      // viewers outside Arizona — not the machine's local date.
+      const todayISO = phoenixTodayISO();
+      const todayMonthKey = todayISO.slice(0, 7);
+      const todayDay = Number(todayISO.slice(8, 10));
 
       // Discover which months are present in the agenda DOM.
       const monthsPresent = new Set([todayMonthKey]);

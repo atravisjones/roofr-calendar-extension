@@ -209,7 +209,7 @@
 
         unit.state = "writing";
         await checkpoint(state);
-        const result = await api.addAttendee(unit.eventId, unit.repUserId);
+        const result = await api.addAttendee(unit.eventId, unit.repUserId, unit.jobId);
         state.writesThisRun += 1;
         if (result.verified) {
           unit.state = "writing_owner";

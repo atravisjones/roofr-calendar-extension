@@ -977,7 +977,7 @@ export const PEOPLE_DATA = {
     // Conor Smith, Jayda Fairfield, Raven Pelfrey, Travis Jones are intentional duplicates —
     // they're also Production/CSR but Travis wants them shown under Management too.
     MGMT: ["Andrew Clark", "Anthony Bonomo", "Bradley Crohurst", "Brenda Ochoa", "Conor Smith", "Jayda Fairfield", "Nikolas Pagoulatos", "Raven Pelfrey", "Travis Jones", "Yousef Ayad"].sort(),
-    CSRS: ["Bronté Pisz", "Diva Shahpur", "Khamilah Valles", "Madi Meyers", "Nica Javier", "Travis Jones"].sort(),
+    CSRS: ["Bronté Pisz", "Diva Shahpur", "Khamilah Valles", "Madi Meyers", "Mariana Ceballos", "Nica Javier", "Travis Jones"].sort(),
 
     // PRODUCTION / INSURANCE / D2D are live-synced from the Company Team Roster sheet
     // (Department column) on each People-tab load — see fetchRosterGroups() in popup.js.
@@ -995,6 +995,7 @@ export const PEOPLE_DATA = {
         "Alex Tillotson": "USRB5384A8A5D54C211ABA4C4FF265EA00F",
         "Nica Javier": "USRC30FF30726A9F646577F250938765D31",
         "Khamilah Valles": "USRC30FF30726A9F646BB8E4B63EF5677D9",
+        "Mariana Ceballos": "USR3BC964E3CA5C4BF656194430839D95D6",
         "Caite": "USR3C843ED7AB9B47118D66E874FF6151FD",
         "Anthony Espinosa": "USRC30FF30726A9F646798C58AF597D98E0",
         "Aaron Munz": "USR3C843ED7AB9B4711D25580F0C1D45997",

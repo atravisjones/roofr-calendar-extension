@@ -2465,6 +2465,26 @@
       font-weight: 600;
     }
 
+    /* Quick Link (company tools hub) — orange accent */
+    .suggestion-item.link-match {
+      border-left-color: #f97316;
+      background: linear-gradient(90deg, rgba(249, 115, 22, 0.10) 0%, transparent 40%);
+    }
+    .suggestion-item.link-match:hover {
+      background: linear-gradient(90deg, rgba(249, 115, 22, 0.18) 0%, var(--surface-hover) 40%);
+    }
+    .link-match .match-primary {
+      font-weight: 700;
+      color: var(--text-main);
+      line-height: 1.3;
+    }
+    .link-match .match-meta {
+      font-size: 0.75rem;
+      color: #ea580c;
+      margin-top: 1px;
+      font-weight: 600;
+    }
+
     /* Keyboard-active state for arrow navigation */
     .suggestion-item.keyboard-active {
       background: var(--surface-active, #e0f2fe) !important;

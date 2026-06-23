@@ -567,6 +567,102 @@ document.addEventListener('DOMContentLoaded', async () => {
     let _geoAbort = null; // AbortController for the in-flight address-suggestion fetch (cancelled on next keystroke)
     let _placesSession = null; // Google Places autocomplete session token — one per address entry, consumed on selection (keeps cost in the free tier)
 
+    // ========= Quick Links (company tools hub) =========
+    // Typing in the calendar search surfaces matching company tool links as ORANGE
+    // suggestions. Pulled LIVE from arizona-roofers-tools.vercel.app (so any card added
+    // to the hub auto-appears here), with this baked-in snapshot as the offline fallback.
+    const HUB_LINKS_BASE = 'https://arizona-roofers-tools.vercel.app';
+    const HUB_LINKS_FALLBACK = [
+      { t: 'Monsoon Season', u: 'https://monsoon-season.vercel.app', k: 'monsoon season tv display conference room lead center hype dashboard widgets music jukebox soundboard' },
+      { t: 'Speed to Lead', u: 'https://speed-to-leads.vercel.app', k: 'ctm speed to lead uncalled leads dashboard agent stats' },
+      { t: 'Rep Scheduler', u: 'https://az-roofers-tech-scheduler.vercel.app/', k: 'rep scheduler scheduling availability appointments' },
+      { t: 'Production Map', u: 'https://az-production-map.vercel.app', k: 'production map gps trucks installs material drops walkthroughs weather radar' },
+      { t: 'Roofr Job Search', u: 'https://roofr-search.vercel.app', k: 'roofr job search master sheet address owner stage' },
+      { t: 'KPI Dashboard', u: 'https://az-roofers-kpi.vercel.app', k: 'kpi dashboard metrics overview sales production finance insurance door knocking leads' },
+      { t: 'Training Attendance', u: 'https://training-attendance.vercel.app', k: 'training attendance tracking reps am pm' },
+      { t: 'Team Contacts', u: 'team-contacts.html', k: 'team contacts import phone roster onboarding vcf google' },
+      { t: 'Roofr', u: 'https://app.roofr.com/dashboard/team/239329/jobs', k: 'roofr crm pipeline estimates contracts production' },
+      { t: 'CallTrackingMetrics', u: 'https://app.calltrackingmetrics.com/calls', k: 'calltrackingmetrics ctm call log recordings agent activity lead source' },
+      { t: 'Lead Truffle', u: 'https://app.leadtruffle.com/leads', k: 'leadtruffle lead truffle leads workflows automation' },
+      { t: 'Meeting Room', u: 'https://meet.google.com/ntd-wksz-puj', k: 'meeting room google meet team calls' },
+      { t: 'Calendar Extension', u: 'https://drive.google.com/drive/folders/1rS_onL-NIqCm6hOyQngn1HVof_vx01Mx?usp=sharing', k: 'calendar extension chrome download install' },
+      { t: 'All Spreadsheets', u: 'https://docs.google.com/spreadsheets/d/1cQmwCxWCTXAhNV3KertNuCUB41uNGjqZi9NumWv274w/edit?gid=0#gid=0', k: 'all spreadsheets master index directory' },
+      { t: 'Outcomes Tracker', u: 'https://docs.google.com/spreadsheets/d/1TtweJEEhVEO_DAgmvTY7PcaPQdmbxlOtPfffKdiXBcw/edit?gid=1729256075#gid=1729256075', k: 'appointment outcomes tracker results sales follow-up' },
+      { t: 'Daily KPIs', u: 'https://docs.google.com/spreadsheets/d/1Yo5zNhOI0fo8i2IgykxeUVLjyBYpVTcm1b3Ut4GGelc/edit?gid=2085167582#gid=2085167582', k: 'daily kpi key performance indicators metrics' },
+      { t: 'Company Contacts', u: 'https://docs.google.com/spreadsheets/d/1XFJHD0IVZ8sJrQ7H2CrqU26a6n-FulPM8ABKc1hrh9o/edit?gid=0#gid=0', k: 'company contacts team directory info' },
+      { t: 'Lead Tracking', u: 'https://docs.google.com/spreadsheets/d/1LY_Gu4noq99DQ-TjS0Gm9qUvU6HhOzL4kLlj4u7uKxc/edit?gid=0#gid=0', k: 'lead tracking pipeline management leads form' },
+      { t: 'CSR Schedule', u: 'https://docs.google.com/spreadsheets/d/1M7sUgcrCDvlnKUo4l7VQ_tdSDqLXyDRTuaUK04XCkEs/edit?gid=2016674944#gid=2016674944', k: 'csr schedule customer service rep scheduling shift' },
+      { t: 'Refund Tracker', u: 'https://docs.google.com/spreadsheets/d/1PvNW-coD_XPgVjE8FVjmo3pVJHiccpcAAKYGL_cQIk0/edit?gid=1647746646#gid=1647746646', k: 'refund request tracker refunds customer money back' },
+      { t: 'Submit Refund', u: 'https://docs.google.com/forms/d/e/1FAIpQLScgD9L7vG6nOC2ZV6fE2SeK__3u2CNl_qyrzvgQ42xwA_mpqA/viewform', k: 'refund request form submit new refund' },
+      { t: 'Reimbursement Request', u: 'https://docs.google.com/forms/d/e/1FAIpQLSeBdZWJxvo97jsrRdJcXbug3z_xG-NWii-CZRCkmPgTmHYiLw/viewform', k: 'reimbursement request form submit expense employee' },
+      { t: 'Task List', u: 'https://docs.google.com/spreadsheets/d/14pj5qmZ4aRZoqUovPmgd2tEjTt8TQkIigaJ-yNdLkJs/edit?gid=859552318#gid=859552318', k: 'task list submit tasks checklist to do management assign' },
+      { t: 'Tarping Request', u: 'https://docs.google.com/forms/d/e/1FAIpQLSdcTNSdm0iVRYY45apJcKfFi8AngqvWRcjXyzfyvyfFhgiB-Q/viewform', k: 'tarping request form submit tarp roof emergency leak' },
+      { t: 'Tarping Task List', u: 'https://docs.google.com/spreadsheets/d/14pj5qmZ4aRZoqUovPmgd2tEjTt8TQkIigaJ-yNdLkJs/edit?resourcekey=&gid=1718143539#gid=1718143539', k: 'tarping task list tarp jobs tracking status schedule' },
+      { t: 'Roof Pro LSA', u: 'https://docs.google.com/spreadsheets/d/1ffa3ykIDUUj74OmszrZlq3LR8T2JTEBrtAgX0Rc-lqg/edit?gid=1991507099#gid=1991507099', k: 'roof pro lsa local services ads google ads leads tracking' },
+      { t: 'Intake Calls', u: 'https://docs.google.com/document/d/1HcyETaKhA0d_fSdzDdj9X5Pf3eSWTeAkuj0iHs2Fjjk/edit?tab=t.0', k: 'intake calls script inbound phone' },
+      { t: 'No-Legger Video Call', u: 'https://docs.google.com/document/d/1eLq-p3g4pjsPYhCms3ZVR2_fKmS_6SRsOLEhDWlmnkI/edit?tab=t.0', k: 'no-legger video call script remote' },
+      { t: 'New Construction Calls', u: 'https://docs.google.com/document/d/1trSvAeypsbEDIJ4yUbQ9-iK3b17W89zxFJpLW3LdIKU/edit?tab=t.0', k: 'new construction calls script building' },
+      { t: 'Real Estate Script', u: 'https://docs.google.com/document/d/1kjtD45-jxmtoFDkvpOBH37TbFDqIxRV081p9imPRq8g/edit?tab=t.0#heading=h.ks93ctvvkerv', k: 'real estate inspections script call' },
+      { t: 'Free Roof Promo', u: 'https://docs.google.com/document/d/1nHmBcxAYl_rZglIdXIWadn32SJ9PLXuMKOrUoIz4kZo/edit?tab=t.0#heading=h.efj2c1gls5lb', k: 'win free roof promotion script call' },
+      { t: 'Referrals Guide', u: 'https://docs.google.com/document/d/1u1o5Ij1PRP9TXSJyW5SubFF8nbKMkmyJFZJ9MG9rcz4/edit?tab=t.0#heading=h.g02fsfn0d3zx', k: 'referrals guide referral program talking points' },
+      { t: 'Who to Book', u: 'https://docs.google.com/document/d/17V9vVgUuDFa-gSqq0aqdwIEYrXnM4kfTlQSjRkN18gY/edit?tab=t.0', k: 'who to book guide rep appointments booking' },
+      { t: 'Lost vs Unqualified', u: 'https://docs.google.com/document/d/1ageFvljDRjqss645d1tFyJ_-aYLhKwoXmV6glSsO2YQ/edit?tab=t.0', k: 'lost unqualified disposition guide criteria' },
+      { t: 'Christmas Party Call List', u: 'https://docs.google.com/document/d/1ZDyDXvJ7cjTLXg2GNPaggreeYnO7EDul1TIAgMRAsRo/edit?tab=t.0', k: 'christmas party call list holiday event invitations outreach' },
+      { t: 'Hiring Script', u: 'https://docs.google.com/document/d/1FQKwntUVb_igXon4z-jhxhi8_wtozhgzZHfWKPEyVWc/edit?tab=t.0', k: 'hiring script recruiting new hire interview candidate onboarding' },
+      { t: 'RE Inspection Fee Training', u: 'https://docs.google.com/presentation/d/1PLFZs9qWW58Ij6gtUPXPFDhT0VFInPfotufc7CKDUP4/edit?slide=id.p2#slide=id.p2', k: 'real estate inspection fee training slides presentation' },
+      { t: 'Tarping Benefits', u: 'https://docs.google.com/document/d/1FRTb3shFFbM1ng1e-dsK4b_YrNd7ToEkGrydTp8iO0A/edit?tab=t.0#heading=h.lvlvivj7e4n2', k: 'tarping benefits tarp roof protection value talking points' },
+      { t: 'Tarping SOP', u: 'https://docs.google.com/document/d/1ekxsrEGjdmIReJYzzXpeqCex4det0zu4h9rOsL2JAcY/edit?tab=t.0#heading=h.r1ixdcvw5cdy', k: 'tarping sop standard operating procedure tarp install process steps' },
+    ];
+    function _absLinkUrl(u) {
+        if (!u) return '';
+        return /^https?:\/\//i.test(u) ? u : `${HUB_LINKS_BASE}/${String(u).replace(/^\//, '')}`;
+    }
+    function _normalizeHubLink(l) {
+        const url = _absLinkUrl(l.u || l.url);
+        const title = (l.t || l.title || '').trim();
+        let host = '';
+        try { host = new URL(url).hostname.replace(/^www\./, ''); } catch (e) {}
+        return { title, url, host, keywords: `${l.k || l.keywords || ''} ${title}`.toLowerCase() };
+    }
+    let _hubLinks = HUB_LINKS_FALLBACK.map(_normalizeHubLink);
+
+    async function loadHubLinks() {
+        try {
+            const { hubLinksCache: c } = await chrome.storage.local.get('hubLinksCache');
+            if (c && Array.isArray(c.links) && c.links.length) {
+                _hubLinks = c.links;
+                if ((Date.now() - (c.ts || 0)) < 6 * 60 * 60 * 1000) return; // fresh enough
+            }
+        } catch (e) { /* fall through to live fetch */ }
+        try {
+            const res = await fetch(`${HUB_LINKS_BASE}/`, { credentials: 'omit' });
+            if (!res.ok) return;
+            const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+            const links = [];
+            for (const a of doc.querySelectorAll('a.card')) {
+                const url = _absLinkUrl(a.getAttribute('href'));
+                const title = (a.querySelector('.card-title')?.textContent || '').trim();
+                if (!url || !title) continue;
+                links.push(_normalizeHubLink({ t: title, u: url, k: a.getAttribute('data-search') || '' }));
+            }
+            if (links.length) {
+                _hubLinks = links;
+                try { await chrome.storage.local.set({ hubLinksCache: { ts: Date.now(), links } }); } catch (e) {}
+            }
+        } catch (e) { /* keep cache/fallback */ }
+    }
+
+    function getHubLinkMatches(query) {
+        const q = String(query || '').trim().toLowerCase();
+        if (q.length < 2) return [];
+        const out = [];
+        for (const l of _hubLinks) {
+            if (l.keywords.includes(q)) { out.push(l); if (out.length >= 6) break; }
+        }
+        return out;
+    }
+    loadHubLinks().catch(() => {});
+
     function _buildSuggestionCatalog() {
         if (!_roofrDataCache || !_roofrDataCache.length) return null;
         const catalog = {
@@ -769,6 +865,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function selectCalendarSuggestion(suggestion) {
         if (!suggestion) return;
+
+        if (suggestion.group === 'Link') {
+            if (suggestion.url) chrome.tabs.create({ url: suggestion.url });
+            return;
+        }
 
         if (suggestion.group === 'Customer') {
             const jobs = suggestion.jobs || [];
@@ -1172,6 +1273,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         verifiedAddressesList.innerHTML = '';
         const addedNormalized = new Set();
         let hasResults = false;
+
+        // ═══ SECTION 0: Quick Links (company tools hub) — orange ═══
+        const linkMatches = getHubLinkMatches(query);
+        if (linkMatches.length) {
+            const hdr = document.createElement('div');
+            hdr.className = 'suggestion-section-header';
+            hdr.textContent = 'Links';
+            verifiedAddressesList.appendChild(hdr);
+            for (const link of linkMatches) {
+                const el = document.createElement('div');
+                el.className = 'suggestion-item link-match';
+                el.innerHTML = `<div class="match-primary">${_highlightMatch(link.title, query)}</div>` +
+                    `<div class="match-meta">${_escapeHtml(link.host)}</div>`;
+                el.addEventListener('mousedown', (e) => e.preventDefault());
+                el.addEventListener('click', () => {
+                    verifiedAddressesList.classList.add('hidden');
+                    chrome.tabs.create({ url: link.url });
+                });
+                verifiedAddressesList.appendChild(el);
+                _suggestionItems.push(el);
+                el.__suggestion = { group: 'Link', url: link.url };
+                hasResults = true;
+            }
+        }
 
         // ═══ SECTION 1: DB Catalog Matches (grouped) ═══
         const catalogResults = _queryMatchesCatalog(query, _suggestionCatalog);

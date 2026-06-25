@@ -5438,38 +5438,64 @@ async function refreshCalendarViaTeamToggle(memberName) {
   return { ok: true, toggled: true, member: name, from: before, to: cb.checked, view };
 }
 
-// Wait until the calendar's event DOM stops changing — i.e. Roofr has finished loading /
-// re-fetching after the filters + refresh-toggle — so the scan never reads a half-loaded or
-// pre-refresh set. Polls a signature of the event nodes (count + sorted event ids) and
-// resolves once it's identical across consecutive polls, or after a max timeout (then proceeds
-// anyway so a scan can never hang). An empty week settles immediately (valid).
+// Wait until the calendar's event DOM has FINISHED loading — not merely "gone quiet" — so the
+// scan never reads a half-loaded or empty-mid-load grid and reports open slots that are really
+// booked (false availability). Polls a signature of the event nodes (count + sorted event ids)
+// and only settles once ALL of these hold:
+//   • minMs elapsed     — a DOM that's quiet right after the refresh-toggle usually just means
+//                         the re-fetch hasn't landed yet, not that it's done.
+//   • no loading skeleton/spinner present — Roofr paints one while the grid re-fetches.
+//   • the signature is identical across `stableNeeded` consecutive polls (no longer changing).
+//   • if the grid is EMPTY, an extended emptyConfirmMs window has passed — an empty grid this
+//     early is almost always mid-load, and empty = every slot shows open (worst-case false
+//     availability), so we demand a long confirm before trusting a 0-event week as real.
+// Falls through after maxMs so a scan can never hang (then proceeds with whatever's there).
 async function waitForCalendarStable(opts = {}) {
   if (!window.location.pathname.includes('/calendar')) {
     return { ok: false, reason: 'Not on calendar page' };
   }
   const interval = opts.interval || 400;
-  const stableNeeded = opts.stableNeeded || 2; // consecutive identical polls = settled
-  const maxMs = opts.maxMs || 7000;
+  const stableNeeded = opts.stableNeeded || 3;        // consecutive identical polls = settled (was 2)
+  const maxMs = opts.maxMs || 12000;                  // hard ceiling, then proceed anyway (was 7000)
+  const minMs = opts.minMs || 1400;                   // never settle before this
+  const emptyConfirmMs = opts.emptyConfirmMs || 6000; // a 0-event grid must hold this long to count as real
   const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+  // Roofr paints a skeleton/spinner while the grid re-fetches. Its presence => still loading.
+  // Scoped/specific so a stray persistent match would only cost time, never correctness.
+  const stillLoading = () => {
+    try {
+      return !!document.querySelector(
+        '[class*="Skeleton"], [class*="skeleton"], [role="progressbar"], [aria-busy="true"]'
+      );
+    } catch (_) { return false; }
+  };
+
   const sig = () => {
     const nodes = getAllEventNodes();
     const ids = nodes.map(el => {
       const m = (el.className || '').match(/rbcalendar-event-(\d+)-(\d+)/);
       return m ? `${m[1]}-${m[2]}` : (el.textContent || '').slice(0, 24);
     }).sort();
-    return nodes.length + '|' + ids.join(',');
+    return { key: nodes.length + '|' + ids.join(','), count: nodes.length };
   };
-  let last = null, stableCount = 0, elapsed = 0;
+
+  let lastKey = null, stableCount = 0, elapsed = 0;
   await wait(interval); // let a just-clicked toggle begin its re-fetch
   while (elapsed < maxMs) {
     const cur = sig();
-    if (cur === last) {
-      if (++stableCount >= stableNeeded) {
-        return { ok: true, stable: true, count: getAllEventNodes().length, ms: elapsed };
-      }
-    } else {
+    const tooEarly = elapsed < minMs;
+    const loading = stillLoading();
+    const changed = cur.key !== lastKey;
+    if (tooEarly || loading || changed) {
       stableCount = 0;
-      last = cur;
+      lastKey = cur.key;
+    } else if (++stableCount >= stableNeeded) {
+      if (cur.count === 0 && elapsed < emptyConfirmMs) {
+        stableCount = 0; // empty-during-load guard: keep waiting before trusting a 0-event grid
+      } else {
+        return { ok: true, stable: true, count: cur.count, empty: cur.count === 0, ms: elapsed };
+      }
     }
     await wait(interval);
     elapsed += interval;

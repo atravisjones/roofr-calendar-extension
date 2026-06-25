@@ -4235,15 +4235,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     let scanInProgress = false;
     let _scanGuardTimer = null;
     // When Roofr's calendar was last force-reloaded (scan toggle OR the 3-min background
-    // refresh below both stamp this). Scans within CALENDAR_FRESH_MS trust the loaded data and
-    // skip the costly reload + stable-wait. 0 = unknown (first scan always forces a reload).
-    // Kept just OVER the 3-min background-refresh interval so the toggle actually pays off: at
-    // any moment the last successful refresh is ≤180s old, so a scan almost always hits the
-    // fast path. (At the old 75s, the 180s refresh cycle left a 105s dead zone where scans
-    // reloaded anyway — the toggle was doing the work without delivering the speed.) A failed
-    // refresh leaves the stamp stale, so after ~2 missed cycles a scan safely does a full reload.
+    // refresh both stamp this). A scan within CALENDAR_FRESH_MS skips the costly reload TOGGLE
+    // (but still confirms the grid via WAIT_CALENDAR_STABLE before extracting). 0 = unknown
+    // (first scan always forces a reload). Kept SHORT on purpose: while we're stamping out
+    // double-booking, freshness beats speed — we don't want a scan trusting stale availability
+    // and showing a just-booked slot as open. (The wider ~3-min "let the toggle pay off" window
+    // is parked until server-side fresh data lands.)
     let lastCalendarRefreshAt = 0;
-    const CALENDAR_FRESH_MS = 185 * 1000;
+    const CALENDAR_FRESH_MS = 75 * 1000;
     async function runScanFlow(isAuto = false) {
         if (scanInProgress) {
             addLog("Scan already in progress — ignoring duplicate trigger.");
@@ -4301,9 +4300,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         const calendarIsFresh = lastCalendarRefreshAt > 0 && freshAgeMs < CALENDAR_FRESH_MS;
         if (calendarIsFresh) {
             addLog(`Calendar refreshed ${Math.round(freshAgeMs / 1000)}s ago — skipping reload (fresh).`);
-            // No reload was triggered, so the data is already loaded. Just give the client-side
-            // profile filter a brief moment to finish re-rendering before we extract.
-            await new Promise(r => setTimeout(r, 400));
+            // Skip the costly reload TOGGLE (the data's already loaded), but STILL confirm the
+            // grid is fully painted before extracting. The old blind 400ms wait here could read a
+            // half-loaded/empty grid and report booked slots as open (false availability). The
+            // stable-wait returns fast when the calendar is genuinely settled.
+            await new Promise(r => setTimeout(r, 200));
+            const freshStable = await sendFindCommand({ type: "WAIT_CALENDAR_STABLE" });
+            if (freshStable && freshStable.timedOut) {
+                addLog(`Fresh-path load wait timed out (~${Math.round((freshStable.ms || 0) / 1000)}s, ${freshStable.count} events visible).`, "WARN");
+            } else if (freshStable && freshStable.ok) {
+                addLog(`Calendar confirmed loaded (${freshStable.count} events).`);
+            }
         } else {
             addLog("Refreshing Roofr calendar (team-toggle) before scan...");
             let refreshed = await sendFindCommand({ type: "REFRESH_CALENDAR_TOGGLE", member: "Yousef Ayad" });

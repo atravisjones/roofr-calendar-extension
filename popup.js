@@ -3,6 +3,17 @@
 import { CONFIG, PEOPLE_DATA } from './config.js';
 import { THEMES, applyTheme } from './themes.js';
 
+const SLOT_HOLDS_URL = 'https://roofr-search.vercel.app/api/slot-holds';
+const SLOT_HOLDS_INTERNAL_KEY = 'WSDnmjsudtcCEWvb_TKQKcyWS3TXtcjWqfuLMsnmT96XfqZF';
+const slotHolds = new Map();
+const slotHoldHeartbeats = new Map();
+let currentRepIdentity = null;
+let slotHoldsPollInFlight = false;
+let slotHoldsPollTimer = null;
+let slotCountdownTimer = null;
+const expandedDays = new Set();   // dateStr of day cards the user manually expanded — persisted across re-renders
+let slotHoldsSig = null;          // signature of the last holds set, to skip needless re-renders (and the collapse-reset they caused)
+
 document.addEventListener('DOMContentLoaded', async () => {
 
     // Track the window ID where the extension was opened - ALL tab operations should use this window
@@ -194,6 +205,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const addrClearBtn = document.getElementById("addrClearBtn");
     const addrGoBtn = document.getElementById("addrGoBtn");
     const assignedRepDisplay = document.getElementById("assigned-rep-display");
+    const slotRepIdentitySelect = document.getElementById("slot-rep-identity-select");
     const mainTabs = Array.from(document.querySelectorAll(".nav-tab"));
     const sections = {
         "sec-scanner": document.getElementById("sec-scanner"),
@@ -955,6 +967,189 @@ document.addEventListener('DOMContentLoaded', async () => {
         toast.textContent = msg;
         toast.classList.add('show');
         setTimeout(() => toast.classList.remove('show'), 2000);
+    }
+
+    function normalizeRepIdentityName(name) {
+        const repName = String(name || '').trim();
+        if (!repName) return null;
+        return {
+            rep_id: repName.toLowerCase().replace(/\W+/g, '-').replace(/^-+|-+$/g, ''),
+            rep_name: repName
+        };
+    }
+
+    async function getRepIdentity() {
+        // Identity = the existing "Who's Taking Calls" (CTM) selection — no separate picker.
+        const stored = await chrome.storage.sync.get({ ctm_csr: '' });
+        currentRepIdentity = normalizeRepIdentityName(stored.ctm_csr);
+        return currentRepIdentity;
+    }
+
+    function openSlotIdentityPicker() {
+        // No dedicated picker — send the rep to the existing "Who's Taking Calls" modal.
+        if (typeof showCtmCsrModal === 'function') showCtmCsrModal();
+    }
+
+    function buildSlotHoldKey(region, dateStr, block) {
+        return `${String(region || '').toUpperCase()}|${dateStr}|${block}`;
+    }
+
+    function formatSlotCountdown(expiresAt) {
+        const remainingMs = new Date(expiresAt).getTime() - Date.now();
+        const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = String(totalSeconds % 60).padStart(2, '0');
+        return `${minutes}:${seconds}`;
+    }
+
+    function updateSlotCountdowns() {
+        document.querySelectorAll('[data-slot-expires-at]').forEach(el => {
+            const expiresAt = el.dataset.slotExpiresAt;
+            el.textContent = formatSlotCountdown(expiresAt);
+        });
+        for (const [key, hold] of slotHolds.entries()) {
+            if (new Date(hold.expires_at).getTime() <= Date.now()) {
+                slotHolds.delete(key);
+                clearSlotHeartbeat(key);
+                renderUIFromState();
+            }
+        }
+    }
+
+    async function refreshSlotHolds() {
+        if (slotHoldsPollInFlight) return;
+        slotHoldsPollInFlight = true;
+        try {
+            await getRepIdentity();
+            const resp = await fetch(`${SLOT_HOLDS_URL}?active=1`, {
+                cache: 'no-store',
+                headers: { 'X-Internal-Key': SLOT_HOLDS_INTERNAL_KEY }
+            });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const json = await resp.json();
+            if (!json?.success || !Array.isArray(json.holds)) throw new Error('Bad holds payload');
+            slotHolds.clear();
+            for (const hold of json.holds) {
+                const key = buildSlotHoldKey(hold.region, hold.hold_date, hold.block);
+                slotHolds.set(key, { ...hold, region: String(hold.region || '').toUpperCase() });
+            }
+            for (const key of [...slotHoldHeartbeats.keys()]) {
+                if (!slotHolds.has(key)) clearSlotHeartbeat(key);
+            }
+            if (currentRepIdentity?.rep_id) {
+                for (const [key, hold] of slotHolds.entries()) {
+                    if (hold.rep_id === currentRepIdentity.rep_id && !slotHoldHeartbeats.has(key)) {
+                        startSlotHeartbeat(hold, currentRepIdentity.rep_id);
+                    }
+                }
+            }
+            // Only re-render when the holds set actually changed — avoids the 5s flicker and the
+            // expand/collapse reset it caused. Countdowns tick via updateSlotCountdowns separately.
+            const sig = json.holds.map(h => `${h.id}:${h.expires_at}`).sort().join('|') + `~${currentRepIdentity?.rep_id || ''}`;
+            if (sig !== slotHoldsSig) {
+                slotHoldsSig = sig;
+                renderUIFromState();
+            }
+        } catch (e) {
+            console.warn('[Slot Holds] Refresh failed:', e);
+        } finally {
+            slotHoldsPollInFlight = false;
+        }
+    }
+
+    function clearSlotHeartbeat(key) {
+        const timer = slotHoldHeartbeats.get(key);
+        if (timer) clearInterval(timer);
+        slotHoldHeartbeats.delete(key);
+    }
+
+    function startSlotHeartbeat(hold, repId) {
+        const key = buildSlotHoldKey(hold.region, hold.hold_date, hold.block);
+        clearSlotHeartbeat(key);
+        slotHoldHeartbeats.set(key, setInterval(async () => {
+            try {
+                const resp = await fetch(SLOT_HOLDS_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Internal-Key': SLOT_HOLDS_INTERNAL_KEY
+                    },
+                    body: JSON.stringify({ action: 'renew', id: hold.id, rep_id: repId })
+                });
+                const json = await resp.json();
+                if (!resp.ok || json.renewed === false || json.success === false) {
+                    clearSlotHeartbeat(key);
+                    refreshSlotHolds();
+                }
+            } catch (e) {
+                console.warn('[Slot Holds] Renew failed:', e);
+            }
+        }, 90 * 1000));
+    }
+
+    async function claimSlot(dateStr, region, block) {
+        const identity = await getRepIdentity();
+        if (!identity) {
+            openSlotIdentityPicker();
+            showToast('Pick your name before reserving a slot');
+            return;
+        }
+        try {
+            const resp = await fetch(SLOT_HOLDS_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Internal-Key': SLOT_HOLDS_INTERNAL_KEY
+                },
+                body: JSON.stringify({
+                    action: 'claim',
+                    hold_date: dateStr,
+                    region,
+                    block,
+                    rep_id: identity.rep_id,
+                    rep_name: identity.rep_name
+                })
+            });
+            const json = await resp.json();
+            if (!resp.ok || !json.claimed || !json.hold) throw new Error(json.reason || json.error || 'Claim failed');
+            startSlotHeartbeat(json.hold, identity.rep_id);
+            showToast('Slot reserved');
+            await refreshSlotHolds();
+        } catch (e) {
+            console.warn('[Slot Holds] Claim failed:', e);
+            showToast(e.message || 'Could not reserve slot');
+            await refreshSlotHolds();
+        }
+    }
+
+    async function releaseSlot(hold) {
+        const identity = await getRepIdentity();
+        if (!identity || !hold?.id) return;
+        const key = buildSlotHoldKey(hold.region, hold.hold_date, hold.block);
+        clearSlotHeartbeat(key);
+        try {
+            await fetch(SLOT_HOLDS_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Internal-Key': SLOT_HOLDS_INTERNAL_KEY
+                },
+                body: JSON.stringify({ action: 'release', id: hold.id, rep_id: identity.rep_id })
+            });
+            showToast('Slot released');
+        } catch (e) {
+            console.warn('[Slot Holds] Release failed:', e);
+            showToast('Could not release slot');
+        } finally {
+            await refreshSlotHolds();
+        }
+    }
+
+    function startSlotHoldsPolling() {
+        if (slotHoldsPollTimer) return;
+        refreshSlotHolds();
+        slotHoldsPollTimer = setInterval(refreshSlotHolds, 5000);
+        slotCountdownTimer = setInterval(updateSlotCountdowns, 1000);
     }
 
     // Phone number detection - returns normalized phone if valid, null otherwise
@@ -1861,6 +2056,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             // Auto-scan when calendar first loads (after Sales checkbox is checked)
             if (msg.type === "AUTO_SCAN_READY") {
+                if (serverAvailabilityReady) {
+                    addLog("Calendar ready, but server availability is already loaded; skipping DOM auto-scan.");
+                    return;
+                }
                 addLog("Calendar ready, auto-scanning...");
                 console.log("AUTO_SCAN_READY received, running scan...");
                 runScanFlow(true); // Auto-scan
@@ -1884,6 +2083,90 @@ document.addEventListener('DOMContentLoaded', async () => {
         const dt = new Date(Date.UTC(y, m - 1, d));
         dt.setUTCDate(dt.getUTCDate() + n);
         return dt.toISOString().slice(0, 10);
+    }
+
+    function roofrServerDateTimeToEventISO(value) {
+        const raw = String(value || '').trim();
+        if (!raw) return null;
+        const match = raw.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
+        return match ? `${match[1]}T${match[2]}` : null;
+    }
+
+    function mapCalendarEventRowToScanEvent(row) {
+        const start = roofrServerDateTimeToEventISO(row?.start_date);
+        const end = roofrServerDateTimeToEventISO(row?.end_date) || start;
+        const attendees = Array.isArray(row?.attendees)
+            ? row.attendees
+            : String(row?.attendees || '').split(',').map(s => s.trim()).filter(Boolean);
+        return {
+            start,
+            end,
+            title: String(row?.title || '').trim(),
+            address: row?.address || '',
+            eventType: row?.category || 'Unknown',
+            category: row?.category || '',
+            eventId: row?.id != null ? String(row.id) : undefined,
+            job_id: row?.job_id,
+            jobId: row?.job_id,
+            attendees,
+            isAllDay: false
+        };
+    }
+
+    let serverAvailabilityReady = false;
+    let twoWeekAvailabilityInFlight = false;
+    async function loadTwoWeekAvailability() {
+        if (twoWeekAvailabilityInFlight) return false;
+        twoWeekAvailabilityInFlight = true;
+        try {
+            const startISO = phoenixTodayISO();
+            const days = Array.from({ length: 14 }, (_, i) => addDaysISO(startISO, i));
+            const endISO = days[days.length - 1];
+            // Only count events that actually consume appointment slots. Production has its own
+            // category; retail/d2d/insurance appointments are all category 'sales' in calendar_events.
+            // (Without this, all-day pickup/dropoff windows would wrongly read as booked slots.)
+            const eventCategory = (userPrefs.scanProfile || 'retail') === 'production' ? 'production' : 'sales';
+            const url = `https://roofr-search.vercel.app/api/calendar-events?start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(endISO)}&category=${encodeURIComponent(eventCategory)}`;
+
+            addLog(`Loading server availability ${startISO} through ${endISO}...`);
+            const resp = await fetch(url, {
+                cache: 'no-store',
+                headers: { 'X-Internal-Key': SLOT_HOLDS_INTERNAL_KEY }
+            });
+            if (!resp.ok) throw new Error(`Calendar events HTTP ${resp.status}`);
+            const json = await resp.json();
+            if (!json?.success || !Array.isArray(json.events)) throw new Error('Bad calendar events payload');
+
+            state.weekDays = days;
+            pageDatesISO = days;
+            state.allEvents = json.events
+                .map(mapCalendarEventRowToScanEvent)
+                .filter(ev => ev.start && ev.end && ev.title);
+            state.parsedJobs = state.allEvents.map(ev => CONFIG.parseJobDetails(ev));
+
+            const distinctSundays = [...new Set(state.weekDays.map(weekSundayKey))].sort();
+            const availabilityResults = await Promise.all(distinctSundays.map(s => computeAvailabilityForSunday(s)));
+            state.availabilityByWeek = {};
+            distinctSundays.forEach((s, i) => {
+                if (availabilityResults[i]) state.availabilityByWeek[s] = availabilityResults[i];
+            });
+            state.availability = state.availabilityByWeek[distinctSundays[0]] || { PHX: null, SOUTH: null, NORTH: null, ALL: null };
+            state.dayCutoffs = [];
+
+            addLog(`Server availability loaded. Extracted ${state.allEvents.length} events.`);
+            serverAvailabilityReady = true;
+            await debouncedSaveState();
+            renderUIFromState();
+            updateScanButtonState();
+            return true;
+        } catch (e) {
+            serverAvailabilityReady = false;
+            addLog(`Server availability load failed: ${e.message}`, 'ERROR');
+            showToast('Could not load server availability');
+            return false;
+        } finally {
+            twoWeekAvailabilityInFlight = false;
+        }
     }
 
     /* ========= Roofr bridge ========= */
@@ -2566,6 +2849,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             else if (totals.dayOver === 0) badgesHtml += `<span class="badge neutral">Full</span>`;
         }
 
+        // Reserved indicator — stays visible even when the day card is collapsed.
+        const dayHoldCount = [...slotHolds.values()].filter(h =>
+            String(h.region || '').toUpperCase() === String(state.currentRegion || '').toUpperCase()
+            && h.hold_date === dateStr
+        ).length;
+        if (dayHoldCount > 0) badgesHtml += ` <span class="badge reserved-badge">&#128274; ${dayHoldCount} reserved</span>`;
+
         // Recommendation time badge removed per request — keeps the scan list clean.
         // The address-based tool still highlights a suggested slot when invoked.
 
@@ -2794,10 +3084,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const booked = totals.perBlockBooked[blk.key] || 0;
             const cap = CONFIG.getCapacity(state.currentRegion, d.getDay(), blk.key, dayAvail);
-            const remaining = Number.isFinite(cap) ? cap - booked : null;
+            const regionKey = String(state.currentRegion || '').toUpperCase();
+            const holds = [...slotHolds.values()].filter(hold =>
+                hold.region === regionKey && hold.hold_date === dateStr && hold.block === blk.key
+            );
+            const heldCount = holds.length;
+            const me = currentRepIdentity?.rep_id;
+            const myHold = me ? holds.find(hold => hold.rep_id === me) : null;
+            const others = me ? holds.filter(hold => hold.rep_id !== me) : holds;
+            const remaining = Number.isFinite(cap) ? cap - booked - heldCount : null;
 
             if (remaining !== null && remaining < 0) div.classList.add("over");
             else if (remaining === 0) div.classList.add("full"); // fully booked -> red highlight
+            if (heldCount > 0) div.classList.add("slot-reserved"); // dark blue/purple — a hold sits here
 
             let statusHtml = '';
             if (remaining !== null) {
@@ -2833,6 +3132,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
 
             const citiesHtml = cityItems.length > 0 ? `<span class="block-context" title="Scheduled: ${uniqueCities.join(", ")}">${cityItems.join(", ")}</span>` : '';
+            const lockBadgesHtml = others.map(hold =>
+                `<span class="block-sep">·</span><span class="slot-lock-badge">&#128274; being booked by ${_escapeHtml(hold.rep_name || 'another rep')}</span>`
+            ).join('');
+            // Reserve button renders INLINE inside the block-line; held-state row renders below.
+            const reserveInlineHtml = (!myHold && remaining !== null && remaining > 0)
+                ? `<button class="btn reserve-slot-btn" data-date="${dateStr}" data-region="${regionKey}" data-block="${blk.key}">Reserve</button>`
+                : '';
+            let slotActionHtml = '';
+            if (myHold) {
+                slotActionHtml = `
+        <div class="slot-held-row">
+            <span class="slot-held-you">Held by you</span>
+            <span data-slot-expires-at="${_escapeHtml(myHold.expires_at)}">${formatSlotCountdown(myHold.expires_at)}</span>
+            <button class="btn release-slot-btn" data-hold-id="${_escapeHtml(myHold.id)}">Release</button>
+        </div>
+    `;
+            }
 
             // NEW: Find manually assigned events in this block (override set, but no city detected)
             const manuallyAssigned = evsInBlock.filter(ev => {
@@ -2860,10 +3176,39 @@ document.addEventListener('DOMContentLoaded', async () => {
             <span class="time-slot">${blk.label}</span>
             ${statusHtml ? `<span class="block-sep">·</span>${statusHtml}` : ''}
             ${citiesHtml ? `<span class="block-sep">·</span>${citiesHtml}` : ''}
-            <span class="sheet-cap">${booked}/${cap !== null ? cap : '-'}</span>
+            ${lockBadgesHtml}
+            <span class="sheet-cap">${booked + heldCount}/${cap !== null ? cap : '-'}</span>
+            ${reserveInlineHtml}
         </div>
+        ${slotActionHtml}
         ${assignedHtml}
     `;
+
+            const reserveBtn = div.querySelector('.reserve-slot-btn');
+            if (reserveBtn) {
+                reserveBtn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    reserveBtn.disabled = true;
+                    await claimSlot(reserveBtn.dataset.date, reserveBtn.dataset.region, reserveBtn.dataset.block);
+                });
+            }
+
+            const releaseBtn = div.querySelector('.release-slot-btn');
+            if (releaseBtn && myHold) {
+                releaseBtn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    releaseBtn.disabled = true;
+                    await releaseSlot(myHold);
+                });
+            }
+
+            const openRoofrSlotBtn = div.querySelector('.open-roofr-slot-btn');
+            if (openRoofrSlotBtn) {
+                openRoofrSlotBtn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    await openDailyCalendarForDate(openRoofrSlotBtn.dataset.date);
+                });
+            }
 
             // Undo Button Logic
             if (manuallyAssigned.length > 0) {
@@ -2921,6 +3266,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         header.addEventListener("click", () => {
             const willExpand = card.dataset.collapsed === "true"; // currently collapsed, so will open
             setCardCollapsed(card, !willExpand);
+            if (willExpand) expandedDays.add(dateStr); else expandedDays.delete(dateStr);
 
             // Handle Uncategorized Box visibility if preference dictates
             if (card.uncatBox && !userPrefs.showUncatCollapsed) {
@@ -2980,6 +3326,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Normal mode: respect user preference
             setCardCollapsed(card, !userPrefs.autoExpandDays);
         }
+        // Keep days the user manually expanded OPEN across re-renders (5s holds poll, 5-min refresh).
+        if (expandedDays.has(dateStr)) setCardCollapsed(card, false);
         // If userPrefs.showUncatCollapsed is true, uncatBox is already visible.
 
         return card;
@@ -4666,6 +5014,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         scanBtn.innerHTML = '<span class="scan-spinner"></span> Scanning...';
 
         try {
+            // Primary path: refresh the 2-week server availability (no DOM scrape, keeps the
+            // full 14-day view). Only fall through to the live Roofr DOM scan if the server fails.
+            const serverOk = await loadTwoWeekAvailability();
+            if (serverOk) {
+                scanBtn.disabled = false;
+                updateScanButtonState();
+                return;
+            }
+
             // Resolve the window the user is working in. In popout mode that's the
             // original browser window (passed as __targetWindowId); otherwise it's
             // the window this panel is docked to. ALL tab lookups/opens below are
@@ -9312,20 +9669,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         await loadDynamicCities();
         await loadState();
         await loadPeopleLists();
+        await getRepIdentity();
         setupPeopleGroupReorder();
         await applyPeopleGroupOrder();
         await loadClipboards();
 
         renderUIFromState();
+        startSlotHoldsPolling();
         updateScanButtonState();
         resetIdleTimer();
 
-        if (userPrefs.autoScan) {
+        const serverAvailabilityLoaded = await loadTwoWeekAvailability();
+        setInterval(loadTwoWeekAvailability, 5 * 60 * 1000);
+
+        if (userPrefs.autoScan && !serverAvailabilityLoaded) {
             runScanFlow(true); // Pass true to suppress alert on failure
         }
 
         // Check if there's a pending auto-scan from page load
-        checkPendingAutoScan();
+        checkPendingAutoScan(serverAvailabilityLoaded);
 
         // Try to fetch job owner from any open Roofr job tab
         fetchCurrentJobOwner();
@@ -9352,10 +9714,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Check for pending auto-scan flag set by content script
-    async function checkPendingAutoScan() {
+    async function checkPendingAutoScan(skipScan = false) {
         try {
             const data = await chrome.storage.session.get(['autoScanPending', 'autoScanTimestamp']);
             if (data.autoScanPending) {
+                if (skipScan) {
+                    addLog("Clearing pending auto-scan because server availability is loaded.");
+                    await chrome.storage.session.remove(['autoScanPending', 'autoScanTimestamp']);
+                    return;
+                }
                 // Only auto-scan if the flag was set recently (within last 30 seconds)
                 const age = Date.now() - (data.autoScanTimestamp || 0);
                 if (age < 30000) {
@@ -12168,6 +12535,54 @@ document.addEventListener('DOMContentLoaded', async () => {
     const ctmCsrCancel = document.getElementById('ctm-csr-cancel');
     const closeCtmCsrModal = document.getElementById('close-ctm-csr-modal');
     const ctmAssignedRepDisplay = document.getElementById('ctm-assigned-rep-display');
+
+    function getAllPeopleNames() {
+        return [...new Set([
+            ...(PEOPLE_DATA.REPS || []),
+            ...(PEOPLE_DATA.CSRS || []),
+            ...(PEOPLE_DATA.PRODUCTION || []),
+            ...(PEOPLE_DATA.MGMT || []),
+            ...(PEOPLE_DATA.INSURANCE || []),
+            ...(PEOPLE_DATA.D2D || [])
+        ].filter(Boolean))].sort();
+    }
+
+    async function initSlotIdentityPicker() {
+        if (!slotRepIdentitySelect) return;
+        const people = getAllPeopleNames();
+        slotRepIdentitySelect.innerHTML = '<option value="">Pick name</option>';
+        people.forEach(name => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            slotRepIdentitySelect.appendChild(opt);
+        });
+
+        const stored = await chrome.storage.sync.get({
+            roofr_rep_identity: null,
+            ctm_csr: ''
+        });
+        const identityName = stored.roofr_rep_identity?.name || stored.ctm_csr || '';
+        if (identityName && !people.includes(identityName)) {
+            const opt = document.createElement('option');
+            opt.value = identityName;
+            opt.textContent = identityName;
+            slotRepIdentitySelect.appendChild(opt);
+        }
+        slotRepIdentitySelect.value = identityName;
+        currentRepIdentity = normalizeRepIdentityName(identityName);
+
+        slotRepIdentitySelect.addEventListener('change', async () => {
+            const name = slotRepIdentitySelect.value;
+            currentRepIdentity = normalizeRepIdentityName(name);
+            if (name) {
+                await chrome.storage.sync.set({ roofr_rep_identity: { name } });
+            } else {
+                await chrome.storage.sync.remove('roofr_rep_identity');
+            }
+            renderUIFromState();
+        });
+    }
 
     // Populate all CTM dropdowns
     function populateCtmDropdowns() {

@@ -461,6 +461,75 @@
       white-space: nowrap;
     }
 
+    .slot-identity-picker {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .slot-identity-picker label {
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .reserve-slot-btn,
+    .release-slot-btn,
+    .open-roofr-slot-btn {
+      padding: 3px 8px;
+      font-size: 0.75rem;
+      line-height: 1.2;
+      border-radius: 5px;
+    }
+
+    .release-slot-btn {
+      background: var(--danger);
+    }
+
+    .open-roofr-slot-btn {
+      background: var(--surface);
+      color: var(--text-main);
+      border-color: var(--border);
+    }
+
+    .slot-lock-badge {
+      color: var(--warn);
+      font-size: 0.75rem;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .slot-held-row,
+    .slot-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 5px;
+      flex-wrap: wrap;
+    }
+
+    .slot-held-you {
+      color: var(--primary);
+      font-size: 0.75rem;
+      font-weight: 800;
+    }
+
+    /* Reserved slot — dark blue/purple highlight (a hold sits here). */
+    .block-item.slot-reserved {
+      background: #312e81;
+      border-color: #6366f1;
+    }
+    .block-item.slot-reserved .time-slot,
+    .block-item.slot-reserved .sheet-cap,
+    .block-item.slot-reserved .slot-held-you {
+      color: #e0e7ff;
+    }
+    .badge.reserved-badge {
+      background: #4338ca;
+      color: #fff;
+    }
+
     /* Priority Row */
     .priority-row {
       display: flex;

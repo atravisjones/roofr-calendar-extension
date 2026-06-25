@@ -7,6 +7,7 @@ const SLOT_HOLDS_URL = 'https://roofr-search.vercel.app/api/slot-holds';
 const SLOT_HOLDS_INTERNAL_KEY = 'WSDnmjsudtcCEWvb_TKQKcyWS3TXtcjWqfuLMsnmT96XfqZF';
 const slotHolds = new Map();
 const slotHoldHeartbeats = new Map();
+const holdBookingBaseline = new Map(); // hold.id -> real-booked count in its block when first seen (mine), for auto-release when the booking lands
 let currentRepIdentity = null;
 let slotHoldsPollInFlight = false;
 let slotHoldsPollTimer = null;
@@ -1033,16 +1034,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const key = buildSlotHoldKey(hold.region, hold.hold_date, hold.block);
                 slotHolds.set(key, { ...hold, region: String(hold.region || '').toUpperCase() });
             }
+            const liveHoldIds = new Set(json.holds.map(h => h.id));
+            for (const id of [...holdBookingBaseline.keys()]) if (!liveHoldIds.has(id)) holdBookingBaseline.delete(id);
             for (const key of [...slotHoldHeartbeats.keys()]) {
                 if (!slotHolds.has(key)) clearSlotHeartbeat(key);
             }
-            if (currentRepIdentity?.rep_id) {
-                for (const [key, hold] of slotHolds.entries()) {
-                    if (hold.rep_id === currentRepIdentity.rep_id && !slotHoldHeartbeats.has(key)) {
-                        startSlotHeartbeat(hold, currentRepIdentity.rep_id);
-                    }
-                }
-            }
+            // No auto-renew heartbeat — a hold is a fixed 12-min reservation that counts down and
+            // expires. (Renewing every 90s made the countdown reset forever and the slot never free.)
             // Only re-render when the holds set actually changed — avoids the 5s flicker and the
             // expand/collapse reset it caused. Countdowns tick via updateSlotCountdowns separately.
             const sig = json.holds.map(h => `${h.id}:${h.expires_at}`).sort().join('|') + `~${currentRepIdentity?.rep_id || ''}`;
@@ -1112,7 +1110,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             const json = await resp.json();
             if (!resp.ok || !json.claimed || !json.hold) throw new Error(json.reason || json.error || 'Claim failed');
-            startSlotHeartbeat(json.hold, identity.rep_id);
             showToast('Slot reserved');
             await refreshSlotHolds();
         } catch (e) {
@@ -2849,11 +2846,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             else if (totals.dayOver === 0) badgesHtml += `<span class="badge neutral">Full</span>`;
         }
 
-        // Reserved indicator — stays visible even when the day card is collapsed.
-        const dayHoldCount = [...slotHolds.values()].filter(h =>
+        // Reserved indicator — only the rep who reserved sees it (others just see reduced
+        // availability), and it stays visible even when the day card is collapsed.
+        const myRepId = currentRepIdentity?.rep_id;
+        const dayHoldCount = myRepId ? [...slotHolds.values()].filter(h =>
             String(h.region || '').toUpperCase() === String(state.currentRegion || '').toUpperCase()
-            && h.hold_date === dateStr
-        ).length;
+            && h.hold_date === dateStr && h.rep_id === myRepId
+        ).length : 0;
         if (dayHoldCount > 0) badgesHtml += ` <span class="badge reserved-badge">&#128274; ${dayHoldCount} reserved</span>`;
 
         // Recommendation time badge removed per request — keeps the scan list clean.
@@ -3094,9 +3093,20 @@ document.addEventListener('DOMContentLoaded', async () => {
             const others = me ? holds.filter(hold => hold.rep_id !== me) : holds;
             const remaining = Number.isFinite(cap) ? cap - booked - heldCount : null;
 
+            // Auto-release: when a real booking lands in a slot I reserved (the booked count rises
+            // above what it was when I placed the hold), drop my hold so it flips cleanly to
+            // "booked" instead of double-counting (hold + booking). `booked` here is already
+            // region-correct (computeDailyTotals over this region's events).
+            if (myHold) {
+                const base = holdBookingBaseline.get(myHold.id);
+                if (base === undefined) holdBookingBaseline.set(myHold.id, booked);
+                else if (booked > base) { holdBookingBaseline.delete(myHold.id); releaseSlot(myHold); }
+                else if (booked < base) holdBookingBaseline.set(myHold.id, booked);
+            }
+
             if (remaining !== null && remaining < 0) div.classList.add("over");
             else if (remaining === 0) div.classList.add("full"); // fully booked -> red highlight
-            if (heldCount > 0) div.classList.add("slot-reserved"); // dark blue/purple — a hold sits here
+            if (myHold) div.classList.add("slot-reserved"); // dark blue/purple — only the rep who reserved it
 
             let statusHtml = '';
             if (remaining !== null) {
@@ -3132,9 +3142,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
 
             const citiesHtml = cityItems.length > 0 ? `<span class="block-context" title="Scheduled: ${uniqueCities.join(", ")}">${cityItems.join(", ")}</span>` : '';
-            const lockBadgesHtml = others.map(hold =>
-                `<span class="block-sep">·</span><span class="slot-lock-badge">&#128274; being booked by ${_escapeHtml(hold.rep_name || 'another rep')}</span>`
-            ).join('');
+            // Other reps just see a held slot as unavailable (the count is reduced below) — no
+            // "being booked by {rep}" badge, to keep their view uncluttered.
+            const lockBadgesHtml = '';
             // Reserve button renders INLINE inside the block-line; held-state row renders below.
             const reserveInlineHtml = (!myHold && remaining !== null && remaining > 0)
                 ? `<button class="btn reserve-slot-btn" data-date="${dateStr}" data-region="${regionKey}" data-block="${blk.key}">Reserve</button>`

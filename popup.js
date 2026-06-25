@@ -4235,10 +4235,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     let scanInProgress = false;
     let _scanGuardTimer = null;
     // When Roofr's calendar was last force-reloaded (scan toggle OR the 3-min background
-    // refresh both stamp this). Scans within CALENDAR_FRESH_MS trust the loaded data and skip
-    // the costly reload + stable-wait. 0 = unknown (first scan always forces a reload).
+    // refresh below both stamp this). Scans within CALENDAR_FRESH_MS trust the loaded data and
+    // skip the costly reload + stable-wait. 0 = unknown (first scan always forces a reload).
+    // Kept just OVER the 3-min background-refresh interval so the toggle actually pays off: at
+    // any moment the last successful refresh is ≤180s old, so a scan almost always hits the
+    // fast path. (At the old 75s, the 180s refresh cycle left a 105s dead zone where scans
+    // reloaded anyway — the toggle was doing the work without delivering the speed.) A failed
+    // refresh leaves the stamp stale, so after ~2 missed cycles a scan safely does a full reload.
     let lastCalendarRefreshAt = 0;
-    const CALENDAR_FRESH_MS = 75 * 1000;
+    const CALENDAR_FRESH_MS = 185 * 1000;
     async function runScanFlow(isAuto = false) {
         if (scanInProgress) {
             addLog("Scan already in progress — ignoring duplicate trigger.");
@@ -4673,6 +4678,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const sameWindow = !workingWindowId || storedTab.windowId === workingWindowId;
                     if (sameWindow && storedTab?.url?.includes('app.roofr.com') && storedTab?.url?.includes('/calendar')) {
                         addLog(`Using stored Roofr calendar tab (ID: ${storedTab.id})`);
+                        // Bring the calendar to the foreground before scanning. A hidden/background
+                        // tab is throttled by Chrome (setTimeout clamped to ~1s, rendering
+                        // deprioritized), which ~triples scan time (≈15s vs 5-8s) and leaves you
+                        // staring at the wrong page. Activating it lets the settle-wait poll at
+                        // full 400ms speed — the other scan paths already do this.
+                        try {
+                            await chrome.tabs.update(storedTab.id, { active: true });
+                            await chrome.windows.update(storedTab.windowId, { focused: true });
+                        } catch (e) {
+                            addLog("Could not focus stored calendar tab", "INFO");
+                        }
                         runScanFlow(false);
                         return;
                     }

@@ -511,6 +511,7 @@
         <button class="tab-btn active" id="tab-leads" data-tab="leads">📋 Leads</button>
         <button class="tab-btn" id="tab-missed" data-tab="missed">📞 Missed Calls<span class="tab-badge" id="missed-badge" style="display:none;"></span></button>
         <button class="tab-btn" id="tab-rescheduled" data-tab="rescheduled">🗓 Rescheduled<span class="tab-badge" id="rescheduled-badge" style="display:none;"></span></button>
+        <button class="tab-btn" id="tab-welcome" data-tab="welcome">✅ Welcome<span class="tab-badge" id="welcome-badge" style="display:none;"></span></button>
       </div>
       <div class="filter-panel" id="filter-panel">
         <div class="filter-toggle" id="filter-toggle">Filters <span class="arrow">▾</span> <span id="filter-summary" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--light);margin-left:4px;"></span></div>
@@ -562,6 +563,16 @@
           <label class="rsched-filter-label">Review timer
             <input type="text" id="rsched-timer-input" value="1:00" title="mm:ss review time per card (soft nudge — never force-advances)"
                    style="width:42px;padding:2px 4px;font-size:11px;text-align:center;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);">
+          </label>
+        </div>
+      </div>
+      <div class="filter-panel" id="welcome-filter-panel" style="display:none;">
+        <div class="filter-toggle" style="cursor:default;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <label class="rsched-filter-label">Show
+            <select id="wc-due-select" class="rsched-select">
+              <option value="due" selected>Due / overdue</option>
+              <option value="all">All signed</option>
+            </select>
           </label>
         </div>
       </div>
@@ -623,6 +634,48 @@
         </div>
 
         <ul id="rsched-queue" style="list-style:none;margin:0;padding:0;"></ul>
+      </div>
+
+      <div id="welcome-main" style="display:none;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin:14px 0 6px 0;">
+          <h2 id="wc-queue-header" style="margin:0;">Welcome Calls</h2>
+          <div style="display:flex;gap:6px;">
+            <button id="wc-start-btn" class="primary" title="Open the first due welcome call" style="font-size:11px;padding:3px 12px;border-radius:4px;">▶ Start</button>
+            <button id="wc-refresh-btn" title="Reload welcome calls" style="font-size:11px;padding:3px 8px;border-radius:4px;box-shadow:none;">↻ Refresh</button>
+          </div>
+        </div>
+
+        <div id="wc-review-card" class="rsched-card" style="display:none;">
+          <div class="rsched-card-top">
+            <span class="rsched-phase-badge" id="wc-phase-badge">Review</span>
+            <button id="wc-reopen-btn" title="Reopen this job card in Roofr" style="margin-left:auto;font-size:10px;padding:2px 6px;border-radius:4px;box-shadow:none;">↗ Card</button>
+          </div>
+          <div class="rsched-name" id="wc-job-name"></div>
+          <div class="rsched-phone" id="wc-job-phone"></div>
+          <div class="rsched-meta" id="wc-job-meta"></div>
+
+          <div id="wc-stage1" class="rescheduled-stage-row" style="display:none;">
+            <button id="wc-btn-call" class="primary">☎ Call (optional)</button>
+            <button id="wc-btn-skip" class="danger">Skip</button>
+          </div>
+
+          <div id="wc-dialing" style="display:none;margin-top:8px;">
+            <span class="rsched-phase-badge" style="background:var(--warn-bg);color:#92400e;">📞 Calling… <span id="wc-call-timer"></span></span>
+            <button id="wc-hangup-btn" class="danger" style="width:100%;margin-top:6px;">☎ Hang up → outcome</button>
+          </div>
+
+          <div id="wc-stage2" style="display:none;margin-top:8px;">
+            <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">Disposition</div>
+            <div class="rescheduled-stage-row">
+              <button id="wc-btn-attempted">☎ Attempted</button>
+              <button id="wc-btn-complete" class="primary">✓ Complete</button>
+              <button id="wc-btn-production">🏗 Production Call</button>
+            </div>
+            <textarea id="wc-note" class="rescheduled-note" placeholder="Optional note…"></textarea>
+          </div>
+        </div>
+
+        <ul id="wc-queue" style="list-style:none;margin:0;padding:0;"></ul>
       </div>
 
       <div style="display:flex;align-items:center;justify-content:space-between;margin:14px 0 6px 0;">

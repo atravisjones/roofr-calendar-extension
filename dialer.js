@@ -22,6 +22,12 @@
   // sheet write-back — outcomes are recorded in this session's Event log).
   const RESCHEDULED_URL = `${API_BASE}/api/roofr-needs-rescheduled`;
   const RSCHED_DEFAULT_REVIEW_SEC = 60;  // 1:00 default review countdown
+  // Welcome Calls tab: Madi's post-proposal-signed welcome-call queue. Unlike
+  // Rescheduled (log-only), this WRITES back to the sheet (begin-call lock +
+  // disposition) via /api/welcome-calls — keyed by jobId, capped at 4 attempts.
+  const WELCOME_URL = `${API_BASE}/api/welcome-calls`;
+  const WC_MAX_ATTEMPTS = 4;
+  const WC_RENEW_MS = 90000;             // lock heartbeat during a long welcome call
   const DEBUG_LOG_URL = `${API_BASE}/api/dialer-debug-log`;
   const RING_TIMEOUT_MS = 35000;          // give up if no ctm:start within 35s
   const WRAPUP_AUTOFIRE_MS = 60000;       // auto Save → Next after 60s of inactivity in wrap-up
@@ -99,6 +105,22 @@
   let _rschedRingTimeoutId = null;
   let _rschedDialActive = false;  // gate for the separate CTM event router
   let _rschedRoofrTabId = null;   // the single reused Roofr job-card tab
+
+  // ── Welcome Calls tab state (jobId-keyed; mirrors rsched but writes back) ──
+  let _wcAll = [];                // raw rows from /api/welcome-calls
+  let _wcDueFilter = "due";       // "due" (uncontacted or nextCall<=today) | "all"
+  let _wcQueue = [];              // filtered/ordered list Start walks
+  let _wcIdx = -1;                // index into _wcQueue of the open card
+  let _wcJob = null;              // the welcome call being worked
+  let _wcPhase = "idle";          // 'idle'|'reviewing'|'calling'|'stage2'
+  let _wcCallTimerId = null;
+  let _wcCallStartMs = 0;
+  let _wcRingTimeoutId = null;
+  let _wcRenewTimerId = null;     // 90s lock heartbeat while we hold the row
+  let _wcDialActive = false;      // gate for the separate Welcome CTM router
+  let _wcRoofrTabId = null;       // the single reused Roofr job-card tab
+  let _wcLocked = false;          // we currently hold the begin-call lock on _wcJob
+  let _wcClaiming = false;        // reentrancy guard around begin-call (double-click)
   // Phone(10-digit) → Roofr job { url, jobId, stage, name }. Used to flag missed
   // callers who are already customers (light blue + name links to their job card).
   let _roofrJobMap = {};
@@ -394,6 +416,7 @@
   }
 
   function renderQueue() {
+    if (currentTab === "welcome") { renderWelcomeQueue(); return; }
     if (currentTab === "rescheduled") { renderRescheduledQueue(); return; }
     els.queue.innerHTML = "";
     // Show ALL queued leads (was capped at 8 — Travis: "why is there always 8?").
@@ -900,6 +923,26 @@
           renderRescheduledQueue();
         } catch (e) {
           log(`fetch rescheduled failed: ${e.message}`, "err", "queue");
+        }
+        return;
+      }
+      // ── Welcome Calls tab: Madi's post-sign welcome-call queue ──
+      if (currentTab === "welcome") {
+        log("fetching welcome calls…", "info", "queue");
+        try {
+          const r = await fetch(WELCOME_URL, { headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" } });
+          const data = await r.json();
+          if (data.configured === false || data.error) {
+            log(`welcome-calls API error: ${data.error || "not configured"}`, "err", "queue");
+            return;
+          }
+          _wcAll = data.rows || [];
+          log(`welcome calls loaded: ${_wcAll.length}`, "ok", "queue");
+          // Don't tear down an open card mid-call — only re-render when idle.
+          if (_wcPhase === "idle") renderWelcomeQueue();
+          else updateWelcomeBadge(wcDueCount(_wcAll));
+        } catch (e) {
+          log(`fetch welcome calls failed: ${e.message}`, "err", "queue");
         }
         return;
       }
@@ -1682,6 +1725,7 @@
   }
 
   els.startBtn.onclick = async () => {
+    if (currentTab === "welcome") { wcStartQueue(); return; }
     if (currentTab === "rescheduled") { rschedStartQueue(); return; }
     if (mode === "running") return;
     if (inQuietHours()) { log("can't start — outside quiet hours (8am-9pm AZ only)", "err", "ui"); return; }
@@ -1734,39 +1778,48 @@
     if (tab === currentTab) return;
     // Never swap the queue out from under an active call (leads/missed OR a
     // rescheduled call in progress).
-    if (mode === "running" || ["dialing", "ringing", "connected", "wrapup"].includes(phase) || _rschedPhase === "calling") {
+    if (mode === "running" || ["dialing", "ringing", "connected", "wrapup"].includes(phase) || _rschedPhase === "calling" || _wcPhase === "calling") {
       log("can't switch tabs mid-call — stop the dialer first", "warn", "state");
       return;
     }
     // Leaving the rescheduled tab: tear down any open review card/timer.
     if (currentTab === "rescheduled" && tab !== "rescheduled") rschedReset();
+    // Leaving the welcome tab: release any held lock + tear down the card.
+    if (currentTab === "welcome" && tab !== "welcome") wcReset();
     currentTab = tab;
     queue = [];
     const isResched = tab === "rescheduled";
+    const isWelcome = tab === "welcome";
     document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
     if (els.queueHeader) els.queueHeader.textContent = tab === "missed" ? "Missed Calls" : "Queue";
     if (els.refreshBtn) els.refreshBtn.title = tab === "missed" ? "Resync missed calls from CTM" : "Resync queue from Google Sheet";
     // Standard queue view vs the rescheduled panel.
     const stdView = document.getElementById("standard-queue-view");
     const rschedMain = document.getElementById("rescheduled-main");
-    if (stdView) stdView.style.display = isResched ? "none" : "";
+    const welcomeMain = document.getElementById("welcome-main");
+    if (stdView) stdView.style.display = (isResched || isWelcome) ? "none" : "";
     if (rschedMain) rschedMain.style.display = isResched ? "" : "none";
-    // Filter panels: leads / missed / rescheduled each show only their own.
+    if (welcomeMain) welcomeMain.style.display = isWelcome ? "" : "none";
+    // Filter panels: leads / missed / rescheduled / welcome each show only their own.
     const mfPanel = document.getElementById("missed-filter-panel");
     const rschedPanel = document.getElementById("rescheduled-filter-panel");
+    const welcomePanel = document.getElementById("welcome-filter-panel");
     if (mfPanel) mfPanel.style.display = tab === "missed" ? "" : "none";
     if (rschedPanel) rschedPanel.style.display = isResched ? "" : "none";
+    if (welcomePanel) welcomePanel.style.display = isWelcome ? "" : "none";
     if (els.filterPanel) els.filterPanel.style.display = tab === "leads" ? "" : "none";
-    log(`switched to ${{ leads: "Leads", missed: "Missed Calls", rescheduled: "Rescheduled" }[tab] || tab} tab`, "info", "ui");
+    log(`switched to ${{ leads: "Leads", missed: "Missed Calls", rescheduled: "Rescheduled", welcome: "Welcome Calls" }[tab] || tab} tab`, "info", "ui");
     renderQueue();
     fetchLeads({ force: true });
   }
   document.getElementById("tab-leads")?.addEventListener("click", () => switchTab("leads"));
   document.getElementById("tab-missed")?.addEventListener("click", () => switchTab("missed"));
   document.getElementById("tab-rescheduled")?.addEventListener("click", () => switchTab("rescheduled"));
+  document.getElementById("tab-welcome")?.addEventListener("click", () => switchTab("welcome"));
   document.querySelectorAll(".mfilter").forEach(btn =>
     btn.addEventListener("click", () => setMissedFilter(btn.dataset.mf)));
   rschedBindButtons();
+  wcBindButtons();
   // Prime the Missed Calls badge once on load (independent of the active tab).
   (async () => {
     try {
@@ -1781,6 +1834,14 @@
       const r = await fetch(RESCHEDULED_URL, { headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" } });
       const data = await r.json();
       if (data.success && Array.isArray(data.jobs)) updateRescheduledBadge(data.jobs.length);
+    } catch (_) {}
+  })();
+  // Prime the Welcome Calls badge once on load (counts only due/overdue rows).
+  (async () => {
+    try {
+      const r = await fetch(WELCOME_URL, { headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" } });
+      const data = await r.json();
+      if (Array.isArray(data.rows)) updateWelcomeBadge(wcDueCount(data.rows));
     } catch (_) {}
   })();
 
@@ -2130,6 +2191,7 @@
       // bails on !currentLead (which rescheduled never sets), so this is the only
       // consumer of CTM events during a rescheduled call.
       rschedHandleCtmEvent(p.event);
+      wcHandleCtmEvent(p.event);
       return;
     }
     if (p.type === "command-error") {
@@ -2773,6 +2835,385 @@
       log("rsched: hangup clicked", "act", "rsched");
       sendToCtm({ type: "hangup" }).catch(() => {});
       rschedOnCallEnded();
+    });
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  //  WELCOME CALLS TAB — Madi's post-proposal-signed welcome-call queue.
+  //  Mirrors the Rescheduled flow's UI, but WRITES to the sheet via
+  //  /api/welcome-calls (begin-call lock + disposition), keyed by jobId.
+  // ════════════════════════════════════════════════════════════════════
+
+  // Arizona "today" (no DST) as a date-only Date for due comparisons.
+  function wcTodayAZ() {
+    const p = new Intl.DateTimeFormat("en-US", { timeZone: "America/Phoenix", year: "numeric", month: "numeric", day: "numeric" }).formatToParts(new Date());
+    const g = t => +p.find(x => x.type === t).value;
+    return new Date(g("year"), g("month") - 1, g("day"));
+  }
+  function wcParseMDY(s) {
+    const m = String(s || "").match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    return m ? new Date(+m[3], +m[1] - 1, +m[2]) : null;
+  }
+  // A row is "due" if it's still callable, under the attempt cap, and its next
+  // call date has arrived (or it was never contacted).
+  function wcIsDue(row) {
+    const st = (row.status || "").trim().toLowerCase();
+    if (["complete", "production call"].includes(st)) return false;  // terminal — don't call
+    if ((parseInt(row.attemptCount) || 0) >= WC_MAX_ATTEMPTS) return false;
+    const nc = wcParseMDY(row.nextCall);
+    if (!nc) return true;                 // never contacted → due now
+    return nc <= wcTodayAZ();
+  }
+  function wcDueCount(rows) { return (rows || []).filter(wcIsDue).length; }
+
+  function updateWelcomeBadge(n) {
+    const b = document.getElementById("welcome-badge");
+    if (!b) return;
+    if (n > 0) { b.textContent = String(n); b.style.display = ""; } else { b.style.display = "none"; }
+  }
+
+  function wcFilteredJobs() {
+    const list = _wcDueFilter === "all" ? _wcAll.slice() : _wcAll.filter(wcIsDue);
+    // Most-overdue first; uncontacted (no nextCall) sort to the top.
+    list.sort((a, b) => {
+      const ta = wcParseMDY(a.nextCall)?.getTime() ?? 0;
+      const tb = wcParseMDY(b.nextCall)?.getTime() ?? 0;
+      return ta - tb;
+    });
+    return list;
+  }
+
+  function wcSetDueFilter(v) {
+    if (_wcDueFilter === v) return;
+    if (_wcPhase !== "idle") { log("welcome: finish the current card before changing the filter", "warn", "welcome"); syncWcDueSelect(); return; }
+    _wcDueFilter = v;
+    renderWelcomeQueue();
+  }
+  function syncWcDueSelect() {
+    const sel = document.getElementById("wc-due-select");
+    if (sel) sel.value = _wcDueFilter;
+  }
+
+  function renderWelcomeQueue() {
+    const container = document.getElementById("wc-queue");
+    const header = document.getElementById("wc-queue-header");
+    if (!container) return;
+    updateWelcomeBadge(wcDueCount(_wcAll));
+    syncWcDueSelect();
+    if (!_wcAll.length) {
+      container.innerHTML = `<li style="color:var(--muted);font-style:italic;font-size:12px;padding:8px 2px;">No welcome calls yet.</li>`;
+      if (header) header.textContent = "Welcome Calls";
+      _wcQueue = [];
+      return;
+    }
+    const list = wcFilteredJobs();
+    _wcQueue = list;
+    if (header) header.textContent = `Welcome Calls (${list.length}${_wcDueFilter === "due" ? " due" : ""})`;
+    container.innerHTML = "";
+    if (!list.length) {
+      container.innerHTML = `<li style="color:var(--muted);font-style:italic;font-size:12px;padding:8px 2px;">Nothing due — switch to "All signed" to see everyone.</li>`;
+      return;
+    }
+    for (const job of list) {
+      const li = document.createElement("li");
+      li.className = "rsched-row wc-row";
+      li.dataset.jobId = String(job.jobId);
+      const lockedOther = job.lockedBy && job.lockedBy !== repName;
+      if (lockedOther) li.classList.add("locked");
+      const att = parseInt(job.attemptCount) || 0;
+      const stTxt = job.status ? ` · ${escapeHtml(job.status)}` : "";
+      li.innerHTML = `
+        <div style="flex:1;min-width:0;">
+          <div class="rsched-name">${escapeHtml(job.customer || "(no name)")}</div>
+          <div class="rsched-phone">${escapeHtml(job.phone || "—")}</div>
+          <div class="rsched-meta">Signed ${escapeHtml(job.proposalSigned || "—")} · ${att}/${WC_MAX_ATTEMPTS}${job.nextCall ? " · due " + escapeHtml(job.nextCall) : ""}${stTxt}${lockedOther ? " · 🔒 " + escapeHtml(job.lockedBy) : ""}</div>
+        </div>`;
+      li.addEventListener("click", () => {
+        const idx = _wcQueue.findIndex(j => String(j.jobId) === String(job.jobId));
+        if (idx >= 0) { _wcIdx = idx; wcOpenCard(_wcQueue[idx]); }
+      });
+      container.appendChild(li);
+    }
+  }
+
+  // Open the Roofr job card in a fresh tab (reuse ONE dedicated tab), same
+  // cold-load trick as rsched so the card always opens regardless of filters.
+  function wcOpenJobCard(url) {
+    if (!url) return;
+    try {
+      const prev = _wcRoofrTabId;
+      chrome.tabs.create({ url, active: true }, (t) => {
+        if (chrome.runtime.lastError || !t) { window.open(url, "_blank"); return; }
+        _wcRoofrTabId = t.id;
+        if (t.windowId != null) chrome.windows.update(t.windowId, { focused: true });
+        if (prev != null && prev !== t.id) chrome.tabs.remove(prev, () => { void chrome.runtime.lastError; });
+      });
+    } catch (_) { window.open(url, "_blank"); }
+  }
+  function wcCardUrl(job) { return job.link || `https://app.roofr.com/dashboard/team/239329/jobs/list-view?selectedJobId=${job.jobId}`; }
+
+  // POST helper for all server writes (begin-call/renew/release/disposition).
+  async function wcWrite(body) {
+    try {
+      const r = await fetch(WELCOME_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" },
+        body: JSON.stringify(body),
+      });
+      return await r.json();
+    } catch (e) {
+      log(`welcome write error: ${e.message}`, "err", "welcome");
+      return { updated: false, claimed: false, error: e.message };
+    }
+  }
+
+  function wcStartCallTimer() {
+    wcStopCallTimer();
+    _wcCallStartMs = Date.now();
+    const el = document.getElementById("wc-call-timer");
+    _wcCallTimerId = setInterval(() => {
+      if (el) el.textContent = rschedFmt(Math.floor((Date.now() - _wcCallStartMs) / 1000));
+    }, 1000);
+  }
+  function wcStopCallTimer() {
+    if (_wcCallTimerId) { clearInterval(_wcCallTimerId); _wcCallTimerId = null; }
+    const el = document.getElementById("wc-call-timer"); if (el) { el.textContent = ""; el.style.color = ""; }
+  }
+  // 90s lock heartbeat so a long call doesn't let the 5-min TTL expire under us.
+  function wcStartRenew() {
+    wcStopRenew();
+    _wcRenewTimerId = setInterval(() => {
+      if (_wcLocked && _wcJob) wcWrite({ jobId: _wcJob.jobId, rep: repName, action: "renew" }).catch(() => {});
+    }, WC_RENEW_MS);
+  }
+  function wcStopRenew() { if (_wcRenewTimerId) { clearInterval(_wcRenewTimerId); _wcRenewTimerId = null; } }
+
+  function wcShowPhase(ph) {
+    const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? "" : "none"; };
+    show("wc-review-card", ph !== "idle");
+    show("wc-stage1", ph === "reviewing");
+    show("wc-dialing", ph === "calling");
+    // Disposition row is available straight from review (open account → disposition
+    // → continue, no call required) AND after a call ends.
+    show("wc-stage2", ph === "reviewing" || ph === "stage2");
+    const badge = document.getElementById("wc-phase-badge");
+    if (badge) badge.textContent = { reviewing: "Review", calling: "Calling", stage2: "Outcome" }[ph] || ph;
+  }
+
+  function wcRenderCard() {
+    const j = _wcJob; if (!j) return;
+    const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+    set("wc-job-name", j.customer || "(no name)");
+    set("wc-job-phone", j.phone || "—");
+    const meta = document.getElementById("wc-job-meta");
+    const att = parseInt(j.attemptCount) || 0;
+    if (meta) meta.innerHTML =
+      `Signed <strong>${escapeHtml(j.proposalSigned || "—")}</strong> · ${att}/${WC_MAX_ATTEMPTS} attempts${j.nextCall ? " · Next " + escapeHtml(j.nextCall) : ""}${j.lastCSR ? " · last: " + escapeHtml(j.lastCSR) : ""}<br>${escapeHtml(j.address || "")}`;
+  }
+
+  function wcStartQueue() {
+    _wcQueue = wcFilteredJobs();
+    if (!_wcQueue.length) { log("welcome: queue empty — nothing due", "warn", "welcome"); return; }
+    _wcIdx = 0;
+    while (_wcIdx < _wcQueue.length && _wcQueue[_wcIdx].lockedBy && _wcQueue[_wcIdx].lockedBy !== repName) _wcIdx++;
+    if (_wcIdx >= _wcQueue.length) { log("welcome: every due row is locked by another rep", "warn", "welcome"); return; }
+    wcOpenCard(_wcQueue[_wcIdx]);
+  }
+
+  function wcOpenCard(job) {
+    if (mode === "running" || ["dialing", "ringing", "connected", "wrapup"].includes(phase)) {
+      log("welcome: stop the main dialer before opening a card", "warn", "welcome"); return;
+    }
+    // Block reopening a card mid-call/outcome — that would drop a held lock
+    // without releasing it (advances reset _wcPhase first, so they're allowed).
+    if (_wcPhase === "calling" || _wcPhase === "stage2") {
+      log("welcome: finish the current call's outcome before opening another card", "warn", "welcome"); return;
+    }
+    // Release a still-held lock from the previous card before moving on.
+    if (_wcLocked && _wcJob && _wcJob.jobId !== job.jobId) {
+      wcWrite({ jobId: _wcJob.jobId, rep: repName, action: "release" }).catch(() => {});
+      _wcLocked = false; wcStopRenew();
+    }
+    if (job.lockedBy && job.lockedBy !== repName) {
+      log(`welcome: ${job.customer || job.jobId} is locked by ${job.lockedBy} — skipping`, "warn", "welcome");
+      return;
+    }
+    _wcJob = job;
+    _wcPhase = "reviewing";
+    _wcLocked = false;
+    wcOpenJobCard(wcCardUrl(job));
+    log(`welcome: ▸ ${job.customer || job.jobId} (${job.phone || "no phone"})`, "act", "welcome");
+    wcRenderCard();
+    wcShowPhase("reviewing");
+    document.querySelectorAll(".wc-row").forEach(r => r.classList.toggle("active", r.dataset.jobId === String(job.jobId)));
+  }
+
+  // ── Stage 1: Call (claims the row) or Skip ──
+  async function wcHandleCall() {
+    if (_wcClaiming || _wcPhase !== "reviewing") return;   // double-click / reentrancy guard
+    if (mode === "running" || ["dialing", "ringing", "connected", "wrapup"].includes(phase)) {
+      log("welcome: can't dial — the main dialer is active", "warn", "welcome"); return;
+    }
+    const j = _wcJob; if (!j) return;
+    const e164 = toE164(j.phone || "");
+    if (!e164) { log(`welcome: bad/empty phone: ${j.phone || "(none)"}`, "err", "welcome"); return; }
+
+    // Claim + stamp on the server BEFORE dialing (closes the double-call hole).
+    _wcClaiming = true;
+    const callBtn = document.getElementById("wc-btn-call"); if (callBtn) callBtn.disabled = true;
+    const claim = await wcWrite({ jobId: j.jobId, rep: repName, action: "begin-call" });
+    if (callBtn) callBtn.disabled = false;
+    if (!claim.claimed) {
+      _wcClaiming = false;
+      log(`welcome: ${j.customer} not claimable (${claim.reason || ("locked by " + claim.lockedBy) || "?"}) — refreshing`, "warn", "welcome");
+      await fetchLeads({ force: true });
+      wcAdvance();
+      return;
+    }
+    _wcLocked = true;
+    _wcClaiming = false;
+    wcStartRenew();
+
+    const ready = await ensureCtmTab();
+    if (!ready) {
+      // Keep the lock and let the rep record an outcome manually.
+      log("welcome: CTM tab not ready — go straight to outcome", "err", "welcome");
+      _wcPhase = "stage2"; wcShowPhase("stage2"); return;
+    }
+    _wcPhase = "calling";
+    _wcDialActive = true;
+    _currentDialAt = Date.now();   // lets the CTM listener's stale-event guard protect this call
+    wcShowPhase("calling");
+    wcStartCallTimer();
+    log(`welcome: ▶ DIALING ${j.customer} ${e164}`, "act", "welcome");
+    clearTimeout(_wcRingTimeoutId);
+    _wcRingTimeoutId = setTimeout(() => {
+      if (_wcPhase === "calling") {
+        log("welcome: ring timeout — ending, go to outcome", "warn", "welcome");
+        sendToCtm({ type: "hangup" }).catch(() => {});
+        wcOnCallEnded();
+      }
+    }, RING_TIMEOUT_MS);
+    const resp = await sendToCtm({ type: "dial", number: e164 });
+    if (!resp || !resp.ok) {
+      log(`welcome: dial failed: ${resp?.error || "?"} — go to outcome`, "err", "welcome");
+      clearTimeout(_wcRingTimeoutId);
+      wcStopCallTimer();
+      _wcDialActive = false;
+      _wcPhase = "stage2";
+      wcShowPhase("stage2");
+    }
+  }
+
+  async function wcHandleSkip() {
+    if (_wcLocked && _wcJob) {
+      await wcWrite({ jobId: _wcJob.jobId, rep: repName, action: "release" });
+      _wcLocked = false;
+    }
+    wcStopRenew();
+    log(`welcome: skipped ${_wcJob?.customer || ""}`, "info", "welcome");
+    wcAdvance();
+  }
+
+  // ── Stage 2: record the outcome (writes disposition + releases the lock) ──
+  async function wcHandleStage2(status) {
+    const j = _wcJob; if (!j) return;
+    const note = (document.getElementById("wc-note")?.value || "").trim();
+    const res = await wcWrite({ jobId: j.jobId, rep: repName, status, notes: note });
+    if (!res.updated) {
+      // Don't advance or drop the lock — keep the heartbeat alive and let the
+      // rep retry the outcome rather than leaving a stale server lock.
+      log(`welcome: save failed for ${j.customer}: ${res.reason || res.error || "?"} — staying on this card to retry`, "err", "welcome");
+      return;
+    }
+    log(`welcome ✓ ${j.customer}: ${status}${note ? " (" + note + ")" : ""} [att ${res.attemptCount ?? "?"}]`, "ok", "welcome");
+    wcStopRenew();          // server disposition already cleared the lock (O/P)
+    _wcLocked = false;
+    // Reflect the new status locally so the queue/badge update immediately.
+    const local = _wcAll.find(r => String(r.jobId) === String(j.jobId));
+    if (local) { local.status = status; local.attemptCount = String(res.attemptCount ?? ((parseInt(local.attemptCount) || 0) + 1)); }
+    const n = document.getElementById("wc-note"); if (n) n.value = "";
+    wcAdvance();
+  }
+
+  function wcOnCallEnded() {
+    clearTimeout(_wcRingTimeoutId);
+    wcStopCallTimer();
+    _wcDialActive = false;
+    if (_wcPhase !== "calling") return;
+    _wcPhase = "stage2";
+    wcShowPhase("stage2");
+    log(`welcome: call ended → outcome for ${_wcJob?.customer}`, "info", "welcome");
+  }
+
+  // Separate CTM router — only acts while a welcome call is dialing.
+  function wcHandleCtmEvent(eventName) {
+    if (!_wcDialActive) return;
+    if (eventName === "ctm:start") {
+      log("welcome: call connected", "ok", "welcome");
+      const el = document.getElementById("wc-call-timer"); if (el) el.style.color = "var(--success)";
+    } else if (eventName === "ctm:end-activity" || eventName === "ctm:wrapup_start" || eventName === "ctm:failed") {
+      wcOnCallEnded();
+    }
+  }
+
+  // Pick the next due, unlocked row from the FRESHEST _wcAll (excluding the
+  // just-handled job), so the walk never desyncs against the 60s poll or a row
+  // another rep grabbed mid-session.
+  function wcNextCandidate(excludeJobId) {
+    return wcFilteredJobs().find(j =>
+      String(j.jobId) !== String(excludeJobId) &&
+      !(j.lockedBy && j.lockedBy !== repName)) || null;
+  }
+  function wcAdvance() {
+    const curId = _wcJob?.jobId;
+    _wcPhase = "idle";   // current card is finished — lets wcOpenCard proceed
+    const next = wcNextCandidate(curId);
+    if (next) {
+      _wcQueue = wcFilteredJobs();
+      _wcIdx = _wcQueue.findIndex(j => String(j.jobId) === String(next.jobId));
+      wcOpenCard(next);
+    } else {
+      log("welcome: queue complete — every due card handled this session", "ok", "welcome");
+      wcReset();
+      fetchLeads({ force: true });
+    }
+  }
+
+  function wcReset() {
+    // Fire-and-forget release of any lock we still hold (called sync on tab switch).
+    if (_wcLocked && _wcJob) { wcWrite({ jobId: _wcJob.jobId, rep: repName, action: "release" }).catch(() => {}); _wcLocked = false; }
+    wcStopCallTimer();
+    wcStopRenew();
+    clearTimeout(_wcRingTimeoutId);
+    _wcDialActive = false;
+    _wcClaiming = false;
+    _wcPhase = "idle";
+    _wcJob = null;
+    wcShowPhase("idle");
+    document.querySelectorAll(".wc-row").forEach(r => r.classList.remove("active"));
+  }
+
+  function wcBindButtons() {
+    const on = (id, fn) => document.getElementById(id)?.addEventListener("click", fn);
+    document.getElementById("wc-due-select")?.addEventListener("change", (e) => wcSetDueFilter(e.target.value));
+    on("wc-start-btn", wcStartQueue);
+    on("wc-refresh-btn", async () => {
+      const b = document.getElementById("wc-refresh-btn");
+      if (b) { b.disabled = true; b.textContent = "↻ …"; }
+      try { await fetchLeads({ force: true }); }
+      finally { if (b) { b.disabled = false; b.textContent = "↻ Refresh"; } }
+    });
+    on("wc-reopen-btn", () => { if (_wcJob) wcOpenJobCard(wcCardUrl(_wcJob)); });
+    on("wc-btn-call", wcHandleCall);
+    on("wc-btn-skip", wcHandleSkip);
+    on("wc-btn-attempted", () => wcHandleStage2("Attempted"));
+    on("wc-btn-complete", () => wcHandleStage2("Complete"));
+    on("wc-btn-production", () => wcHandleStage2("Production Call"));
+    on("wc-hangup-btn", () => {
+      log("welcome: hangup clicked", "act", "welcome");
+      sendToCtm({ type: "hangup" }).catch(() => {});
+      wcOnCallEnded();
     });
   }
 

@@ -503,12 +503,36 @@ export const CONFIG = {
     return this.findCityInString(text)?.city || null;
   },
 
+  // GPS-based region bands for Arizona. NORTH above Black Canyon City (~34.07°N),
+  // SOUTH below Picacho (~32.64°N), PHX between. Coords beat the city-name whitelists,
+  // which mislabel places like Payson/Star Valley (north) as PHX. Verified against
+  // booked-appointment coordinates 2026-06-26.
+  REGION_LAT_NORTH: 34.07,
+  REGION_LAT_SOUTH: 32.64,
+
+  getRegionFromCoords(lat, lng) {
+    const la = parseFloat(lat);
+    // Missing or out-of-Arizona coords → can't classify (fall back to city name).
+    if (!Number.isFinite(la) || la < 31 || la > 37) return null;
+    if (la > this.REGION_LAT_NORTH) return 'NORTH';
+    if (la < this.REGION_LAT_SOUTH) return 'SOUTH';
+    return 'PHX';
+  },
+
+  // Region for a calendar event: GPS coordinates first (accurate), city-name whitelist
+  // as fallback when coords are absent (the ~7% with no geocode, or DOM-scraped events).
+  getRegionForEvent(ev) {
+    const byCoords = this.getRegionFromCoords(ev?.lat, ev?.lng);
+    if (byCoords) return byCoords;
+    return this.findCityInString([ev?.title, ev?.address, ev?.notes].join(' '))?.region || null;
+  },
+
   passesRegion(e, regionKey) {
     if (regionKey === "ALL") return true;
-    const hit = this.findCityInString([e.title, e.address, e.notes].join(' '));
-    // If no city is found, it's "uncategorized" and should show up in all filters.
-    if (!hit) return true; 
-    return hit.region === regionKey;
+    const region = this.getRegionForEvent(e);
+    // Neither coords nor a known city → "uncategorized": still shows in all filters (unchanged).
+    if (!region) return true;
+    return region === regionKey;
   },
   
   getRegionForCity(city) {
@@ -867,13 +891,10 @@ export const CONFIG = {
     const lat = coordinates.y;
     const lng = coordinates.x;
 
-    // Rough boundaries for Arizona regions:
-    // PHX Metro: roughly 33.0-34.0 lat, -113 to -111 lng
-    // North: above 34.2 lat
-    // South: below 32.5 lat (Tucson area)
-
-    if (lat > 34.2) return 'NORTH';
-    if (lat < 32.5) return 'SOUTH';
+    // Same latitude bands as event classification: NORTH above Black Canyon City
+    // (~34.07°N), SOUTH below Picacho (~32.64°N), PHX between.
+    if (lat > this.REGION_LAT_NORTH) return 'NORTH';
+    if (lat < this.REGION_LAT_SOUTH) return 'SOUTH';
     return 'PHX';
   },
 

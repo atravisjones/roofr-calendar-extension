@@ -2105,6 +2105,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             eventId: row?.id != null ? String(row.id) : undefined,
             job_id: row?.job_id,
             jobId: row?.job_id,
+            lat: row?.latitude,   // from jobs join — drives GPS region classification
+            lng: row?.longitude,
             attendees,
             isAllDay: false
         };
@@ -5018,6 +5020,39 @@ document.addEventListener('DOMContentLoaded', async () => {
         return targetTab;
     }
 
+    // Open/refresh a Roofr calendar tab in the BACKGROUND (no focus steal) so the
+    // DOM-dependent features (Reports/Reviews batch, the job-card openers) have a loaded
+    // calendar to work with. The server-availability path (loadTwoWeekAvailability) no
+    // longer opens the calendar — it keeps the rep on the 14-day availability view — so
+    // this restores the live calendar WITHOUT yanking them off that view. Reuses an
+    // existing calendar tab if one is already open (never spawns a duplicate).
+    async function ensureCalendarTabInBackground() {
+        try {
+            let workingWindowId = window.__targetWindowId || null;
+            if (!workingWindowId) {
+                try { workingWindowId = (await chrome.windows.getCurrent()).id; } catch (_) {}
+            }
+            const queryOpts = { url: "*://app.roofr.com/dashboard/team/*/calendar*" };
+            if (workingWindowId) queryOpts.windowId = workingWindowId;
+            const existing = await chrome.tabs.query(queryOpts);
+            if (existing.length > 0) {
+                // Already have a calendar tab — leave it where it is, just remember it.
+                window.__targetRoofrTabId = existing[0].id;
+                return existing[0];
+            }
+            // None open — create one in the background (active:false keeps the rep on the scanner).
+            addLog("Opening Roofr calendar in background for scraper features...");
+            const createOpts = { url: "https://app.roofr.com/dashboard/team/239329/calendar", active: false };
+            if (workingWindowId) createOpts.windowId = workingWindowId;
+            const tab = await chrome.tabs.create(createOpts);
+            window.__targetRoofrTabId = tab.id;
+            return tab;
+        } catch (e) {
+            addLog(`Background calendar open failed: ${e.message}`, "INFO");
+            return null;
+        }
+    }
+
     // Main scan handler that checks tab and navigates if needed
     async function handleScanClick() {
         scanBtn.disabled = true;
@@ -5028,6 +5063,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             // full 14-day view). Only fall through to the live Roofr DOM scan if the server fails.
             const serverOk = await loadTwoWeekAvailability();
             if (serverOk) {
+                // Server gave us the 14-day availability — the rep stays on this view.
+                // But the DOM-dependent features (Reports/Reviews batch, job-card openers)
+                // still need a loaded Roofr calendar tab. Open one in the BACKGROUND so they
+                // work without the rep manually opening the calendar. Fire-and-forget so it
+                // never delays showing the availability.
+                ensureCalendarTabInBackground();
                 scanBtn.disabled = false;
                 updateScanButtonState();
                 return;

@@ -3008,7 +3008,7 @@
     const meta = document.getElementById("wc-job-meta");
     const att = parseInt(j.attemptCount) || 0;
     if (meta) meta.innerHTML =
-      `Signed <strong>${escapeHtml(j.proposalSigned || "—")}</strong> · ${att}/${WC_MAX_ATTEMPTS} attempts${j.nextCall ? " · Next " + escapeHtml(j.nextCall) : ""}${j.lastCSR ? " · last: " + escapeHtml(j.lastCSR) : ""}<br>${escapeHtml(j.address || "")}`;
+      `Signed <strong>${escapeHtml(j.proposalSigned || "—")}</strong> · ${att}/${WC_MAX_ATTEMPTS} attempts${j.nextCall ? " · Next " + escapeHtml(j.nextCall) : ""}${j.lastCSR ? " · last: " + escapeHtml(j.lastCSR) : ""}${j.source ? " · 📞 " + escapeHtml(j.source) : ""}<br>${escapeHtml(j.address || "")}`;
   }
 
   function wcStartQueue() {
@@ -3085,6 +3085,17 @@
     _currentDialAt = Date.now();   // lets the CTM listener's stale-event guard protect this call
     wcShowPhase("calling");
     wcStartCallTimer();
+    // Outbound caller ID by lead source — same source→tracking-number map the
+    // Form Leads dialer uses (dialer-sources.js). Without this the welcome call
+    // went out from the CTM default instead of the number tied to how the lead
+    // came in. Unmapped/unknown sources fall through to the CTM default.
+    let wcOutbound = null;
+    try { wcOutbound = (window.DialerSources || {}).lookupOutbound?.(j.source); } catch (_) {}
+    if (wcOutbound) {
+      log(`welcome: source "${j.source || '(blank)'}" → outbound ${wcOutbound.name} ${wcOutbound.number}`, "info", "welcome");
+    } else {
+      log(`welcome: no outbound mapping for source "${j.source || '(blank)'}" — using CTM default`, "warn", "welcome");
+    }
     log(`welcome: ▶ DIALING ${j.customer} ${e164}`, "act", "welcome");
     clearTimeout(_wcRingTimeoutId);
     _wcRingTimeoutId = setTimeout(() => {
@@ -3094,7 +3105,12 @@
         wcOnCallEnded();
       }
     }, RING_TIMEOUT_MS);
-    const resp = await sendToCtm({ type: "dial", number: e164 });
+    const resp = await sendToCtm({
+      type: "dial",
+      number: e164,
+      fromNumber: wcOutbound?.number || null,
+      fromName: wcOutbound?.name || null,
+    });
     if (!resp || !resp.ok) {
       log(`welcome: dial failed: ${resp?.error || "?"} — go to outcome`, "err", "welcome");
       clearTimeout(_wcRingTimeoutId);

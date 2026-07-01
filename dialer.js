@@ -3166,6 +3166,11 @@
   function wcHandleCtmEvent(eventName) {
     if (!_wcDialActive) return;
     if (eventName === "ctm:start") {
+      // CONNECTED — cancel the 35s no-answer guillotine. Without this, the ring
+      // timeout fires mid-conversation (phase stays "calling" the whole call)
+      // and hangs up a live welcome call at 35s. (The main dialer is safe
+      // because its timeout is guarded on the dialing/ringing phase.)
+      clearTimeout(_wcRingTimeoutId);
       log("welcome: call connected", "ok", "welcome");
       const el = document.getElementById("wc-call-timer"); if (el) el.style.color = "var(--success)";
     } else if (eventName === "ctm:end-activity" || eventName === "ctm:wrapup_start" || eventName === "ctm:failed") {
@@ -3185,6 +3190,11 @@
     const curId = _wcJob?.jobId;
     _wcPhase = "idle";   // current card is finished — lets wcOpenCard proceed
     const next = wcNextCandidate(curId);
+    // Rebuild the visible list + badge from the just-updated _wcAll so a
+    // Complete / Production Call row drops out of the queue immediately,
+    // instead of lingering until the next poll/refresh. (wcOpenCard below
+    // re-applies the .active highlight on the rebuilt rows.)
+    renderWelcomeQueue();
     if (next) {
       _wcQueue = wcFilteredJobs();
       _wcIdx = _wcQueue.findIndex(j => String(j.jobId) === String(next.jobId));

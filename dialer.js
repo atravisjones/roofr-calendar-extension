@@ -37,6 +37,7 @@
   const MAX_ATTEMPTS = 7;                 // 7 attempts then auto-Lost (matches server AUTO_LOST_THRESHOLD)
   const POLL_BRIDGE_MS = 5000;
   const MIN_GAP_MS = 3 * 60 * 60 * 1000;  // 3 hours between consecutive calls to the same lead
+  const BUSY_STUCK_MS = 20 * 60 * 1000;   // failsafe: treat the softphone-busy flag as stale after 20 min
   const AUTO_RETRY_THRESHOLD_MS = 5000;   // connected then dropped <5s → retry on main line
   const NEVER_CONNECT_RETRY_MS = 12000;   // never connected but ended <12s → one-ring reject, retry on main line
   const AUTO_RETRY_NUMBER = "+14805884668"; // Arizona Roofers Main Line for retries
@@ -129,6 +130,15 @@
   let missedFilter = "all";
   let _missedAll = [];   // full built missed queue (pre-filter), so chips don't refetch
   let ringTimeoutId = null;
+  // ── Softphone-busy tracking ──
+  // The CTM softphone can carry a call the dialer did NOT place (an inbound
+  // the rep answered mid-wrap-up). The dialer must never auto-dial over it,
+  // and must never blind-hangup while it's live.
+  let softphoneBusy = false;   // a call is LIVE on the softphone — ours or not
+  let _busyChangedAt = 0;      // when softphoneBusy last flipped (stuck-flag failsafe)
+  let _busyAtDial = false;     // softphone already had a live call when we sent the dial
+  let _busyDeferTimer = null;  // pending busy-hold recheck
+  let _busyHoldLastLog = 0;    // throttle busy-hold log lines
   let bridgeReady = false;
   let ctmTabOpen = false;
   let currentWindowId = null;
@@ -920,17 +930,11 @@
     }
   }
 
-  async function clearSheetLogForVersion() {
-    try {
-      await fetch(DEBUG_LOG_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "clear", version: _extensionVersion, rep: repName }),
-      });
-    } catch (_) { /* best-effort */ }
-  }
-
-  // Detect version change between runs and clear the sheet log before adding new entries
+  // Detect version change between runs. NOTE: we no longer clear the shared
+  // sheet log on version change — the v2.1.43 rollout wiped every rep's
+  // entries minutes after a mid-call hangup incident, destroying the
+  // forensics. The DialerLog tab is rotated server-side instead (trim-on-
+  // append in api/dialer-debug-log.js); the dialer just marks transitions.
   async function initSheetLogMirror() {
     try {
       _extensionVersion = chrome.runtime.getManifest().version;
@@ -939,9 +943,8 @@
       const stored = await chrome.storage.local.get(["dialer_log_last_version"]);
       const prev = stored.dialer_log_last_version;
       if (prev !== _extensionVersion) {
-        await clearSheetLogForVersion();
         await chrome.storage.local.set({ dialer_log_last_version: _extensionVersion });
-        log(`sheet log cleared for new version ${_extensionVersion} (was ${prev || "first run"})`, "info", "init");
+        log(`━━ updated to v${_extensionVersion} (was ${prev || "first run"}) — log preserved ━━`, "info", "init");
       } else {
         log(`sheet log mirror active · version ${_extensionVersion} (unchanged)`, "info", "init");
       }
@@ -1261,6 +1264,28 @@
       return;
     }
 
+    // SOFTPHONE-BUSY HOLD: never auto-dial while a call is live on the
+    // softphone — e.g. the rep answered an INBOUND call during wrap-up and
+    // the 60s auto-advance fired mid-conversation. Recheck every 5s until it
+    // frees up. Failsafe: CTM's late-event flush can wedge a stale ctm:start
+    // in the flag — after 20 min assume stale and resume (the busy-at-dial
+    // hangup guard still protects the live call even if this guess is wrong).
+    if (softphoneBusy) {
+      if (Date.now() - _busyChangedAt < BUSY_STUCK_MS) {
+        if (Date.now() - _busyHoldLastLog > 55000) {
+          _busyHoldLastLog = Date.now();
+          log(`softphone has a live call — holding auto-dial until it ends`, "warn", "state");
+        }
+        clearTimeout(_busyDeferTimer);
+        _busyDeferTimer = setTimeout(() => {
+          if (mode === "running") advanceToNext();
+        }, 5000);
+        return;
+      }
+      log(`softphone busy flag stuck >20 min — assuming stale CTM event, resuming`, "warn", "state");
+      softphoneBusy = false;
+    }
+
     setPhase("fetching");
     // Re-fetch queue so locks from other reps + new leads are visible. Force
     // bypasses the debounce — pre-dial freshness is non-negotiable, even if
@@ -1319,6 +1344,7 @@
     if (els.sessionCount) els.sessionCount.textContent = sessionCount;
     _currentDialAt = Date.now();
     _currentFromNumber = outbound?.number || null;
+    _busyAtDial = softphoneBusy;
     startCallTimer();
     log(`▶ DIALING ${leadTag(lead)} → ${e164} [${sessionCount}/${sessionLimit}] attempts=${lead.attemptCount || 0}`, "act", "dial");
     const resp = await sendToCtm({
@@ -1339,7 +1365,11 @@
     ringTimeoutId = setTimeout(() => {
       if (phase === "dialing" || phase === "ringing") {
         log(`ring timeout (${RING_TIMEOUT_MS/1000}s) — no ctm:start received, treating as no-answer`, "warn", "dial");
-        sendToCtm({ type: "hangup" }).catch(() => {});
+        // NEVER blind-hangup if the softphone already had a live call when we
+        // dialed — CTM's hangup ends WHATEVER call is active (it once killed a
+        // rep's in-progress inbound call).
+        if (_busyAtDial) log(`skipping hangup — softphone had a live call at dial time`, "warn", "dial");
+        else sendToCtm({ type: "hangup" }).catch(() => {});
         onCallEnded({ source: "ring-timeout" });
       }
     }, RING_TIMEOUT_MS);
@@ -1399,6 +1429,7 @@
         if (!e164) { onCallEnded({ source: "retry-bad-phone" }); return; }
         _currentDialAt = Date.now();
         _currentFromNumber = AUTO_RETRY_NUMBER;
+        _busyAtDial = softphoneBusy;
         startCallTimer();
         setPhase("dialing");
         const resp = await sendToCtm({
@@ -1413,7 +1444,8 @@
           ringTimeoutId = setTimeout(() => {
             if (phase === "dialing" || phase === "ringing") {
               log(`retry ring timeout — treating as no-answer`, "warn", "retry");
-              sendToCtm({ type: "hangup" }).catch(() => {});
+              if (_busyAtDial) log(`skipping hangup — softphone had a live call at dial time`, "warn", "retry");
+              else sendToCtm({ type: "hangup" }).catch(() => {});
               onCallEnded({ source: "retry-timeout" });
             }
           }, RING_TIMEOUT_MS);
@@ -1644,6 +1676,7 @@
     if (els.sessionCount) els.sessionCount.textContent = sessionCount;
     _currentDialAt = Date.now();
     _currentFromNumber = outbound?.number || null;
+    _busyAtDial = softphoneBusy;
     log(`▶ DIALING (double-tap #2) ${leadTag(lead)} → ${e164} [${sessionCount}/${sessionLimit}]`, "act", "dial");
     const resp = await sendToCtm({
       type: "dial",
@@ -1664,7 +1697,8 @@
     ringTimeoutId = setTimeout(() => {
       if (phase === "dialing" || phase === "ringing") {
         log(`double-tap ring timeout — treating as no-answer`, "warn", "dial");
-        sendToCtm({ type: "hangup" }).catch(() => {});
+        if (_busyAtDial) log(`skipping hangup — softphone had a live call at dial time`, "warn", "dial");
+        else sendToCtm({ type: "hangup" }).catch(() => {});
         onCallEnded({ source: "double-tap-timeout" });
       }
     }, RING_TIMEOUT_MS);
@@ -2214,6 +2248,24 @@
       if (p.event === "ctm:status" || p.event === "ctm:live-activity") {
         _statusCount++;
         return;
+      }
+      // SOFTPHONE-BUSY TRACKER — runs BEFORE the wrap-up lockout below so the
+      // dialer always knows when a call is live on the softphone, including an
+      // INBOUND call the rep answered mid-wrap-up (which the lockout hides
+      // from the phase machine). advanceToNext() holds while busy, and the
+      // ring-timeout hangup is suppressed when the softphone was already busy
+      // at dial time. (7/2: wrap-up auto-advance dialed over Bronté's live
+      // inbound call; 35s later the blind ring-timeout hangup ended it.)
+      if (p.event === "ctm:start") {
+        softphoneBusy = true;
+        _busyChangedAt = Date.now();
+      } else if (p.event === "ctm:end-activity" || p.event === "ctm:wrapup_start" || p.event === "ctm:failed") {
+        // Respect the stale-end rule below: an end event from BEFORE the
+        // current dial must not mark the softphone free.
+        if (!(_currentDialAt && p.ts && p.ts < _currentDialAt)) {
+          softphoneBusy = false;
+          _busyChangedAt = Date.now();
+        }
       }
       // WRAP-UP LOCKOUT — while the rep is dispositioning, ignore ALL state-
       // changing CTM events. CTM flushes a queue of late events after a hangup
@@ -2812,10 +2864,12 @@
     rschedStartCallTimer();
     log(`rsched: ▶ DIALING ${j.customer} ${e164}`, "act", "rsched");
     clearTimeout(_rschedRingTimeoutId);
+    _busyAtDial = softphoneBusy;
     _rschedRingTimeoutId = setTimeout(() => {
       if (_rschedPhase === "calling") {
         log("rsched: ring timeout — ending, go to outcome", "warn", "rsched");
-        sendToCtm({ type: "hangup" }).catch(() => {});
+        if (_busyAtDial) log("rsched: skipping hangup — softphone had a live call at dial time", "warn", "rsched");
+        else sendToCtm({ type: "hangup" }).catch(() => {});
         rschedOnCallEnded();
       }
     }, RING_TIMEOUT_MS);
@@ -3156,10 +3210,12 @@
     }
     log(`welcome: ▶ DIALING ${j.customer} ${e164}`, "act", "welcome");
     clearTimeout(_wcRingTimeoutId);
+    _busyAtDial = softphoneBusy;
     _wcRingTimeoutId = setTimeout(() => {
       if (_wcPhase === "calling") {
         log("welcome: ring timeout — ending, go to outcome", "warn", "welcome");
-        sendToCtm({ type: "hangup" }).catch(() => {});
+        if (_busyAtDial) log("welcome: skipping hangup — softphone had a live call at dial time", "warn", "welcome");
+        else sendToCtm({ type: "hangup" }).catch(() => {});
         wcOnCallEnded();
       }
     }, RING_TIMEOUT_MS);

@@ -1311,6 +1311,15 @@
       return;
     }
 
+    // Mode may have flipped while we awaited the fetch/claims above (STOP
+    // clicked, or an incoming call stopped the session). Never dial past it.
+    if (mode !== "running") {
+      log(`advance aborted after claim — mode=${mode}`, "info", "state");
+      await releaseLead(lead.phone, lead.rowIndex);
+      setPhase("idle");
+      return;
+    }
+
     currentLead = lead;
     connectedThisCall = false;
     renderCurrent();
@@ -2259,6 +2268,20 @@
       if (p.event === "ctm:start") {
         softphoneBusy = true;
         _busyChangedAt = Date.now();
+        // FOREIGN CALL = FULL STOP. A ctm:start when the dialer has no dial
+        // of its own in flight means the rep answered an incoming call (or
+        // dialed someone manually). Stop the session outright — it must NOT
+        // auto-resume when their call ends; the rep presses Start when
+        // they're ready to dial again. (The busy-hold in advanceToNext
+        // remains as a backstop for races.)
+        const ownCall = phase === "dialing" || phase === "ringing" || phase === "connected";
+        const sideFlowCall = _rschedPhase === "calling" || _wcPhase === "calling";
+        if (mode === "running" && !ownCall && !sideFlowCall) {
+          mode = "idle";
+          clearTimeout(_busyDeferTimer);
+          log(`📞 rep answered a call outside the queue — session STOPPED (press Start to resume)`, "warn", "state");
+          if (phase !== "wrapup") setPhase("idle");
+        }
       } else if (p.event === "ctm:end-activity" || p.event === "ctm:wrapup_start" || p.event === "ctm:failed") {
         // Respect the stale-end rule below: an end event from BEFORE the
         // current dial must not mark the softphone free.

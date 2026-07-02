@@ -621,11 +621,13 @@
   // falls back to the legacy `leads` map for old API responses.
   function classifyAndSort(apiData) {
     const todayAz = new Date().toLocaleDateString("en-US", { timeZone: "America/Phoenix" });
+    const todayOrd = azDateOrdinal(todayAz);
     const nowMs = Date.now();
     const rows = Array.isArray(apiData.rows) ? apiData.rows : Object.values(apiData.leads || {});
     const out = [];
     const autoLostLeads = [];
     let skipped3hr = 0;
+    let skippedScheduled = 0;
     let skippedNonTest = 0;
     let skippedSource = 0;
     let skippedAttempts = 0;
@@ -695,6 +697,19 @@
         continue;
       }
 
+      // Next-contact date is LAW: if col H holds a FUTURE date — a rep
+      // promised the customer a specific callback day (manual sheet edit),
+      // or the cadence stamped tomorrow — the lead rests until that day.
+      // Date-part comparison only; blank/unparseable H fails OPEN so a typo
+      // can't hide a lead from the queue forever.
+      if (l.nextContactDate) {
+        const dueOrd = azDateOrdinal(l.nextContactDate);
+        if (dueOrd && todayOrd && dueOrd > todayOrd) {
+          skippedScheduled++;
+          continue;
+        }
+      }
+
       // Same-day cadence cap: day 1 allows up to 3 attempts (double-tap =
       // 1+2, then the 3-hour callback = 3). Once a lead has 3+ attempts and
       // was already called today, it's done for the day — pick it up
@@ -730,6 +745,7 @@
     else {
       const parts = [];
       if (skipped3hr > 0) parts.push(`${skipped3hr} resting (3-hr gap / daily cap)`);
+      if (skippedScheduled > 0) parts.push(`${skippedScheduled} scheduled for a later day`);
       if (skippedSource > 0) parts.push(`${skippedSource} filtered by source`);
       if (skippedAttempts > 0) parts.push(`${skippedAttempts} filtered by attempts`);
       if (parts.length > 0) log(parts.join(", "), "info", "queue");
@@ -775,6 +791,15 @@
     m = /^(\d{4})-(\d{2})-(\d{2})/.exec(str);
     if (m) return `${+m[2]}/${+m[3]}/${+m[1]}`;
     return null;
+  }
+
+  // Numeric ordinal (YYYYMMDD) for an AZ date string, for before/after
+  // comparisons. null if unparseable.
+  function azDateOrdinal(s) {
+    const p = azDatePart(s);
+    if (!p) return null;
+    const [m, d, y] = p.split("/").map(Number);
+    return y * 10000 + m * 100 + d;
   }
 
   // Same AZ calendar date? Compares DATE PARTS only. Col G/H carry a time

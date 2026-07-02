@@ -34,7 +34,7 @@
   const WRAPUP_INTERACTION_RESET_MS = 60000; // restart full 60s if rep types/selects
   const QUIET_START_HOUR = 8;             // 8am AZ
   const QUIET_END_HOUR = 21;              // 9pm AZ
-  const MAX_ATTEMPTS = 8;                 // 8 attempts then auto-Lost
+  const MAX_ATTEMPTS = 7;                 // 7 attempts then auto-Lost (matches server AUTO_LOST_THRESHOLD)
   const POLL_BRIDGE_MS = 5000;
   const MIN_GAP_MS = 3 * 60 * 60 * 1000;  // 3 hours between consecutive calls to the same lead
   const AUTO_RETRY_THRESHOLD_MS = 5000;   // connected then dropped <5s → retry on main line
@@ -495,7 +495,13 @@
     return (leads || [])
       .filter(l => {
         const key = "m:" + (l.phoneBare || (l.phone || "").replace(/\D/g, ""));
-        return !removedThisSession.has(key);
+        if (removedThisSession.has(key)) return false;
+        // Cadence gate: the API keeps "resting" leads in the list (sorted to
+        // the bottom) so it mirrors the app — but the auto-dialer must NOT
+        // dial them. dueNow === false → attempted too recently (3h gap under
+        // 3 attempts, 24h after). Missing field (older API) → treat as due.
+        if (l.dueNow === false) return false;
+        return true;
       })
       .map(l => {
         const att = parseInt(l.attemptCount) || 0;
@@ -680,18 +686,22 @@
         continue;
       }
 
-      // 8+ attempts with no positive outcome → auto-Lost candidate
+      // 7+ attempts → cadence exhausted. Never-connected leads auto-Lost.
+      // Follow-Up means we actually reached the customer, so it's never
+      // auto-Lost (matches the server's no-connect rule) — just dropped
+      // from the auto-dial queue for manual handling.
       if (attempts >= MAX_ATTEMPTS) {
-        autoLostLeads.push(l);
+        if (!statusLower.includes("follow")) autoLostLeads.push(l);
         continue;
       }
 
-      // Same-day repeat skip: once a lead has been attempted TWICE today (or
-      // more), drop them out of today's queue entirely — pick them up
-      // tomorrow per the new cadence. First-time→second-callback same-day
-      // flow still works because attempts will be 1 (not >=2) at that point.
+      // Same-day cadence cap: day 1 allows up to 3 attempts (double-tap =
+      // 1+2, then the 3-hour callback = 3). Once a lead has 3+ attempts and
+      // was already called today, it's done for the day — pick it up
+      // tomorrow. Col G is a full datetime ("7/2/2026, 12:15 PM"), so this
+      // relies on sameAzDate comparing the DATE PART only.
       const lastIsToday = l.lastContactDate && sameAzDate(l.lastContactDate, todayAz);
-      if (lastIsToday && attempts >= 2) {
+      if (lastIsToday && attempts >= 3) {
         skipped3hr++;
         continue;
       }
@@ -719,7 +729,7 @@
     if (testMode) log(`${out.length} test rows queued, ${skippedNonTest} non-test rows skipped`, "info", "queue");
     else {
       const parts = [];
-      if (skipped3hr > 0) parts.push(`${skipped3hr} waiting on 3-hr gap`);
+      if (skipped3hr > 0) parts.push(`${skipped3hr} resting (3-hr gap / daily cap)`);
       if (skippedSource > 0) parts.push(`${skippedSource} filtered by source`);
       if (skippedAttempts > 0) parts.push(`${skippedAttempts} filtered by attempts`);
       if (parts.length > 0) log(parts.join(", "), "info", "queue");
@@ -728,9 +738,9 @@
 
     // Fire off auto-Lost saves in background (don't block queue load)
     if (autoLostLeads.length > 0) {
-      log(`auto-disposing ${autoLostLeads.length} leads as Lost (8+ attempts, never contacted)`, "warn", "auto");
+      log(`auto-disposing ${autoLostLeads.length} leads as Lost (7+ attempts, never contacted)`, "warn", "auto");
       autoLostLeads.forEach(lead => {
-        saveDisposition(lead.phone10 || lead.phone, "Lost", "never contacted — auto-disposed after 8 attempts", lead).catch(() => {});
+        saveDisposition(lead.phone10 || lead.phone, "Lost", "never contacted — auto-disposed after 7 attempts", lead).catch(() => {});
       });
     }
     out.sort((a, b) => {
@@ -750,21 +760,44 @@
     return out.filter(l => !l._skip).concat(out.filter(l => l._skip));
   }
 
+  // Extract the leading date part of a sheet date string, normalized to
+  // "M/D/YYYY". Handles date-only ("6/30/2026"), datetime ("7/2/2026, 12:15
+  // PM" — what begin-call/disposition writes stamp into col G), 2-digit years
+  // ("1/23/26"), and ISO ("2026-07-02…"). Returns null if unrecognized.
+  function azDatePart(s) {
+    const str = String(s).trim();
+    let m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/.exec(str);
+    if (m) {
+      let y = +m[3];
+      if (y < 100) y += 2000;
+      return `${+m[1]}/${+m[2]}/${y}`;
+    }
+    m = /^(\d{4})-(\d{2})-(\d{2})/.exec(str);
+    if (m) return `${+m[2]}/${+m[3]}/${+m[1]}`;
+    return null;
+  }
+
+  // Same AZ calendar date? Compares DATE PARTS only. Col G/H carry a time
+  // component since the lead-locking change — an exact string compare here
+  // was always false, which silently killed the same-day cap (leads got
+  // re-dialed every 3 hours all day, e.g. attempts 4 AND 5 on the same day).
   function sameAzDate(dateStr, todayStr) {
-    if (!dateStr) return false;
-    return dateStr.trim() === todayStr.trim();
+    const a = azDatePart(dateStr), b = azDatePart(todayStr);
+    return !!a && !!b && a === b;
   }
 
   // Cadence:
-  //   Day 1: attempts 1+2 (double-tap morning) + 3 (afternoon)
-  //   Day 2: attempt 4
-  // First-time caller (attempts === 1): "today + 3 hours" WITH time, so the
-  // rep can see exactly when the callback is due ("5/28/2026 1:32 PM").
-  // Subsequent attempts (2 through MAX_ATTEMPTS-1): tomorrow, date only.
-  // 8+ attempts: null → auto-Lost.
+  //   Day 1: attempts 1+2 (double-tap morning) + 3 (three hours later)
+  //   Day 2+: one attempt per day
+  //   7th no-connect attempt: auto-Lost (server flips it on save too)
+  // Through attempt 2 the next contact is "today + 3 hours" WITH time, so the
+  // rep can see exactly when the callback is due ("5/28/2026 1:32 PM"). The
+  // double-tap saves once with +2 attempts, so attemptsAfter === 2 IS the
+  // first touch — it must still schedule the same-day 3-hour callback.
+  // Attempts 3 through MAX_ATTEMPTS-1: tomorrow, date only.
   function computeNextContactDate(attemptsAfterCall) {
     if (attemptsAfterCall >= MAX_ATTEMPTS) return null;
-    if (attemptsAfterCall <= 1) return azDateTimePlusHours(3);
+    if (attemptsAfterCall <= 2) return azDateTimePlusHours(3);
     return azDatePlus(1);
   }
 

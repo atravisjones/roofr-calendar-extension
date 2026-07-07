@@ -12942,12 +12942,37 @@ document.addEventListener('DOMContentLoaded', async () => {
     // PHONE ICON - OPEN CONTACTS FOR ACTIVE CALLS
     // ========================================
 
-    // Fetch active calls from CTM tabs in target window
+    // Fetch active calls — server API first, CTM-tab DOM scrape as fallback.
+    // The scrape over-counts whenever the CTM tab is hidden (the normal case):
+    // Chrome throttles the hidden page, so ended calls never leave its DOM and the
+    // badge stacked to 9+ until the tab was focused. The API asks CTM directly
+    // (calls.json status "in progress"), which is accurate regardless of tab state.
     async function fetchActiveCalls() {
         const allCalls = [];
 
-        // Query CTM tabs
+        // Primary: speed-to-lead proxies CTM's REST API (3s server-side cache).
+        let apiOk = false;
         try {
+            const ctrl = new AbortController();
+            const abortTimer = setTimeout(() => ctrl.abort(), 2500);
+            const res = await fetch('https://speed-to-leads.vercel.app/api/active-calls', {
+                signal: ctrl.signal,
+                cache: 'no-store'
+            });
+            clearTimeout(abortTimer);
+            if (res.ok) {
+                const data = await res.json();
+                if (data?.ok && Array.isArray(data.calls)) {
+                    allCalls.push(...data.calls.map(c => ({ ...c, source: 'ctm-api' })));
+                    apiOk = true;
+                }
+            }
+        } catch (e) {
+            console.log('[Popup] active-calls API unavailable, falling back to CTM tab scrape:', e.message);
+        }
+
+        // Fallback: scrape the CTM tab (known to over-count while that tab is hidden).
+        if (!apiOk) try {
             const ctmQueryOpts = { url: '*://app.calltrackingmetrics.com/*' };
             if (window.__targetWindowId) ctmQueryOpts.windowId = window.__targetWindowId;
             console.log('[Popup] Querying CTM tabs with:', JSON.stringify(ctmQueryOpts));

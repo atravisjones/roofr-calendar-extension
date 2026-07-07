@@ -8672,10 +8672,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                 await chrome.storage.sync.remove(keys);
                 addLog('Cleared outdated people lists from storage, using config defaults');
             } else {
-                // Load from storage if valid
-                if (settings.PEOPLE_REPS) PEOPLE_DATA.REPS = settings.PEOPLE_REPS.split(',').map(s => s.trim()).filter(Boolean).sort();
-                if (settings.PEOPLE_MGMT) PEOPLE_DATA.MGMT = settings.PEOPLE_MGMT.split(',').map(s => s.trim()).filter(Boolean).sort();
-                if (settings.PEOPLE_CSRS) PEOPLE_DATA.CSRS = settings.PEOPLE_CSRS.split(',').map(s => s.trim()).filter(Boolean).sort();
+                // Load from storage if valid. Only apply a stored list that parses to
+                // ≥1 name — a blank/whitespace value must never wipe a group. For REPS
+                // and CSRS this is just a stopgap until the roster sync below re-asserts
+                // the sheet as source of truth; MGMT has no sheet source, so storage wins.
+                const parseList = (s) => (s || '').split(',').map(x => x.trim()).filter(Boolean).sort();
+                const storedReps = parseList(settings.PEOPLE_REPS);
+                const storedMgmt = parseList(settings.PEOPLE_MGMT);
+                const storedCsrs = parseList(settings.PEOPLE_CSRS);
+                if (storedReps.length) PEOPLE_DATA.REPS = storedReps;
+                if (storedMgmt.length) PEOPLE_DATA.MGMT = storedMgmt;
+                if (storedCsrs.length) PEOPLE_DATA.CSRS = storedCsrs;
             }
         }
 

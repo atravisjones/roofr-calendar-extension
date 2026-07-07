@@ -1050,19 +1050,30 @@ export const ROSTER_NAME_ALIASES = {
 // arrays above remain the offline fallback). Names are intentionally NOT deduped
 // across groups — someone can legitimately belong to two teams (e.g. Khamilah
 // Valles is both Insurance and a CSR).
-// Single-flight: concurrent callers on the same page share one fetch.
-let rosterSyncPromise = null;
+// The FETCH is single-flight per page load, but the sheet data is RE-APPLIED to
+// PEOPLE_DATA on every call — other code overwrites these lists after the first
+// sync (e.g. loadPeopleLists' chrome.storage PEOPLE_* overrides), and a cached
+// no-op would let a stale/blank stored list stick. Caching the side effect
+// instead of the data is exactly what emptied the CTM dropdowns in v2.1.46.
+let rosterFetchPromise = null;
 export function syncPeopleDataFromRoster() {
-    if (!rosterSyncPromise) {
-        rosterSyncPromise = fetchRosterIntoPeopleData().catch(e => {
-            rosterSyncPromise = null; // allow a retry on the next call
+    if (!rosterFetchPromise) {
+        rosterFetchPromise = fetchRosterBuckets().catch(e => {
+            rosterFetchPromise = null; // allow a retry on the next call
             throw e;
         });
     }
-    return rosterSyncPromise;
+    return rosterFetchPromise.then(buckets => {
+        const counts = {};
+        for (const key of Object.keys(buckets)) {
+            counts[key] = buckets[key].length;
+            if (buckets[key].length) PEOPLE_DATA[key] = [...new Set(buckets[key])].sort();
+        }
+        return counts;
+    });
 }
 
-async function fetchRosterIntoPeopleData() {
+async function fetchRosterBuckets() {
     const range = "'Team Roster'!A2:C200";
     const url = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(ROSTER_SHEET_ID)}&range=${encodeURIComponent(range)}`;
     const res = await fetch(url, { cache: "no-store" });
@@ -1094,10 +1105,5 @@ async function fetchRosterIntoPeopleData() {
         }
     }
 
-    const counts = {};
-    for (const key of Object.keys(buckets)) {
-        counts[key] = buckets[key].length;
-        if (buckets[key].length) PEOPLE_DATA[key] = [...new Set(buckets[key])].sort();
-    }
-    return counts;
+    return buckets;
 }

@@ -726,6 +726,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     await syncPeopleDataFromRoster();
     populateCSRDropdown(); // rebuild the ctm_user dropdown load() already filled
+    // Mirror the sheet-synced groups into the People fields so Settings shows the
+    // live roster instead of a stale stored list (MGMT stays user-editable — the
+    // sheet has no management department to sync it from).
+    const repsEl = $("PEOPLE_REPS");
+    const csrsEl = $("PEOPLE_CSRS");
+    if (repsEl) repsEl.value = PEOPLE_DATA.REPS.join(", ");
+    if (csrsEl) csrsEl.value = PEOPLE_DATA.CSRS.join(", ");
   } catch (e) {
     console.warn("[Options] roster sync failed — using built-in lists:", e);
   }

@@ -1,6 +1,6 @@
 // options.js
 // Comprehensive settings storage with categorized toggles.
-import { CONFIG, PEOPLE_DATA } from './config.js';
+import { CONFIG, PEOPLE_DATA, syncPeopleDataFromRoster } from './config.js';
 import { THEMES } from './themes.js';
 
 // All settings fields organized by category
@@ -332,7 +332,7 @@ function setupCallHandlerDropdowns() {
 
   // Populate Insurance dropdown
   if (insuranceDropdown) {
-    const insurance = ['Aaron Munz', 'Caite Bonomo'];
+    const insurance = PEOPLE_DATA.INSURANCE || [];
     insurance.forEach(name => {
       const option = document.createElement('option');
       option.value = name;
@@ -365,7 +365,7 @@ function setupCallHandlerDropdowns() {
         csrDropdown.value = currentHandler;
       } else if ((PEOPLE_DATA.PRODUCTION || []).includes(currentHandler) && productionDropdown) {
         productionDropdown.value = currentHandler;
-      } else if (['Aaron Munz', 'Caite Bonomo'].includes(currentHandler) && insuranceDropdown) {
+      } else if ((PEOPLE_DATA.INSURANCE || []).includes(currentHandler) && insuranceDropdown) {
         insuranceDropdown.value = currentHandler;
       } else if (PEOPLE_DATA.MGMT.includes(currentHandler) && mgmtDropdown) {
         mgmtDropdown.value = currentHandler;
@@ -721,6 +721,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupCategoryCollapse();
   setupAutoSave();
   setupNavigation();
+  // Refresh people lists from the Company Team Roster sheet before building the
+  // call-handler dropdowns (static config lists = offline fallback).
+  try {
+    await syncPeopleDataFromRoster();
+    populateCSRDropdown(); // rebuild the ctm_user dropdown load() already filled
+  } catch (e) {
+    console.warn("[Options] roster sync failed — using built-in lists:", e);
+  }
   setupCallHandlerDropdowns();
 });
 

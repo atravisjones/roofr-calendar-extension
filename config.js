@@ -994,15 +994,17 @@ export const CONFIG = {
 };
 
 export const PEOPLE_DATA = {
+    // REPS / CSRS / PRODUCTION / INSURANCE / D2D are live-synced from the Company
+    // Team Roster sheet — see syncPeopleDataFromRoster() below. These arrays are the
+    // OFFLINE FALLBACK used when the sheet fetch fails.
     REPS: ["Alex Tillotson", "Christian Noren", "Connor Hamby", "Jonathan Marino", "Josh Jewett", "Justin Parker", "London Smith", "Orlando Chavarria", "Richard Hadsall", "Stephen Chaidez", "Tanner Broadbent"].sort(),
+    // MGMT is NOT synced — the roster sheet has no management department (Jayda/Raven
+    // sit under Production, Niko under Retail Sales, etc.); this list is Travis-curated.
     // Conor Smith, Jayda Fairfield, Raven Pelfrey, Travis Jones are intentional duplicates —
     // they're also Production/CSR but Travis wants them shown under Management too.
     MGMT: ["Andrew Clark", "Anthony Bonomo", "Bradley Crohurst", "Brenda Ochoa", "Conor Smith", "Jayda Fairfield", "Nikolas Pagoulatos", "Raven Pelfrey", "Travis Jones", "Yousef Ayad"].sort(),
-    CSRS: ["Bronté Pisz", "Diva Shahpur", "Khamilah Valles", "Madi Meyers", "Mariana Ceballos", "Nica Javier", "Travis Jones"].sort(),
+    CSRS: ["Bronté Pisz", "Diva Shahpur", "Hadley Duffy", "Khamilah Valles", "Madi Meyers", "Mariana Ceballos", "Nica Javier", "Travis Jones"].sort(),
 
-    // PRODUCTION / INSURANCE / D2D are live-synced from the Company Team Roster sheet
-    // (Department column) on each People-tab load — see fetchRosterGroups() in popup.js.
-    // These arrays are the OFFLINE FALLBACK used if the sheet fetch fails.
     PRODUCTION: ["Austin Huffman", "Brandon Jordan", "Brian Carter", "Carter Grant", "Chandler Duffy", "Conor Smith", "Jayda Fairfield", "Raven Pelfrey", "Robert Mcpherson"].sort(),
     INSURANCE: ["Aaron Munz", "Anthony Espinosa", "Catherine Bonomo", "Khamilah Valles", "Rebekah Fontenot"].sort(),
     D2D: ["Brandon Cook", "Brenda Ochoa", "Carson Anderson", "Dylan Lopez", "Israel Silva", "James Chernek", "James DeCoursey", "Jordan Depue", "Kory Dumone", "Michael Hurff", "Nahum Sandoval", "Tanner Stephens"].sort(),
@@ -1017,9 +1019,85 @@ export const PEOPLE_DATA = {
         "Nica Javier": "USRC30FF30726A9F646577F250938765D31",
         "Khamilah Valles": "USRC30FF30726A9F646BB8E4B63EF5677D9",
         "Mariana Ceballos": "USR3BC964E3CA5C4BF656194430839D95D6",
+        "Hadley Duffy": "USR3BC964E3CA5C4BF6E04EB987189831CD",
         "Caite": "USR3C843ED7AB9B47118D66E874FF6151FD",
         "Anthony Espinosa": "USRC30FF30726A9F646798C58AF597D98E0",
         "Aaron Munz": "USR3C843ED7AB9B4711D25580F0C1D45997",
         "Raven Pelfrey": "USR3C843ED7AB9B4711C939E32294BA3ECC",
     },
 };
+
+// ===== Company Team Roster live sync =====
+// The "Team Roster" tab holds ONLY active staff (fired/archived people move to the
+// "Archived Staff" tab), so bucketing by Department/Title is safe. Reads go through
+// the tech-scheduler sheets proxy (service-account auth stays server-side).
+export const ROSTER_SHEET_ID = "1XFJHD0IVZ8sJrQ7H2CrqU26a6n-FulPM8ABKc1hrh9o";
+
+// Roster-sheet spellings -> the canonical names every downstream system keys on
+// (CTM agent names, CTM_USER_IDS, dialer logging, /api/sheet-dispositions).
+// Without these, syncing the sheet would silently break identity matching.
+export const ROSTER_NAME_ALIASES = {
+    "Madison Meyers": "Madi Meyers",
+    "Ervennica Mae Javier": "Nica Javier",
+    "Mariana Franco Caballos": "Mariana Ceballos",
+    "Mariana Franco Ceballos": "Mariana Ceballos",
+    "Niko Pagoulatos": "Nikolas Pagoulatos",
+};
+
+// Live-sync PEOPLE_DATA from the roster sheet. Mutates PEOPLE_DATA in place and
+// resolves to per-group counts. A group is only overwritten when the sheet returns
+// at least one person for it, so a partial/empty read never blanks a list (the
+// arrays above remain the offline fallback). Names are intentionally NOT deduped
+// across groups — someone can legitimately belong to two teams (e.g. Khamilah
+// Valles is both Insurance and a CSR).
+// Single-flight: concurrent callers on the same page share one fetch.
+let rosterSyncPromise = null;
+export function syncPeopleDataFromRoster() {
+    if (!rosterSyncPromise) {
+        rosterSyncPromise = fetchRosterIntoPeopleData().catch(e => {
+            rosterSyncPromise = null; // allow a retry on the next call
+            throw e;
+        });
+    }
+    return rosterSyncPromise;
+}
+
+async function fetchRosterIntoPeopleData() {
+    const range = "'Team Roster'!A2:C200";
+    const url = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(ROSTER_SHEET_ID)}&range=${encodeURIComponent(range)}`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error(`roster sheet HTTP ${res.status}`);
+    const data = await res.json();
+    const rows = Array.isArray(data.values) ? data.values : [];
+
+    const DEPT_MAP = { "Production": "PRODUCTION", "Insurance": "INSURANCE", "D2D Sales": "D2D" };
+    const buckets = { PRODUCTION: [], INSURANCE: [], D2D: [], CSRS: [], REPS: [] };
+    for (const row of rows) {
+        const title = (row[0] || "").trim();
+        const dept = (row[1] || "").trim();
+        const rawName = (row[2] || "").trim();
+        if (!rawName || !dept) continue;
+        const name = ROSTER_NAME_ALIASES[rawName] || rawName;
+
+        const deptKey = DEPT_MAP[dept];
+        if (deptKey) buckets[deptKey].push(name);
+
+        // CSRs are matched by TITLE, not department: catches the Lead Center CSRs
+        // plus Khamilah (Insurance dept) and Travis ("CSR, Lead Manager").
+        if (dept === "Lead Center" || /customer service representative|\bcsr\b/i.test(title)) {
+            buckets.CSRS.push(name);
+        }
+
+        // Sales reps = Retail Sales department, reps only (managers/trainers excluded).
+        if (dept === "Retail Sales" && /sales representative/i.test(title)) {
+            buckets.REPS.push(name);
+        }
+    }
+
+    const counts = {};
+    for (const key of Object.keys(buckets)) {
+        counts[key] = buckets[key].length;
+        if (buckets[key].length) PEOPLE_DATA[key] = [...new Set(buckets[key])].sort();
+    }
+    return counts;
+}

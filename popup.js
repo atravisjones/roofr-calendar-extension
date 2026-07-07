@@ -1,6 +1,6 @@
 
 
-import { CONFIG, PEOPLE_DATA } from './config.js';
+import { CONFIG, PEOPLE_DATA, syncPeopleDataFromRoster } from './config.js';
 import { THEMES, applyTheme } from './themes.js';
 
 const SLOT_HOLDS_URL = 'https://roofr-search.vercel.app/api/slot-holds';
@@ -8618,43 +8618,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    // Company Team Roster sheet — live source for the People tab's Production /
-    // Insurance / Door-to-Door groups. The "Team Roster" tab holds ONLY active staff
-    // (fired/archived people live on a separate "Archived Staff" tab), so a simple
-    // Department bucket is safe. Reps / CSRs / Management are NOT sourced here.
-    const ROSTER_SHEET_ID = "1XFJHD0IVZ8sJrQ7H2CrqU26a6n-FulPM8ABKc1hrh9o";
-    const ROSTER_DEPT_MAP = { "Production": "PRODUCTION", "Insurance": "INSURANCE", "D2D Sales": "D2D" };
-
-    // Pull Production / Insurance / D2D from the roster sheet (col B = Department, col C = Name).
+    // Pull the live people groups (Production / Insurance / D2D / CSRs / Sales Reps)
+    // from the Company Team Roster sheet — see syncPeopleDataFromRoster() in config.js.
     // Mutates PEOPLE_DATA in place. On any failure the existing config fallbacks are kept.
-    // Note: names are intentionally NOT deduped across groups — someone can legitimately
-    // belong to two teams (e.g. Khamilah Valles is both Insurance and a CSR).
     async function fetchRosterGroups() {
         try {
-            const range = "'Team Roster'!A2:C200";
-            const url = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(ROSTER_SHEET_ID)}&range=${encodeURIComponent(range)}`;
-            const res = await fetch(url, { cache: "no-store" });
-            if (!res.ok) throw new Error(`roster sheet HTTP ${res.status}`);
-            const data = await res.json();
-            const rows = Array.isArray(data.values) ? data.values : [];
-
-            const buckets = { PRODUCTION: [], INSURANCE: [], D2D: [] };
-            for (const row of rows) {
-                const dept = (row[1] || "").trim();
-                const name = (row[2] || "").trim();
-                if (!name || !dept) continue;
-                const key = ROSTER_DEPT_MAP[dept];
-                if (key) buckets[key].push(name);
-            }
-
-            // Only overwrite a group if the sheet actually returned people for it,
-            // so a partial/empty read never blanks the tab.
-            for (const key of Object.keys(buckets)) {
-                if (buckets[key].length) {
-                    PEOPLE_DATA[key] = [...new Set(buckets[key])].sort();
-                }
-            }
-            addLog(`Roster sync: ${buckets.PRODUCTION.length} production, ${buckets.INSURANCE.length} insurance, ${buckets.D2D.length} D2D`);
+            const c = await syncPeopleDataFromRoster();
+            addLog(`Roster sync: ${c.CSRS} CSRs, ${c.REPS} reps, ${c.PRODUCTION} production, ${c.INSURANCE} insurance, ${c.D2D} D2D`);
         } catch (e) {
             console.warn('[People] Roster sheet sync failed, using config fallback:', e);
             addLog(`Roster sync failed (${e.message}) — using built-in lists`);
@@ -12635,51 +12605,29 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    // Populate all CTM dropdowns
+    // (Re)populate all CTM dropdowns from PEOPLE_DATA, keeping any current selection —
+    // the lists can repopulate underneath an open modal once the roster sync lands.
     function populateCtmDropdowns() {
-        if (ctmCsrSelect) {
-            ctmCsrSelect.innerHTML = '<option value="">-- Select CSR --</option>';
-            const csrs = PEOPLE_DATA.CSRS || [];
-            csrs.forEach(name => {
+        const fill = (select, placeholder, names) => {
+            if (!select) return;
+            const prev = select.value;
+            select.innerHTML = '';
+            const ph = document.createElement('option');
+            ph.value = '';
+            ph.textContent = placeholder;
+            select.appendChild(ph);
+            names.forEach(name => {
                 const opt = document.createElement('option');
                 opt.value = name;
                 opt.textContent = name;
-                ctmCsrSelect.appendChild(opt);
+                select.appendChild(opt);
             });
-        }
-
-        if (ctmProductionSelect) {
-            ctmProductionSelect.innerHTML = '<option value="">-- Select Production --</option>';
-            const production = PEOPLE_DATA.PRODUCTION || [];
-            production.forEach(name => {
-                const opt = document.createElement('option');
-                opt.value = name;
-                opt.textContent = name;
-                ctmProductionSelect.appendChild(opt);
-            });
-        }
-
-        if (ctmMgmtSelect) {
-            ctmMgmtSelect.innerHTML = '<option value="">-- Select Management --</option>';
-            const mgmt = PEOPLE_DATA.MGMT || [];
-            mgmt.forEach(name => {
-                const opt = document.createElement('option');
-                opt.value = name;
-                opt.textContent = name;
-                ctmMgmtSelect.appendChild(opt);
-            });
-        }
-
-        if (ctmInsuranceSelect) {
-            ctmInsuranceSelect.innerHTML = '<option value="">-- Select Insurance --</option>';
-            const insurance = ['Aaron Munz', 'Caite Bonomo'];
-            insurance.forEach(name => {
-                const opt = document.createElement('option');
-                opt.value = name;
-                opt.textContent = name;
-                ctmInsuranceSelect.appendChild(opt);
-            });
-        }
+            if (prev && names.includes(prev)) select.value = prev;
+        };
+        fill(ctmCsrSelect, '-- Select CSR --', PEOPLE_DATA.CSRS || []);
+        fill(ctmProductionSelect, '-- Select Production --', PEOPLE_DATA.PRODUCTION || []);
+        fill(ctmMgmtSelect, '-- Select Management --', PEOPLE_DATA.MGMT || []);
+        fill(ctmInsuranceSelect, '-- Select Insurance --', PEOPLE_DATA.INSURANCE || []);
     }
 
     // Clear other CTM dropdowns when one is selected
@@ -12737,6 +12685,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         populateCtmDropdowns();
         setupCtmDropdownListeners();
         ctmCsrModal.classList.remove('hidden');
+        // Refresh the lists from the Company Team Roster sheet so hires/departures show
+        // up without a code change; repopulating keeps whatever is already selected.
+        syncPeopleDataFromRoster().then(() => populateCtmDropdowns()).catch(() => {});
     }
 
     // Hide CTM CSR modal

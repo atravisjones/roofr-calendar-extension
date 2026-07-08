@@ -1169,20 +1169,26 @@ const AUTODIALER_WINDOW_KEY = 'autodialer_window_id';
 const MEET_AUTOMUTED_KEY = 'meet_automuted_state';
 
 // Runs INSIDE the Meet tab via chrome.scripting, so the mute shows in Meet's
-// own UI (red mic icon). Finds the mic button by aria-label, reads current
-// state from data-is-muted when present, clicks only when a change is needed.
+// own UI (red mic icon). MUST only ever touch the user's OWN toolbar mic
+// toggle — 7/8: a loose /microphone/i match clicked a PARTICIPANT's mute
+// control and muted a teammate for the whole meeting. Guards:
+//   1. anchored label match — the self toggle reads "Turn on/off microphone";
+//      participant controls read "Mute <name>" and never match
+//   2. skip anything inside the people list or a dialog
+//   3. prefer the button carrying Meet's data-is-muted state
+//   4. no confident match → do NOTHING (skip the mic mute, never guess)
 function _meetSetMicMuted(mute) {
-    const isMuted = (el) => {
-        const dim = el.getAttribute('data-is-muted');
-        if (dim === 'true' || dim === 'false') return dim === 'true';
-        return /turn on microphone|unmute/i.test(el.getAttribute('aria-label') || '');
-    };
-    const btn = [...document.querySelectorAll('[role="button"][aria-label], button[aria-label]')].find(el => {
-        const label = el.getAttribute('aria-label') || '';
-        return /microphone/i.test(label) && !/camera|video/i.test(label);
-    });
+    const SELF_MIC_RE = /^turn (on|off) microphone/i;
+    const candidates = [...document.querySelectorAll('[role="button"][aria-label], button[aria-label]')]
+        .filter(el => SELF_MIC_RE.test((el.getAttribute('aria-label') || '').trim()))
+        .filter(el => !el.closest('[role="list"], [role="listitem"], [role="dialog"]'));
+    const btn = candidates.find(el => el.hasAttribute('data-is-muted')) || candidates[0];
     if (!btn) return { found: false, changed: false };
-    if (isMuted(btn) === mute) return { found: true, changed: false };
+    const dim = btn.getAttribute('data-is-muted');
+    const isMuted = (dim === 'true' || dim === 'false')
+        ? dim === 'true'
+        : /^turn on/i.test((btn.getAttribute('aria-label') || '').trim());
+    if (isMuted === mute) return { found: true, changed: false };
     btn.click();
     return { found: true, changed: true };
 }

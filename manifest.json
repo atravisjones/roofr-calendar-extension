@@ -25,6 +25,7 @@
   "host_permissions": [
     "https://*.roofr.com/*",
     "https://*.calltrackingmetrics.com/*",
+    "https://meet.google.com/*",
     "https://earth.google.com/*",
     "https://gemini.google.com/*",
     "https://geocoding.geo.census.gov/*",

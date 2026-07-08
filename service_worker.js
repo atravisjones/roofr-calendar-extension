@@ -95,6 +95,7 @@ const SEED_DEFAULTS = {
     ctm_auto_open_calls_page: true,
     ctm_group_tabs: true,
     ctm_meet_automute: true,
+    ctm_meet_mic_automute: true,
 
     // =====================
     // JOB SORTING SETTINGS
@@ -1158,29 +1159,65 @@ const AUTODIALER_WINDOW_KEY = 'autodialer_window_id';
 
 // ── MEET AUTO-MUTE ──────────────────────────────────────────
 // While a call is LIVE on the CTM softphone (ctm:start — inbound or outbound,
-// dialer open or not), mute every meet.google.com tab so Meet audio doesn't
-// talk over the phone call. Tab-mute only silences OUTPUT — the Meet mic stays
-// live, so meeting participants still hear the rep. Unmute when the call ends.
-// Muted-tab ids live in storage.session so they survive SW suspension; only
-// tabs WE muted get unmuted — a tab the user muted by hand stays muted.
-const MEET_AUTOMUTED_KEY = 'meet_automuted_tab_ids';
+// dialer open or not), two independent toggles act on every meet.google.com tab:
+//   ctm_meet_automute     — tab-mute (silences Meet OUTPUT; you stop hearing them)
+//   ctm_meet_mic_automute — clicks Meet's own mic button (the meeting stops
+//                           hearing YOU while you're talking to the customer)
+// Both restore when the call ends. Per-tab state lives in storage.session so it
+// survives SW suspension; only what WE changed gets restored — a tab or mic the
+// user muted by hand stays muted.
+const MEET_AUTOMUTED_KEY = 'meet_automuted_state';
+
+// Runs INSIDE the Meet tab via chrome.scripting, so the mute shows in Meet's
+// own UI (red mic icon). Finds the mic button by aria-label, reads current
+// state from data-is-muted when present, clicks only when a change is needed.
+function _meetSetMicMuted(mute) {
+    const isMuted = (el) => {
+        const dim = el.getAttribute('data-is-muted');
+        if (dim === 'true' || dim === 'false') return dim === 'true';
+        return /turn on microphone|unmute/i.test(el.getAttribute('aria-label') || '');
+    };
+    const btn = [...document.querySelectorAll('[role="button"][aria-label], button[aria-label]')].find(el => {
+        const label = el.getAttribute('aria-label') || '';
+        return /microphone/i.test(label) && !/camera|video/i.test(label);
+    });
+    if (!btn) return { found: false, changed: false };
+    if (isMuted(btn) === mute) return { found: true, changed: false };
+    btn.click();
+    return { found: true, changed: true };
+}
 
 async function meetAutoMute() {
     try {
-        const setting = await chrome.storage.sync.get({ ctm_meet_automute: true });
-        if (setting.ctm_meet_automute === false) return;
+        const s = await chrome.storage.sync.get({ ctm_meet_automute: true, ctm_meet_mic_automute: true });
+        if (s.ctm_meet_automute === false && s.ctm_meet_mic_automute === false) return;
         const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
-        const mutedIds = [];
+        if (tabs.length === 0) return;
+        const store = await chrome.storage.session.get(MEET_AUTOMUTED_KEY);
+        const state = store[MEET_AUTOMUTED_KEY] || {};
         for (const tab of tabs) {
-            if (tab.mutedInfo?.muted) continue;
-            try {
-                await chrome.tabs.update(tab.id, { muted: true });
-                mutedIds.push(tab.id);
-            } catch (_) {}
+            const entry = state[tab.id] || { audio: false, mic: false };
+            if (s.ctm_meet_automute !== false && !tab.mutedInfo?.muted) {
+                try {
+                    await chrome.tabs.update(tab.id, { muted: true });
+                    entry.audio = true;
+                } catch (_) {}
+            }
+            if (s.ctm_meet_mic_automute !== false && !entry.mic) {
+                try {
+                    const [r] = await chrome.scripting.executeScript({
+                        target: { tabId: tab.id },
+                        func: _meetSetMicMuted,
+                        args: [true],
+                    });
+                    if (r?.result?.changed) entry.mic = true;
+                } catch (_) {}
+            }
+            if (entry.audio || entry.mic) state[tab.id] = entry;
         }
-        if (mutedIds.length > 0) {
-            await chrome.storage.session.set({ [MEET_AUTOMUTED_KEY]: mutedIds });
-            console.log('[MeetMute] call live — muted', mutedIds.length, 'Meet tab(s)');
+        if (Object.keys(state).length > 0) {
+            await chrome.storage.session.set({ [MEET_AUTOMUTED_KEY]: state });
+            console.log('[MeetMute] call live — muted Meet tab(s):', state);
         }
     } catch (e) {
         console.warn('[MeetMute] mute failed:', e.message);
@@ -1190,13 +1227,26 @@ async function meetAutoMute() {
 async function meetAutoUnmute() {
     try {
         const store = await chrome.storage.session.get(MEET_AUTOMUTED_KEY);
-        const ids = store[MEET_AUTOMUTED_KEY] || [];
+        const state = store[MEET_AUTOMUTED_KEY] || {};
+        const ids = Object.keys(state);
         if (ids.length === 0) return;
         await chrome.storage.session.remove(MEET_AUTOMUTED_KEY);
-        for (const id of ids) {
-            try { await chrome.tabs.update(id, { muted: false }); } catch (_) {}
+        for (const idStr of ids) {
+            const tabId = Number(idStr);
+            if (state[idStr].audio) {
+                try { await chrome.tabs.update(tabId, { muted: false }); } catch (_) {}
+            }
+            if (state[idStr].mic) {
+                try {
+                    await chrome.scripting.executeScript({
+                        target: { tabId },
+                        func: _meetSetMicMuted,
+                        args: [false],
+                    });
+                } catch (_) {}
+            }
         }
-        console.log('[MeetMute] call ended — unmuted', ids.length, 'Meet tab(s)');
+        console.log('[MeetMute] call ended — restored', ids.length, 'Meet tab(s)');
     } catch (e) {
         console.warn('[MeetMute] unmute failed:', e.message);
     }

@@ -701,6 +701,147 @@ function setupNavigation() {
   });
 }
 
+// Settings search — type in the sticky header to find any setting; Enter or
+// click jumps to it (expanding a collapsed category) and flash-highlights it.
+// The index is built from the live DOM so it never drifts from the actual page.
+function setupSettingsSearch() {
+  const input = document.getElementById('settingsSearch');
+  const resultsBox = document.getElementById('settingsSearchResults');
+  if (!input || !resultsBox) return;
+
+  const index = [];
+  document.querySelectorAll('.category').forEach(category => {
+    const section = category.querySelector('.category-title h2')?.textContent?.trim() || category.id;
+    const catDesc = category.querySelector('.category-title p')?.textContent?.trim() || '';
+    index.push({ label: section, hint: catDesc, section, el: category, category });
+    category.querySelectorAll('.toggle-item').forEach(item => {
+      const label = item.querySelector('.toggle-label')?.textContent?.trim();
+      if (!label) return;
+      const hint = item.querySelector('.toggle-hint')?.textContent?.trim() || '';
+      index.push({ label, hint, section, el: item, category });
+    });
+    category.querySelectorAll('.group > label').forEach(lbl => {
+      const label = lbl.textContent?.trim();
+      if (!label) return;
+      index.push({ label, hint: '', section, el: lbl.closest('.group'), category });
+    });
+    category.querySelectorAll('.section-label').forEach(sl => {
+      const label = sl.textContent?.trim();
+      if (!label) return;
+      index.push({ label, hint: '', section, el: sl, category });
+    });
+  });
+
+  let results = [];
+  let activeIdx = -1;
+
+  function close() {
+    resultsBox.hidden = true;
+    resultsBox.innerHTML = '';
+    results = [];
+    activeIdx = -1;
+  }
+
+  function jumpTo(entry) {
+    close();
+    input.blur();
+    // Expand a collapsed category (not persisted — their collapse pref survives reload)
+    entry.category.classList.remove('collapsed');
+    const headerHeight = document.querySelector('.sticky-nav')?.offsetHeight || 0;
+    const top = entry.el.getBoundingClientRect().top + window.scrollY - headerHeight - 16;
+    window.scrollTo({ top, behavior: 'smooth' });
+    entry.el.classList.remove('search-flash');
+    void entry.el.offsetWidth; // restart the animation on repeat jumps
+    entry.el.classList.add('search-flash');
+    setTimeout(() => entry.el.classList.remove('search-flash'), 2000);
+  }
+
+  function render() {
+    resultsBox.innerHTML = '';
+    if (results.length === 0) {
+      const none = document.createElement('div');
+      none.className = 'search-no-results';
+      none.textContent = 'No matching settings';
+      resultsBox.appendChild(none);
+      resultsBox.hidden = false;
+      return;
+    }
+    results.forEach((entry, i) => {
+      const row = document.createElement('div');
+      row.className = 'search-result' + (i === activeIdx ? ' active' : '');
+      const text = document.createElement('div');
+      const label = document.createElement('div');
+      label.className = 'result-label';
+      label.textContent = entry.label;
+      text.appendChild(label);
+      if (entry.hint) {
+        const hint = document.createElement('div');
+        hint.className = 'result-hint';
+        hint.textContent = entry.hint.length > 70 ? entry.hint.slice(0, 67) + '…' : entry.hint;
+        text.appendChild(hint);
+      }
+      const chip = document.createElement('span');
+      chip.className = 'result-section';
+      chip.textContent = entry.section;
+      row.appendChild(text);
+      row.appendChild(chip);
+      // mousedown (not click) so the row wins the race against the input's blur
+      row.addEventListener('mousedown', (e) => { e.preventDefault(); jumpTo(entry); });
+      resultsBox.appendChild(row);
+    });
+    resultsBox.hidden = false;
+  }
+
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    if (q.length < 2) { close(); return; }
+    results = index
+      .map(entry => {
+        const label = entry.label.toLowerCase();
+        let score = -1;
+        if (label.startsWith(q)) score = 0;
+        else if (label.includes(q)) score = 1;
+        else if (entry.hint.toLowerCase().includes(q)) score = 2;
+        else if (entry.section.toLowerCase().includes(q)) score = 3;
+        return { entry, score };
+      })
+      .filter(r => r.score >= 0)
+      .sort((a, b) => a.score - b.score)
+      .slice(0, 12)
+      .map(r => r.entry);
+    activeIdx = results.length ? 0 : -1;
+    render();
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (resultsBox.hidden) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (results.length) { activeIdx = (activeIdx + 1) % results.length; render(); }
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (results.length) { activeIdx = (activeIdx - 1 + results.length) % results.length; render(); }
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (activeIdx >= 0 && results[activeIdx]) jumpTo(results[activeIdx]);
+    } else if (e.key === 'Escape') {
+      close();
+      input.blur();
+    }
+  });
+
+  input.addEventListener('blur', () => setTimeout(close, 150));
+
+  // "/" focuses the search from anywhere on the page (unless already typing)
+  document.addEventListener('keydown', (e) => {
+    const tag = document.activeElement?.tagName || '';
+    if (e.key === '/' && !/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) {
+      e.preventDefault();
+      input.focus();
+    }
+  });
+}
+
 // One-time migration: Madison Meyers -> Madi Meyers. Without this, existing
 // users still have ctm_csr="Madison Meyers" in chrome.storage.sync, which is
 // no longer in the CSR list and gets rejected by /api/sheet-dispositions —
@@ -725,6 +866,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupCategoryCollapse();
   setupAutoSave();
   setupNavigation();
+  setupSettingsSearch();
   // Refresh people lists from the Company Team Roster sheet before building the
   // call-handler dropdowns (static config lists = offline fallback).
   try {

@@ -379,6 +379,99 @@
         padding-bottom: 8px;
         border-bottom: 1px solid var(--border);
       }
+
+      /* Settings search */
+      .settings-search {
+        position: relative;
+        flex: 1;
+        max-width: 340px;
+        margin: 0 16px;
+      }
+      .settings-search .search-icon {
+        position: absolute;
+        left: 10px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--muted);
+        pointer-events: none;
+      }
+      .settings-search input {
+        width: 100%;
+        padding: 7px 10px 7px 30px;
+        font-size: 13px;
+        color: inherit;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        outline: none;
+        transition: border-color 0.15s;
+      }
+      .settings-search input:focus {
+        border-color: var(--accent);
+      }
+      .settings-search-results {
+        position: absolute;
+        top: calc(100% + 6px);
+        left: 0;
+        right: 0;
+        background: var(--section-bg);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: 0 8px 24px var(--shadow-color);
+        max-height: 320px;
+        overflow-y: auto;
+        z-index: 200;
+      }
+      .search-result {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 9px 12px;
+        cursor: pointer;
+        font-size: 13px;
+        border-bottom: 1px solid var(--border);
+      }
+      .search-result:last-child {
+        border-bottom: none;
+      }
+      .search-result:hover,
+      .search-result.active {
+        background: var(--accent-very-light);
+      }
+      .search-result .result-label {
+        font-weight: 500;
+      }
+      .search-result .result-hint {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+      .search-result .result-section {
+        flex-shrink: 0;
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--accent);
+        background: var(--accent-light);
+        padding: 3px 8px;
+        border-radius: 999px;
+      }
+      .search-no-results {
+        padding: 12px;
+        font-size: 12px;
+        color: var(--muted);
+        text-align: center;
+      }
+      @keyframes searchFlash {
+        0%, 60% { background: var(--accent-light); box-shadow: 0 0 0 1px var(--accent); }
+        100% { background: transparent; box-shadow: none; }
+      }
+      .search-flash {
+        animation: searchFlash 1.8s ease-out;
+        border-radius: 8px;
+      }
     </style>
   </head>
   <body>
@@ -387,6 +480,14 @@
       <div class="sticky-nav-inner">
         <div style="display: flex; align-items: center; justify-content: space-between;">
           <h1>Extension Settings</h1>
+          <div class="settings-search">
+            <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="search" id="settingsSearch" placeholder="Search settings…" autocomplete="off" spellcheck="false">
+            <div id="settingsSearchResults" class="settings-search-results" hidden></div>
+          </div>
           <div id="autoSaveIndicator" class="auto-save-indicator">
             <span class="save-dot"></span>
             <span id="autoSaveText">Auto-save enabled</span>

@@ -94,6 +94,7 @@ const SEED_DEFAULTS = {
     ctm_show_active_calls: true,
     ctm_auto_open_calls_page: true,
     ctm_group_tabs: true,
+    ctm_meet_automute: true,
 
     // =====================
     // JOB SORTING SETTINGS
@@ -1155,6 +1156,52 @@ chrome.runtime.onStartup.addListener(async () => {
 
 const AUTODIALER_WINDOW_KEY = 'autodialer_window_id';
 
+// ── MEET AUTO-MUTE ──────────────────────────────────────────
+// While a call is LIVE on the CTM softphone (ctm:start — inbound or outbound,
+// dialer open or not), mute every meet.google.com tab so Meet audio doesn't
+// talk over the phone call. Tab-mute only silences OUTPUT — the Meet mic stays
+// live, so meeting participants still hear the rep. Unmute when the call ends.
+// Muted-tab ids live in storage.session so they survive SW suspension; only
+// tabs WE muted get unmuted — a tab the user muted by hand stays muted.
+const MEET_AUTOMUTED_KEY = 'meet_automuted_tab_ids';
+
+async function meetAutoMute() {
+    try {
+        const setting = await chrome.storage.sync.get({ ctm_meet_automute: true });
+        if (setting.ctm_meet_automute === false) return;
+        const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
+        const mutedIds = [];
+        for (const tab of tabs) {
+            if (tab.mutedInfo?.muted) continue;
+            try {
+                await chrome.tabs.update(tab.id, { muted: true });
+                mutedIds.push(tab.id);
+            } catch (_) {}
+        }
+        if (mutedIds.length > 0) {
+            await chrome.storage.session.set({ [MEET_AUTOMUTED_KEY]: mutedIds });
+            console.log('[MeetMute] call live — muted', mutedIds.length, 'Meet tab(s)');
+        }
+    } catch (e) {
+        console.warn('[MeetMute] mute failed:', e.message);
+    }
+}
+
+async function meetAutoUnmute() {
+    try {
+        const store = await chrome.storage.session.get(MEET_AUTOMUTED_KEY);
+        const ids = store[MEET_AUTOMUTED_KEY] || [];
+        if (ids.length === 0) return;
+        await chrome.storage.session.remove(MEET_AUTOMUTED_KEY);
+        for (const id of ids) {
+            try { await chrome.tabs.update(id, { muted: false }); } catch (_) {}
+        }
+        console.log('[MeetMute] call ended — unmuted', ids.length, 'Meet tab(s)');
+    } catch (e) {
+        console.warn('[MeetMute] unmute failed:', e.message);
+    }
+}
+
 async function findCtmTabId(windowId) {
     const queryOpts = { url: '*://app.calltrackingmetrics.com/calls/desk*' };
     if (windowId) queryOpts.windowId = windowId;
@@ -1273,6 +1320,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return true;
     }
     if (msg?.type === 'AUTODIALER_FROM_BRIDGE') {
+        // Meet auto-mute rides the same event stream the dialer uses; the
+        // bridge forwards these whether or not the dialer window is open.
+        if (msg.payload?.type === 'ctm-event') {
+            const ev = msg.payload.event;
+            if (ev === 'ctm:start') {
+                meetAutoMute();
+            } else if (ev === 'ctm:end-activity' || ev === 'ctm:wrapup_start' || ev === 'ctm:failed') {
+                meetAutoUnmute();
+            }
+        }
         try {
             chrome.runtime.sendMessage({ type: 'AD_FROM_CTM', payload: msg.payload }).catch(() => {});
         } catch (_) {}

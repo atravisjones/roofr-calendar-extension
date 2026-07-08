@@ -88,6 +88,7 @@ const fields = [
   "ctm_show_active_calls",
   "ctm_auto_open_calls_page",
   "ctm_group_tabs",
+  "ctm_meet_automute",
 
   // Reports toggles
   "reports_enabled",
@@ -212,6 +213,7 @@ const defaults = {
   ctm_show_active_calls: true,
   ctm_auto_open_calls_page: true,
   ctm_group_tabs: true,
+  ctm_meet_automute: true,
 
   // Reports
   reports_enabled: true,

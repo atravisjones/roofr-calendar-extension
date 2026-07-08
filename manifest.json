@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Roofr Assist",
-  "version": "2.1.48",
+  "version": "2.1.49",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlMkkiPqFUtUx4VZWQMiWasrkEoV3PHPVW4uSWRcBcKuCi5MgAuPhbb2XvKGGiKY8Il5DbkHSoul9RQMvW3BE53A/03u2TG0Glxv+GH7opdIYBwt5t+9VuRe70tVy4ZvetewYE4+FIyoUHYHqrcVIbADlbYuvUvuL8NOfjiA+iGk8d26766Gz6UnrJgX+Hlo9gOPGJgQvFeqdQFOfDt2SmLSVTf/BQfbDSKTBogerm3Q5oJu4wRS/6yqWU+hHwKYbfJ5iiwgVf/TV4/q59+GkH0R3mQM0dcl82quupMxVujUzuTzPZNu5bwTJiOzDqE5y2jA/WG6Y1dV9XGfsBaW5NQIDAQAB",
   "description": "Extract appointments from Roofr and show availability from Google Sheets.",
   "icons": {

@@ -1378,9 +1378,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg?.type === 'AUTODIALER_FROM_BRIDGE') {
         // Meet auto-mute rides the same event stream the dialer uses; the
         // bridge forwards these whether or not the dialer window is open.
+        // ctm:start = any call goes live (inbound answer OR outbound connect).
+        // ctm:connecting = an OUTBOUND dial just started — mute from the first
+        // ring, not the answer; without it Meet keeps playing through the whole
+        // dial/ring phase (and outbound never muted at all if ctm:start was
+        // missed). Inbound RINGING (ctm:incomingCall) deliberately does NOT
+        // mute — you're not on the call until you answer.
         if (msg.payload?.type === 'ctm-event') {
             const ev = msg.payload.event;
-            if (ev === 'ctm:start') {
+            if (ev === 'ctm:connecting' || ev === 'ctm:start') {
                 meetAutoMute();
             } else if (ev === 'ctm:end-activity' || ev === 'ctm:wrapup_start' || ev === 'ctm:failed') {
                 meetAutoUnmute();

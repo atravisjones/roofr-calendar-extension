@@ -824,6 +824,7 @@ if (window.location.hostname.includes('calltrackingmetrics.com') && !window.__ct
             callerName: callerName,
             agentName: agentInfo.agentName,
             isAnswered: agentInfo.isAnswered,
+            isOutbound: isOutbound,
             transferInfo: transferInfo,
             element: row
           });
@@ -853,7 +854,7 @@ if (window.location.hostname.includes('calltrackingmetrics.com') && !window.__ct
       return;
     }
 
-    const { phoneNumber, formattedPhone, callerName, agentName, isAnswered } = callData;
+    const { phoneNumber, formattedPhone, callerName, agentName, isAnswered, isOutbound } = callData;
 
     // For ANSWERED calls: only process if agent matches configured CSR
     // For UNANSWERED calls: always process (let all CSRs see incoming calls)
@@ -909,7 +910,8 @@ if (window.location.hostname.includes('calltrackingmetrics.com') && !window.__ct
         formattedPhone: formattedPhone,
         callerName: callerName || 'Unknown',
         agentName: agentName || null,
-        isAnswered: isAnswered
+        isAnswered: isAnswered,
+        isOutbound: !!isOutbound
       });
     } catch (e) {
       console.error('[CTM Extension] Failed to send incoming call message:', e);

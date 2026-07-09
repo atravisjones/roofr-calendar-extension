@@ -471,7 +471,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             msg.callerName,
             windowId,
             msg.agentName || null,          // agentName
-            msg.isAnswered || false         // isAnswered
+            msg.isAnswered || false,        // isAnswered
+            msg.isOutbound || false         // isOutbound — no auto job-card on outbound
         )
             .then(result => {
                 console.log('[Service Worker] CTM call handled:', result);
@@ -942,12 +943,13 @@ async function lookupJobByPhoneSupabase(phoneNumber) {
 }
 
 // Handle incoming CTM calls - opens/focuses Roofr contacts and searches for phone number
-async function handleCtmIncomingCall(phoneNumber, formattedPhone, skipEnabledCheck = false, callerName = null, targetWindowId = null, agentName = null, isAnswered = false) {
+async function handleCtmIncomingCall(phoneNumber, formattedPhone, skipEnabledCheck = false, callerName = null, targetWindowId = null, agentName = null, isAnswered = false, isOutbound = false) {
     console.log('[Service Worker] Handling incoming CTM call:', {
         phone: phoneNumber,
         caller: callerName,
         agent: agentName,
         isAnswered: isAnswered,
+        isOutbound: isOutbound,
         manual: skipEnabledCheck
     });
 
@@ -991,8 +993,10 @@ async function handleCtmIncomingCall(phoneNumber, formattedPhone, skipEnabledChe
             await updateCtmTabGroup(phoneNumber, callerName, agentName, isAnswered, targetWindowId);
         }
 
-        // Auto-open job card when call is answered by the rep
-        if (isAnswered) {
+        // Auto-open job card when call is answered by the rep — INBOUND only:
+        // on an outbound call the rep chose who to dial and is usually already
+        // on the job card; popping another tab mid-call is disruptive.
+        if (isAnswered && !isOutbound) {
             try {
                 const autoSearchSetting = await chrome.storage.sync.get({ ctm_auto_search: true });
                 if (autoSearchSetting.ctm_auto_search) {
@@ -1076,8 +1080,9 @@ async function handleCtmIncomingCall(phoneNumber, formattedPhone, skipEnabledChe
             console.log('[Service Worker] Found CTM tab at index:', ctmTabIndex);
         }
 
-        // Auto-open job card when call is answered and phone is in Supabase
-        if (isAnswered) {
+        // Auto-open job card when call is answered and phone is in Supabase —
+        // INBOUND only (see comment on the alreadyOpened path above).
+        if (isAnswered && !isOutbound) {
             try {
                 const autoSearchSetting = await chrome.storage.sync.get({ ctm_auto_search: true });
                 if (autoSearchSetting.ctm_auto_search) {

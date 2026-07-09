@@ -106,6 +106,26 @@
   let _rschedRingTimeoutId = null;
   let _rschedDialActive = false;  // gate for the separate CTM event router
   let _rschedRoofrTabId = null;   // the single reused Roofr job-card tab
+  // Jobs already CALLED TODAY (any stage-2 disposition, or "changed status"
+  // review) stay hidden from the queue for the rest of the AZ day — they come
+  // back tomorrow, or sooner if the job RE-enters Needs Rescheduled with a new
+  // rescheduled_at. The queue itself is stage-driven from Roofr, so without
+  // this a called job reappears on every fetch regardless of disposition.
+  // Persisted per-user in chrome.storage.local.
+  let _rschedHandled = {};        // { job_id: { day: azDay, mark: rescheduled_at } }
+  const RSCHED_HANDLED_KEY = "rschedHandledJobs";
+  const rschedAzToday = () => new Date().toLocaleDateString("en-US", { timeZone: "America/Phoenix" });
+  try {
+    chrome.storage.local.get(RSCHED_HANDLED_KEY, (data) => {
+      const saved = data?.[RSCHED_HANDLED_KEY];
+      if (saved && typeof saved === "object") {
+        const today = rschedAzToday();
+        for (const [id, e] of Object.entries(saved)) {
+          if (e && e.day === today) _rschedHandled[id] = e;   // yesterday's entries expire
+        }
+      }
+    });
+  } catch (_) {}
 
   // ── Welcome Calls tab state (jobId-keyed; mirrors rsched but writes back) ──
   let _wcAll = [];                // raw rows from /api/welcome-calls
@@ -2618,7 +2638,14 @@
     });
   }
   function rschedFilteredJobs() {
-    const inRange = rschedRangeFiltered();
+    const today = rschedAzToday();
+    const inRange = rschedRangeFiltered().filter(j => {
+      const e = _rschedHandled[String(j.job_id)];
+      if (!e || e.day !== today) return true;                           // not called today
+      // A different rescheduled_at means the job LEFT and RE-ENTERED the
+      // stage since we called — that's a fresh reschedule, show it again.
+      return String(j.rescheduled_at || "") !== String(e.mark || "");
+    });
     if (_rschedRepFilter === "all") return inRange;
     return inRange.filter(j => ((j.created_by || "").trim() || "Unknown CSR") === _rschedRepFilter);
   }
@@ -2846,6 +2873,17 @@
     log(`rsched ✓ ${j.customer || j.job_id} [${j.created_by || "?"}]: ${parts.join(" ")}`, "ok", "rsched");
   }
 
+  // Hide a handled job from the queue for the rest of the AZ day: remember it,
+  // persist, and pull its row out of the rendered list immediately.
+  function rschedMarkHandled(j) {
+    if (!j || !j.job_id) return;
+    _rschedHandled[String(j.job_id)] = { day: rschedAzToday(), mark: String(j.rescheduled_at || "") };
+    try { chrome.storage.local.set({ [RSCHED_HANDLED_KEY]: _rschedHandled }); } catch (_) {}
+    document.querySelectorAll(".rsched-row").forEach(r => {
+      if (r.dataset.jobId === String(j.job_id)) r.remove();
+    });
+  }
+
   function rschedAdvance() {
     _rschedIdx++;
     if (_rschedIdx >= 0 && _rschedIdx < _rschedQueue.length) {
@@ -2925,6 +2963,7 @@
   function rschedHandleChangedS1() {
     rschedStopTimer();
     rschedLogOutcome("Changed status (after review)", "", "");
+    rschedMarkHandled(_rschedJob);   // status changed in Roofr — hide until the feed catches up
     rschedAdvance();
   }
   function rschedHandleSkip() {
@@ -2937,6 +2976,7 @@
   function rschedHandleStage2(label) {
     const note = (document.getElementById("rsched-note")?.value || "").trim();
     rschedLogOutcome(_rschedStage1 || "Call", label, note);
+    rschedMarkHandled(_rschedJob);   // called today — off the queue until tomorrow, any disposition
     const n = document.getElementById("rsched-note"); if (n) n.value = "";
     rschedAdvance();
   }

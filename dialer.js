@@ -26,6 +26,7 @@
   // Rescheduled (log-only), this WRITES back to the sheet (begin-call lock +
   // disposition) via /api/welcome-calls — keyed by jobId, capped at 4 attempts.
   const WELCOME_URL = `${API_BASE}/api/welcome-calls`;
+  const RSCHED_CALLS_URL = `${API_BASE}/api/roofr-rsched-calls`;
   const WC_MAX_ATTEMPTS = 4;
   const WC_RENEW_MS = 90000;             // lock heartbeat during a long welcome call
   const DEBUG_LOG_URL = `${API_BASE}/api/dialer-debug-log`;
@@ -2873,6 +2874,22 @@
     log(`rsched ✓ ${j.customer || j.job_id} [${j.created_by || "?"}]: ${parts.join(" ")}`, "ok", "rsched");
   }
 
+  // Server-side call log + dial locks (rsched_calls via speed-to-leads →
+  // roofr-search). claim = team-wide dial lock; log = starts the 3-day recall
+  // clock and drops the job from EVERYONE's feed. Never throws.
+  async function rschedWrite(payload) {
+    try {
+      const r = await fetch(RSCHED_CALLS_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" },
+        body: JSON.stringify(payload),
+      });
+      return await r.json();
+    } catch (e) {
+      return { error: e.message };
+    }
+  }
+
   // Hide a handled job from the queue for the rest of the AZ day: remember it,
   // persist, and pull its row out of the rendered list immediately.
   function rschedMarkHandled(j) {
@@ -2916,6 +2933,21 @@
     if (!e164) { log(`rsched: bad/empty phone: ${j.phone || "(none)"}`, "err", "rsched"); return; }
     const ready = await ensureCtmTab();
     if (!ready) { log("rsched: CTM tab not ready — can't dial", "err", "rsched"); return; }
+    // Team-wide double-dial guard: claim the job BEFORE dialing. If another
+    // rep holds the lock — or already called them inside the 3-day recall
+    // window — skip, so the customer never gets hammered by two reps at once.
+    // Fail-open on network errors: a lock-service blip must not stop dialing.
+    const claim = await rschedWrite({ action: "claim", job_id: String(j.job_id), rep: repName || "Unknown" });
+    if (claim && claim.claimed === false) {
+      const why = claim.reason === "called"
+        ? `already called by ${claim.by || "another rep"} in the last 3 days`
+        : `${claim.by || "another rep"} is on with them right now`;
+      log(`rsched: ${j.customer} — ${why}; skipping`, "warn", "rsched");
+      rschedMarkHandled(j);
+      rschedAdvance();
+      return;
+    }
+    if (claim && claim.error) log(`rsched: dial-lock service unavailable (${claim.error}) — dialing anyway`, "warn", "rsched");
     _rschedStage1 = "Call";
     _rschedPhase = "calling";
     _rschedDialActive = true;
@@ -2953,6 +2985,7 @@
     });
     if (!resp || !resp.ok) {
       log(`rsched: dial failed: ${resp?.error || "?"} — go to outcome`, "err", "rsched");
+      rschedWrite({ action: "release", job_id: String(j.job_id), rep: repName || "Unknown" });
       clearTimeout(_rschedRingTimeoutId);
       rschedStopCallTimer();
       _rschedDialActive = false;
@@ -2976,7 +3009,12 @@
   function rschedHandleStage2(label) {
     const note = (document.getElementById("rsched-note")?.value || "").trim();
     rschedLogOutcome(_rschedStage1 || "Call", label, note);
-    rschedMarkHandled(_rschedJob);   // called today — off the queue until tomorrow, any disposition
+    // Server log: releases our dial lock, stamps called_at, and starts the
+    // 3-day recall clock — the feed drops this job for the WHOLE team.
+    if (_rschedJob?.job_id) {
+      rschedWrite({ action: "log", job_id: String(_rschedJob.job_id), rep: repName || "Unknown", disposition: label || "" });
+    }
+    rschedMarkHandled(_rschedJob);   // instant local hide (covers the feed's 5-min cache window)
     const n = document.getElementById("rsched-note"); if (n) n.value = "";
     rschedAdvance();
   }

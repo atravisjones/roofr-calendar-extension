@@ -2896,7 +2896,23 @@
         rschedOnCallEnded();
       }
     }, RING_TIMEOUT_MS);
-    const resp = await sendToCtm({ type: "dial", number: e164 });
+    // Outbound caller ID by lead source — same source→tracking-number map the
+    // Welcome Calls dialer uses (dialer-sources.js). The feed's lead_source is
+    // the Roofr job-card value; blank/unmapped sources fall back to Main Line
+    // instead of whatever number was left selected in the softphone dropdown.
+    let rsOutbound = null;
+    try { rsOutbound = (window.DialerSources || {}).lookupOutbound?.(j.lead_source || j.source); } catch (_) {}
+    if (rsOutbound) {
+      log(`rsched: source "${j.lead_source || j.source || '(blank)'}" → outbound ${rsOutbound.name} ${rsOutbound.number}`, "info", "rsched");
+    } else {
+      log(`rsched: no outbound mapping for source "${j.lead_source || j.source || '(blank)'}" — using CTM default`, "warn", "rsched");
+    }
+    const resp = await sendToCtm({
+      type: "dial",
+      number: e164,
+      fromNumber: rsOutbound?.number || null,
+      fromName: rsOutbound?.name || null,
+    });
     if (!resp || !resp.ok) {
       log(`rsched: dial failed: ${resp?.error || "?"} — go to outcome`, "err", "rsched");
       clearTimeout(_rschedRingTimeoutId);
@@ -2939,6 +2955,12 @@
   function rschedHandleCtmEvent(eventName) {
     if (!_rschedDialActive) return;
     if (eventName === "ctm:start") {
+      // CONNECTED — cancel the 35s no-answer guillotine. Without this the ring
+      // timeout fires mid-conversation (_rschedPhase stays "calling" for the
+      // whole call) and hangs up a LIVE customer call at exactly 35s — hit
+      // Madi 7/9 (CTM 4339531982: 15s ring + 20s talk = 35s). The welcome
+      // flow got this fix earlier; this flow was missed.
+      clearTimeout(_rschedRingTimeoutId);
       log("rsched: call connected", "ok", "rsched");
       const el = document.getElementById("rsched-call-timer"); if (el) el.style.color = "var(--success)";
     } else if (eventName === "ctm:end-activity" || eventName === "ctm:wrapup_start" || eventName === "ctm:failed") {

@@ -1003,7 +1003,7 @@ export const PEOPLE_DATA = {
     // Conor Smith, Jayda Fairfield, Raven Pelfrey, Travis Jones are intentional duplicates —
     // they're also Production/CSR but Travis wants them shown under Management too.
     MGMT: ["Andrew Clark", "Anthony Bonomo", "Bradley Crohurst", "Brenda Ochoa", "Conor Smith", "Jayda Fairfield", "Nikolas Pagoulatos", "Raven Pelfrey", "Travis Jones", "Yousef Ayad"].sort(),
-    CSRS: ["Bronté Pisz", "Diva Shahpur", "Hadley Duffy", "Khamilah Valles", "Madi Meyers", "Mariana Ceballos", "Nica Javier", "Travis Jones"].sort(),
+    CSRS: ["Bronté Pisz", "Diva Shahpur", "Hadley Duffy", "Hunter Fairfield", "Khamilah Valles", "Madi Meyers", "Mariana Ceballos", "Nica Javier", "Travis Jones"].sort(),
 
     PRODUCTION: ["Austin Huffman", "Brandon Jordan", "Brian Carter", "Carter Grant", "Chandler Duffy", "Conor Smith", "Jayda Fairfield", "Raven Pelfrey", "Robert Mcpherson"].sort(),
     INSURANCE: ["Aaron Munz", "Anthony Espinosa", "Catherine Bonomo", "Khamilah Valles", "Rebekah Fontenot"].sort(),
@@ -1020,6 +1020,7 @@ export const PEOPLE_DATA = {
         "Khamilah Valles": "USRC30FF30726A9F646BB8E4B63EF5677D9",
         "Mariana Ceballos": "USR3BC964E3CA5C4BF656194430839D95D6",
         "Hadley Duffy": "USR3BC964E3CA5C4BF6E04EB987189831CD",
+        "Hunter Fairfield": "USR3BC964E3CA5C4BF6AA0EF97DD1A60F08",
         "Caite": "USR3C843ED7AB9B47118D66E874FF6151FD",
         "Anthony Espinosa": "USRC30FF30726A9F646798C58AF597D98E0",
         "Aaron Munz": "USR3C843ED7AB9B4711D25580F0C1D45997",
@@ -1028,9 +1029,12 @@ export const PEOPLE_DATA = {
 };
 
 // ===== Company Team Roster live sync =====
-// The "Team Roster" tab holds ONLY active staff (fired/archived people move to the
-// "Archived Staff" tab), so bucketing by Department/Title is safe. Reads go through
-// the tech-scheduler sheets proxy (service-account auth stays server-side).
+// The "Active Roster" tab is a formula-driven live view of the edit tab ("Add To
+// Team Roster") filtered to ACTIVE staff only, so bucketing by Department/Title is
+// safe. (The sheet was restructured 2026-07: the old "Team Roster" tab no longer
+// exists — reading it 400s and the sync silently fell back to the static lists.)
+// Reads go through the tech-scheduler sheets proxy (service-account auth stays
+// server-side).
 export const ROSTER_SHEET_ID = "1XFJHD0IVZ8sJrQ7H2CrqU26a6n-FulPM8ABKc1hrh9o";
 
 // Roster-sheet spellings -> the canonical names every downstream system keys on
@@ -1074,7 +1078,11 @@ export function syncPeopleDataFromRoster() {
 }
 
 async function fetchRosterBuckets() {
-    const range = "'Team Roster'!A2:C200";
+    // Active Roster layout: banner + summary rows on top, then a header row
+    // (Team | Department | Role / Title | Name | ...), then one row per person.
+    // Locate the header instead of hardcoding its row so banner edits don't
+    // silently break the sync.
+    const range = "'Active Roster'!A1:D300";
     const url = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(ROSTER_SHEET_ID)}&range=${encodeURIComponent(range)}`;
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`roster sheet HTTP ${res.status}`);
@@ -1083,10 +1091,15 @@ async function fetchRosterBuckets() {
 
     const DEPT_MAP = { "Production": "PRODUCTION", "Insurance": "INSURANCE", "D2D Sales": "D2D" };
     const buckets = { PRODUCTION: [], INSURANCE: [], D2D: [], CSRS: [], REPS: [] };
+    let pastHeader = false;
     for (const row of rows) {
-        const title = (row[0] || "").trim();
         const dept = (row[1] || "").trim();
-        const rawName = (row[2] || "").trim();
+        const title = (row[2] || "").trim();
+        const rawName = (row[3] || "").trim();
+        if (!pastHeader) {
+            if (dept === "Department" && rawName === "Name") pastHeader = true;
+            continue;
+        }
         if (!rawName || !dept) continue;
         const name = ROSTER_NAME_ALIASES[rawName] || rawName;
 

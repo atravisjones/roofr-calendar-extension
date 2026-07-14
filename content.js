@@ -6735,6 +6735,23 @@ if (window.__isRoofrJobPage && !window.__roofrJobAutomationLoaded) {
   window.__roofrClickRoofrReportButton = clickRoofrReportButton;
   window.__roofrClickConfirmOnMap = clickConfirmOnMap;
   window.__roofrSelectAllSecondaryStructures = selectAllSecondaryStructures;
+  window.__roofrWaitForJobPageLoad = waitForJobPageLoad;
+
+  // Chauffeur prep for the Reports order run: get the freshly-navigated job page
+  // to the "Confirm roof location" step, then STOP — pin verification and the
+  // actual purchase stay with the human.
+  window.__roofrPrepReportOrder = async function prepReportOrder() {
+    const steps = [];
+    const load = await waitForJobPageLoad();
+    steps.push({ step: 'waitForJobPageLoad', ...load });
+    await sleep(1500);
+    const measurements = await clickMeasurementsTab();
+    steps.push({ step: 'clickMeasurementsTab', ...measurements });
+    await sleep(1500);
+    const report = await clickRoofrReportButton();
+    steps.push({ step: 'clickRoofrReportButton', ...report });
+    return { ok: report?.ok === true, steps };
+  };
 }
 // ==================================================
 // END: Roofr Job Card Automation
@@ -6786,6 +6803,19 @@ if (window.__isRoofrJobPage && !window.__roofrJobAutomationLoaded) {
       } else {
         sendResponse({ ok: false, error: 'Not on a job page' });
       }
+      return true;
+    }
+
+    if (msg.type === "PREP_REPORT_ORDER") {
+      if (typeof window.__roofrPrepReportOrder === 'function') {
+        window.__roofrPrepReportOrder().then(result => {
+          sendResponse(result);
+        }).catch(err => {
+          sendResponse({ ok: false, error: err.message || String(err) });
+        });
+        return true;
+      }
+      sendResponse({ ok: false, error: 'Report prep not available on this page' });
       return true;
     }
 

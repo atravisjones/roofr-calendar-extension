@@ -2892,50 +2892,64 @@
       <section id="sec-reports" class="section">
         <div class="reports-container" style="padding: 12px 0;">
 
-          <details id="reports-v2-section" open style="margin-bottom: 14px; padding: 10px; background: var(--surface); border: 1px solid var(--primary); border-radius: var(--radius);">
-            <summary style="cursor: pointer; font-size: 0.95rem; font-weight: 800; color: var(--text-main);">
-              Rep Assignment v2 (API)
-            </summary>
-            <div style="margin-top: 10px;">
-              <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; margin-bottom: 8px;">
-                <input id="reports-v2-date" type="date" style="min-width: 0; padding: 7px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text-main);">
-                <button id="reports-v2-load" class="btn secondary" style="padding: 7px 10px;">Load Day</button>
-              </div>
-              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px;">
-                <button id="reports-v2-scan-directory" class="btn secondary" style="font-size: 0.75rem; padding: 5px 9px;">Scan directory</button>
-                <span id="reports-v2-directory-status" style="font-size: 0.72rem; color: var(--text-muted);">2 seeded users</span>
-              </div>
-              <textarea id="reports-v2-schedule" placeholder="Paste Summary by Representative..." style="width: 100%; min-height: 110px; resize: vertical; margin-bottom: 6px; padding: 7px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text-main); font: inherit; font-size: 0.75rem;"></textarea>
-              <button id="reports-v2-apply-schedule" class="btn secondary" style="width: 100%; margin-bottom: 8px;">Apply schedule</button>
-              <div id="reports-v2-apply-results" style="display: none; margin-bottom: 8px; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.72rem; white-space: pre-wrap; overflow-wrap: anywhere;"></div>
-              <div id="reports-v2-status" style="display: none; margin-bottom: 8px; padding: 7px; border-radius: var(--radius); font-size: 0.78rem;"></div>
-              <div id="reports-v2-queue" style="display: none; max-height: 360px; overflow-y: auto; margin-bottom: 10px;"></div>
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px; margin-bottom: 8px; background: var(--surface-hover); border-radius: var(--radius);">
-                <label style="display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 0.78rem; font-weight: 650;">
-                  Dry-run
-                  <input id="reports-v2-dry-run" type="checkbox" checked>
-                </label>
-                <label style="font-size: 0.78rem; font-weight: 650;">
-                  Write cap
-                  <select id="reports-v2-write-cap" style="width: 100%; margin-top: 3px; padding: 4px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text-main);">
-                    <option value="1" selected>1</option>
-                    <option value="5">5</option>
-                    <option value="unlimited">unlimited</option>
-                  </select>
-                </label>
-              </div>
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px;">
-                <button id="reports-v2-preflight" class="btn secondary">Preflight</button>
-                <button id="reports-v2-execute" class="btn" disabled>Execute</button>
-                <button id="reports-v2-resume" class="btn secondary">Resume</button>
-                <button id="reports-v2-retry-failed" class="btn secondary">Retry failed only</button>
-              </div>
-              <button id="reports-v2-export" class="btn ghost" style="width: 100%; font-size: 0.78rem;">Export journal</button>
-              <div id="reports-v2-preflight-summary" style="display: none; margin-top: 8px; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.75rem; white-space: pre-wrap;"></div>
-              <div id="reports-v2-progress" style="display: none; margin-top: 8px; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); font-family: monospace; font-size: 0.72rem; white-space: pre-wrap;"></div>
-              <div id="reports-v2-tally" style="display: none; margin-top: 8px; font-size: 0.75rem; color: var(--text-muted);"></div>
+          <div id="reports-v2-section" style="margin-bottom: 14px; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);">
+            <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; margin-bottom: 8px;">
+              <input id="reports-v2-date" type="date" style="min-width: 0; padding: 7px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text-main);">
+              <button id="reports-v2-load" class="btn" style="padding: 7px 16px;">Load</button>
             </div>
-          </details>
+            <div id="reports-v2-summary" style="display: none; flex-wrap: wrap; gap: 4px; margin-bottom: 8px;"></div>
+            <div id="reports-v2-status" style="display: none; margin-bottom: 8px; padding: 7px 9px; border-radius: var(--radius); font-size: 0.78rem;"></div>
+            <details style="margin-bottom: 8px;">
+              <summary style="cursor: pointer; font-size: 0.78rem; font-weight: 650; color: var(--text-muted);">Paste schedule (auto-assign reps)</summary>
+              <div style="margin-top: 6px;">
+                <textarea id="reports-v2-schedule" placeholder="Paste Summary by Representative..." style="width: 100%; min-height: 110px; resize: vertical; margin-bottom: 6px; padding: 7px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text-main); font: inherit; font-size: 0.75rem;"></textarea>
+                <button id="reports-v2-apply-schedule" class="btn secondary" style="width: 100%;">Apply schedule</button>
+                <div id="reports-v2-apply-results" style="display: none; margin-top: 6px; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.72rem; white-space: pre-wrap; overflow-wrap: anywhere;"></div>
+              </div>
+            </details>
+            <div id="reports-v2-queue" style="display: none; max-height: 380px; overflow-y: auto; margin-bottom: 8px;"></div>
+            <div id="reports-v2-progressbar" style="display: none; height: 6px; background: var(--surface-hover); border-radius: 3px; margin-bottom: 8px; overflow: hidden;">
+              <div id="reports-v2-progressbar-fill" style="height: 100%; width: 0%; background: var(--primary); border-radius: 3px; transition: width 0.3s;"></div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px;">
+              <button id="reports-v2-assign" class="btn" disabled>Assign reps</button>
+              <button id="reports-v2-order" class="btn" disabled>Order reports</button>
+            </div>
+            <div id="reports-v2-order-panel" style="display: none; margin-bottom: 8px; padding: 10px; background: var(--primary-light); border: 1px solid var(--primary); border-radius: var(--radius);"></div>
+            <details id="reports-v2-advanced">
+              <summary style="cursor: pointer; font-size: 0.78rem; font-weight: 650; color: var(--text-muted);">Advanced</summary>
+              <div style="margin-top: 8px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px;">
+                  <button id="reports-v2-scan-directory" class="btn secondary" style="font-size: 0.75rem; padding: 5px 9px;">Scan directory</button>
+                  <span id="reports-v2-directory-status" style="font-size: 0.72rem; color: var(--text-muted);">2 seeded users</span>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px; margin-bottom: 8px; background: var(--surface-hover); border-radius: var(--radius);">
+                  <label style="display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 0.78rem; font-weight: 650;">
+                    Dry-run
+                    <input id="reports-v2-dry-run" type="checkbox">
+                  </label>
+                  <label style="font-size: 0.78rem; font-weight: 650;">
+                    Write cap
+                    <select id="reports-v2-write-cap" style="width: 100%; margin-top: 3px; padding: 4px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text-main);">
+                      <option value="1">1</option>
+                      <option value="5">5</option>
+                      <option value="unlimited" selected>unlimited</option>
+                    </select>
+                  </label>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px;">
+                  <button id="reports-v2-preflight" class="btn secondary">Preflight</button>
+                  <button id="reports-v2-execute" class="btn secondary" disabled>Execute</button>
+                  <button id="reports-v2-resume" class="btn secondary">Resume</button>
+                  <button id="reports-v2-retry-failed" class="btn secondary">Retry failed only</button>
+                </div>
+                <button id="reports-v2-export" class="btn ghost" style="width: 100%; font-size: 0.78rem;">Export journal</button>
+                <div id="reports-v2-preflight-summary" style="display: none; margin-top: 8px; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.75rem; white-space: pre-wrap;"></div>
+                <div id="reports-v2-progress" style="display: none; margin-top: 8px; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); font-family: monospace; font-size: 0.72rem; white-space: pre-wrap;"></div>
+                <div id="reports-v2-tally" style="display: none; margin-top: 8px; font-size: 0.75rem; color: var(--text-muted);"></div>
+              </div>
+            </details>
+          </div>
 
           <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
             <div style="font-size: 0.95rem; font-weight: 800; color: var(--text-main);">Reports Batch</div>

@@ -9794,6 +9794,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     const reportsV2PreflightSummary = document.getElementById('reports-v2-preflight-summary');
     const reportsV2Progress = document.getElementById('reports-v2-progress');
     const reportsV2Tally = document.getElementById('reports-v2-tally');
+    const reportsV2Summary = document.getElementById('reports-v2-summary');
+    const reportsV2AssignBtn = document.getElementById('reports-v2-assign');
+    const reportsV2OrderBtn = document.getElementById('reports-v2-order');
+    const reportsV2OrderPanel = document.getElementById('reports-v2-order-panel');
+    const reportsV2ProgressBar = document.getElementById('reports-v2-progressbar');
+    const reportsV2ProgressFill = document.getElementById('reports-v2-progressbar-fill');
     const REPORTS_V2_DIRECTORY_KEY = 'roofr_user_directory_v1';
     const REPORTS_V2_SEED_DIRECTORY = {
         '443464': { name: 'Travis Jones' },
@@ -9805,6 +9811,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     let reportsV2Selections = {};
     let reportsV2PreflightUnits = null;
     let reportsV2Running = false;
+    let reportsV2JobReports = {};   // jobId -> { status, pinFlag, ... } from the report check
+    let reportsV2LiveOutcomes = {}; // eventId -> outcome/state chip during an assign run
+    let reportsV2OrderState = null; // { jobs, index, stopped, skipRequested } while the order chauffeur runs
 
     function reportsV2Escape(value) {
         return String(value ?? '')
@@ -10106,27 +10115,130 @@ document.addEventListener('DOMContentLoaded', async () => {
             .sort((a, b) => a[1].name.localeCompare(b[1].name));
         return [
             '<option value="">-- Select REP --</option>',
-            ...entries.map(([id, user]) => `<option value="${reportsV2Escape(id)}" ${String(selected) === id ? 'selected' : ''}>${reportsV2Escape(user.name)} (id:${reportsV2Escape(id)})</option>`),
+            ...entries.map(([id, user]) => `<option value="${reportsV2Escape(id)}" ${String(selected) === id ? 'selected' : ''}>${reportsV2Escape(user.name)}</option>`),
             '<option value="__manual__">Manual id:NNNNN...</option>'
         ].join('');
+    }
+
+    const REPORTS_V2_INELIGIBLE_LABELS = {
+        not_sales_category: 'not sales',
+        cancelled: 'cancelled',
+        recurring: 'recurring',
+        all_day: 'all-day',
+        null_job_id: 'no job link',
+        missing_rep_selection: 'needs rep'
+    };
+
+    function reportsV2OutcomeChip(eventId) {
+        const outcome = reportsV2LiveOutcomes[String(eventId)];
+        if (!outcome) return '';
+        const map = {
+            verified_success: ['✓ assigned', 'var(--success)'],
+            already_correct: ['✓ already set', 'var(--success)'],
+            dry_run: ['dry-run', 'var(--warn)'],
+            skipped: ['skipped', 'var(--text-muted)'],
+            failed: ['✗ failed', 'var(--danger)'],
+            needs_review: ['⚠ review', 'var(--warn)'],
+            reconciling: ['checking…', 'var(--primary)'],
+            writing: ['writing…', 'var(--primary)'],
+            writing_owner: ['owner…', 'var(--primary)'],
+            pending: ['queued', 'var(--text-muted)']
+        };
+        const [label, color] = map[outcome] || [outcome, 'var(--text-muted)'];
+        return `<span style="font-size: 0.66rem; font-weight: 700; color: ${color}; white-space: nowrap;">${reportsV2Escape(label)}</span>`;
+    }
+
+    function reportsV2ReportChip(jobId) {
+        const info = reportsV2JobReports[String(jobId ?? '')];
+        if (!info) return '';
+        const map = {
+            checking: ['report: checking…', 'var(--text-muted)'],
+            paint: ['🎨 paint — no report', 'var(--text-muted)'],
+            delivered: ['✓ report delivered', 'var(--success)'],
+            processing: ['⏳ report processing', 'var(--success)'],
+            ordered: ['✓ report ordered', 'var(--success)'],
+            needs: ['📋 needs report', 'var(--warn)'],
+            error: ['report check failed', 'var(--danger)']
+        };
+        const entry = map[info.status];
+        if (!entry) return '';
+        const pin = info.pinFlag && info.status === 'needs'
+            ? ' <span style="color: var(--danger); font-weight: 700;">⚠ pin</span>'
+            : '';
+        return `<span style="font-size: 0.66rem; font-weight: 650; color: ${entry[1]}; white-space: nowrap;">${entry[0]}${pin}</span>`;
+    }
+
+    function reportsV2Chip(text, color) {
+        return `<span style="padding: 2px 8px; border-radius: 999px; font-size: 0.68rem; font-weight: 700; background: var(--surface-hover); color: ${color};">${reportsV2Escape(text)}</span>`;
+    }
+
+    function reportsV2RenderSummary() {
+        if (!reportsV2Summary) return;
+        if (!reportsV2Events.length) {
+            reportsV2Summary.style.display = 'none';
+            return;
+        }
+        const eligible = reportsV2Events.filter(event => reportsV2StructuralEligibility(event).eligible);
+        const assigned = eligible.filter(event => reportsV2Selections[String(event.id)]);
+        const ineligible = reportsV2Events.length - eligible.length;
+        const jobs = Object.values(reportsV2JobReports);
+        const needs = jobs.filter(job => job.status === 'needs').length;
+        const done = jobs.filter(job => ['delivered', 'processing', 'ordered'].includes(job.status)).length;
+        const paint = jobs.filter(job => job.status === 'paint').length;
+        const chips = [
+            reportsV2Chip(`${reportsV2Events.length} events`, 'var(--text-main)'),
+            reportsV2Chip(`${assigned.length}/${eligible.length} reps set`, assigned.length >= eligible.length ? 'var(--success)' : 'var(--warn)')
+        ];
+        if (ineligible) chips.push(reportsV2Chip(`${ineligible} n/a`, 'var(--text-muted)'));
+        if (jobs.length) {
+            if (needs) chips.push(reportsV2Chip(`${needs} need reports`, 'var(--warn)'));
+            if (done) chips.push(reportsV2Chip(`${done} reports ok`, 'var(--success)'));
+            if (paint) chips.push(reportsV2Chip(`${paint} paint`, 'var(--text-muted)'));
+        }
+        reportsV2Summary.style.display = 'flex';
+        reportsV2Summary.innerHTML = chips.join('');
+    }
+
+    function reportsV2UpdateActionButtons() {
+        if (reportsV2AssignBtn) {
+            const assignable = reportsV2Events.filter(event =>
+                reportsV2StructuralEligibility(event).eligible && reportsV2Selections[String(event.id)]).length;
+            reportsV2AssignBtn.disabled = reportsV2Running || Boolean(reportsV2OrderState) || !assignable;
+            reportsV2AssignBtn.textContent = assignable ? `Assign reps (${assignable})` : 'Assign reps';
+        }
+        if (reportsV2OrderBtn) {
+            const needs = reportsV2OrderQueueJobs().length;
+            reportsV2OrderBtn.disabled = Boolean(reportsV2OrderState) || reportsV2Running || !needs;
+            reportsV2OrderBtn.textContent = needs ? `Order reports (${needs})` : 'Order reports';
+        }
+    }
+
+    function reportsV2RefreshReportChips(jobId) {
+        reportsV2Queue?.querySelectorAll(`.rv2-report[data-job-id="${CSS.escape(String(jobId))}"]`).forEach(el => {
+            el.innerHTML = reportsV2ReportChip(jobId);
+        });
     }
 
     function reportsV2RenderQueue() {
         if (!reportsV2Queue) return;
         reportsV2Queue.style.display = reportsV2Events.length ? 'block' : 'none';
-        reportsV2Queue.innerHTML = reportsV2Events.map((event, index) => {
+        reportsV2Queue.innerHTML = reportsV2Events.map(event => {
             const check = reportsV2StructuralEligibility(event);
             const disabled = !check.eligible;
-            return `<div style="margin-bottom: 6px; padding: 8px; border: 1px solid var(--border); border-left: 3px solid ${disabled ? 'var(--text-muted)' : 'var(--primary)'}; border-radius: 6px; opacity: ${disabled ? '0.55' : '1'};">
-                <div style="display: flex; justify-content: space-between; gap: 8px;">
-                    <strong style="font-size: 0.78rem;">${reportsV2Escape(reportsV2Time(event.start_date_time))}</strong>
-                    ${disabled ? `<span style="font-size: 0.68rem; color: var(--text-muted);">${reportsV2Escape(check.reason)}</span>` : ''}
+            const selected = reportsV2Selections[String(event.id)] || '';
+            const border = disabled ? 'var(--border)' : (selected ? 'var(--success)' : 'var(--warn)');
+            return `<div class="rv2-card" title="event ${reportsV2Escape(event.id)} · job ${reportsV2Escape(event.job_id ?? 'none')}" style="margin-bottom: 5px; padding: 7px 8px; border: 1px solid var(--border); border-left: 3px solid ${border}; border-radius: 6px; opacity: ${disabled ? '0.55' : '1'};">
+                <div style="display: flex; align-items: baseline; gap: 6px;">
+                    <strong style="flex-shrink: 0; font-size: 0.72rem;">${reportsV2Escape(reportsV2Time(event.start_date_time))}</strong>
+                    <span style="flex: 1; min-width: 0; font-size: 0.76rem; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${reportsV2Escape(event.title || '')}">${reportsV2Escape(event.title || 'Untitled event')}</span>
+                    <span class="rv2-outcome" data-event-id="${reportsV2Escape(event.id)}" style="flex-shrink: 0;">${disabled ? `<span style="font-size: 0.66rem; color: var(--text-muted);">${reportsV2Escape(REPORTS_V2_INELIGIBLE_LABELS[check.reason] || check.reason)}</span>` : reportsV2OutcomeChip(event.id)}</span>
                 </div>
-                <div style="font-size: 0.8rem; font-weight: 650; overflow-wrap: anywhere;">${reportsV2Escape(event.title || 'Untitled event')}</div>
-                <div style="font-size: 0.66rem; color: var(--text-muted);">eventId:${reportsV2Escape(event.id)} · jobId:${reportsV2Escape(event.job_id ?? 'none')}</div>
-                <div style="margin: 4px 0; font-size: 0.7rem; color: var(--text-muted);">Attendees: ${reportsV2Escape(reportsV2AttendeeText(event))}</div>
-                <select class="reports-v2-rep" data-event-id="${reportsV2Escape(event.id)}" ${disabled ? 'disabled' : ''} style="width: 100%; padding: 5px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text-main);">
-                    ${reportsV2RepOptions(reportsV2Selections[String(event.id)] || '')}
+                <div style="display: flex; justify-content: space-between; gap: 6px; margin: 2px 0 4px;">
+                    <span style="min-width: 0; font-size: 0.66rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${reportsV2Escape(reportsV2AttendeeText(event))}</span>
+                    <span class="rv2-report" data-job-id="${reportsV2Escape(event.job_id ?? '')}" style="flex-shrink: 0;">${reportsV2ReportChip(event.job_id)}</span>
+                </div>
+                <select class="reports-v2-rep" data-event-id="${reportsV2Escape(event.id)}" ${disabled ? 'disabled' : ''} style="width: 100%; padding: 4px 5px; font-size: 0.74rem; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text-main);">
+                    ${reportsV2RepOptions(selected)}
                 </select>
             </div>`;
         }).join('');
@@ -10148,6 +10260,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 reportsV2RenderQueue();
             });
         });
+
+        reportsV2RenderSummary();
+        reportsV2UpdateActionButtons();
     }
 
     async function reportsV2LoadDay() {
@@ -10169,13 +10284,181 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
             reportsV2Events = detailed;
+            reportsV2JobReports = {};
+            reportsV2LiveOutcomes = {};
+            if (reportsV2ProgressBar) reportsV2ProgressBar.style.display = 'none';
             reportsV2RenderQueue();
-            reportsV2SetStatus(`Loaded ${detailed.length} sales events`, 'success');
+            reportsV2SetStatus(`Loaded ${detailed.length} sales events — checking reports…`, 'success');
+            reportsV2CheckReports()
+                .then(() => reportsV2SetStatus(`Loaded ${detailed.length} sales events`, 'success'))
+                .catch(() => {});
         } catch (error) {
             reportsV2SetStatus(error.message, 'error');
         } finally {
             if (reportsV2LoadBtn) reportsV2LoadBtn.disabled = false;
         }
+    }
+
+    // ===== Report ordering (chauffeur) =====
+    // Classify every unique job in the loaded day via GET /api/job: paint jobs need
+    // no measurement, measurementQueues/reports non-empty means a report is already
+    // in flight or delivered, everything else needs one. The order run then drives
+    // the Roofr tab to each needing job's "Confirm roof location" step and STOPS —
+    // pin verification and the purchase click stay with the human, always.
+    const REPORTS_V2_PIN_FLAG = /\b(lot|unit|space|spc|apt|trlr)\b|#\s*\d/i;
+
+    function reportsV2UniqueJobs() {
+        const seen = new Map();
+        for (const event of reportsV2Events) {
+            const jobId = event?.job_id;
+            if (jobId === null || jobId === undefined || jobId === '') continue;
+            if (!seen.has(String(jobId))) seen.set(String(jobId), { jobId: String(jobId), event });
+        }
+        return [...seen.values()];
+    }
+
+    function reportsV2OrderQueueJobs() {
+        return reportsV2UniqueJobs().filter(({ jobId }) => reportsV2JobReports[jobId]?.status === 'needs');
+    }
+
+    async function reportsV2CheckReports() {
+        const jobs = reportsV2UniqueJobs();
+        if (!jobs.length) return;
+        for (const { jobId } of jobs) {
+            if (!reportsV2JobReports[jobId]) reportsV2JobReports[jobId] = { status: 'checking' };
+        }
+        reportsV2RenderQueue();
+        for (const { jobId, event } of jobs) {
+            if (reportsV2JobReports[jobId]?.status !== 'checking') continue;
+            try {
+                const job = await reportsV2ApiAdapter.getJob(jobId);
+                const titleText = `${event?.title || ''} ${job?.name || ''}`;
+                const address = job?.address?.formatted_address || job?.address?.address || '';
+                const pinFlag = REPORTS_V2_PIN_FLAG.test(`${titleText} ${address}`);
+                let status = 'needs';
+                if (/paint/i.test(titleText)) status = 'paint';
+                else if ((job?.reports || []).length) status = 'delivered';
+                else if ((job?.measurementQueues || []).length) status = 'processing';
+                reportsV2JobReports[jobId] = { status, pinFlag, address };
+            } catch (error) {
+                reportsV2JobReports[jobId] = { status: 'error', error: error.message };
+            }
+            reportsV2RefreshReportChips(jobId);
+            reportsV2RenderSummary();
+            reportsV2UpdateActionButtons();
+            await new Promise(resolve => setTimeout(resolve, 250));
+        }
+    }
+
+    function reportsV2RenderOrderPanel(message) {
+        if (!reportsV2OrderPanel) return;
+        const run = reportsV2OrderState;
+        if (!run) {
+            reportsV2OrderPanel.style.display = 'none';
+            return;
+        }
+        const current = run.jobs[run.index];
+        const info = current ? reportsV2JobReports[String(current.jobId)] : null;
+        const pin = info?.pinFlag
+            ? '<div style="margin-top: 4px; font-size: 0.72rem; font-weight: 700; color: var(--danger);">⚠ Lot/unit-style address — double-check the pin!</div>'
+            : '';
+        reportsV2OrderPanel.style.display = 'block';
+        reportsV2OrderPanel.innerHTML = `
+            <div style="font-size: 0.7rem; font-weight: 800; color: var(--primary); margin-bottom: 2px;">ORDERING REPORTS · ${run.index + 1} of ${run.jobs.length}</div>
+            <div style="font-size: 0.8rem; font-weight: 650; overflow-wrap: anywhere;">${reportsV2Escape(current?.event?.title || current?.jobId || '')}</div>
+            ${pin}
+            <div style="margin-top: 4px; font-size: 0.74rem; color: var(--text-muted);">${reportsV2Escape(message || '')}</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px;">
+                <button id="reports-v2-order-skip" class="btn secondary" style="font-size: 0.78rem; padding: 6px;">Skip job</button>
+                <button id="reports-v2-order-stop" class="btn secondary" style="font-size: 0.78rem; padding: 6px; color: var(--danger);">Stop run</button>
+            </div>`;
+        document.getElementById('reports-v2-order-skip')?.addEventListener('click', () => {
+            if (reportsV2OrderState) reportsV2OrderState.skipRequested = true;
+        });
+        document.getElementById('reports-v2-order-stop')?.addEventListener('click', () => {
+            if (reportsV2OrderState) reportsV2OrderState.stopped = true;
+        });
+    }
+
+    async function reportsV2WaitForOrder(jobId) {
+        while (true) {
+            const run = reportsV2OrderState;
+            if (!run || run.stopped || run.skipRequested) return false;
+            try {
+                const job = await reportsV2ApiAdapter.getJob(jobId);
+                if ((job?.measurementQueues || []).length || (job?.reports || []).length) return true;
+            } catch (_) {
+                // Tab may be mid-navigation; keep polling.
+            }
+            await new Promise(resolve => setTimeout(resolve, 4000));
+        }
+    }
+
+    async function reportsV2StartOrderRun() {
+        if (reportsV2OrderState) return;
+        const jobs = reportsV2OrderQueueJobs();
+        if (!jobs.length) return;
+        reportsV2OrderState = { jobs, index: 0, stopped: false, skipRequested: false };
+        reportsV2UpdateActionButtons();
+        try {
+            const tab = await reportsV2GetRoofrTab();
+            for (let i = 0; i < jobs.length; i++) {
+                if (!reportsV2OrderState || reportsV2OrderState.stopped) break;
+                reportsV2OrderState.index = i;
+                reportsV2OrderState.skipRequested = false;
+                const { jobId } = jobs[i];
+                reportsV2RenderOrderPanel('Opening the job and getting to the pin map…');
+                await chrome.tabs.update(tab.id, { url: `https://app.roofr.com/dashboard/team/239329/jobs/list-view?selectedJobId=${jobId}` });
+                try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (_) {}
+                await new Promise(resolve => setTimeout(resolve, 2500));
+                let prep;
+                try {
+                    prep = await reportsV2Send({ type: 'PREP_REPORT_ORDER' });
+                } catch (error) {
+                    prep = { ok: false, error: error.message };
+                }
+                if (!prep?.ok && !reportsV2OrderState?.stopped) {
+                    // The SPA or content script may still have been booting — one retry.
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    try {
+                        prep = await reportsV2Send({ type: 'PREP_REPORT_ORDER' });
+                    } catch (error) {
+                        prep = { ok: false, error: error.message };
+                    }
+                }
+                if (prep?.ok) {
+                    reportsV2RenderOrderPanel('Verify the pin, then order the report — I\'ll advance when the order shows up.');
+                } else {
+                    reportsV2RenderOrderPanel(`Couldn't auto-open the report flow (${prep?.error || 'unknown'}). Order it manually and I'll detect it — or Skip.`);
+                }
+                const ordered = await reportsV2WaitForOrder(jobId);
+                if (reportsV2OrderState?.stopped) break;
+                if (ordered) {
+                    reportsV2JobReports[jobId] = { ...(reportsV2JobReports[jobId] || {}), status: 'ordered' };
+                }
+                reportsV2RefreshReportChips(jobId);
+                reportsV2RenderSummary();
+            }
+        } catch (error) {
+            reportsV2SetStatus(`Order run stopped: ${error.message}`, 'error');
+        } finally {
+            const allHandled = reportsV2OrderQueueJobs().length === 0;
+            reportsV2OrderState = null;
+            reportsV2RenderOrderPanel();
+            reportsV2UpdateActionButtons();
+            if (allHandled) reportsV2SetStatus('All reports handled 🎉', 'success');
+        }
+    }
+
+    async function reportsV2AssignAll() {
+        reportsV2LiveOutcomes = {};
+        reportsV2Preflight();
+        await reportsV2Run({
+            units: reportsV2PreflightUnits,
+            dryRun: reportsV2DryRun?.checked === true,
+            maxWrites: reportsV2WriteCap?.value === 'unlimited' ? null : Number(reportsV2WriteCap?.value || 1)
+        });
+        reportsV2RenderQueue();
     }
 
     async function reportsV2ScanDirectory() {
@@ -10222,8 +10505,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         ));
     }
 
+    function reportsV2UpdateLiveChips(state) {
+        if (!state?.units?.length) return;
+        if (!reportsV2Events.length) return; // popup reopened with stale state — nothing to decorate
+        for (const unit of state.units) {
+            reportsV2LiveOutcomes[String(unit.eventId)] = unit.outcome || unit.state;
+        }
+        reportsV2Queue?.querySelectorAll('.rv2-outcome').forEach(el => {
+            const id = el.dataset.eventId;
+            if (id && reportsV2LiveOutcomes[id]) el.innerHTML = reportsV2OutcomeChip(id);
+        });
+        if (reportsV2ProgressBar && reportsV2ProgressFill) {
+            const total = state.units.length;
+            const done = state.units.filter(unit => unit.state === 'terminal').length;
+            reportsV2ProgressBar.style.display = 'block';
+            reportsV2ProgressFill.style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
+        }
+    }
+
     function reportsV2RenderState(state) {
         if (!state || !reportsV2Progress || !reportsV2Tally) return;
+        reportsV2UpdateLiveChips(state);
         reportsV2Progress.style.display = 'block';
         reportsV2Progress.textContent = state.units.map(unit => {
             const detail = unit.error?.reason || unit.error?.message || '';
@@ -10265,7 +10567,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function reportsV2Run(config) {
         if (reportsV2Running) return;
         reportsV2Running = true;
-        [reportsV2ExecuteBtn, reportsV2ResumeBtn, reportsV2RetryFailedBtn].forEach(button => {
+        [reportsV2ExecuteBtn, reportsV2ResumeBtn, reportsV2RetryFailedBtn, reportsV2AssignBtn].forEach(button => {
             if (button) button.disabled = true;
         });
         const poll = setInterval(async () => {
@@ -10283,6 +10585,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (reportsV2ResumeBtn) reportsV2ResumeBtn.disabled = false;
             if (reportsV2RetryFailedBtn) reportsV2RetryFailedBtn.disabled = false;
             if (reportsV2ExecuteBtn) reportsV2ExecuteBtn.disabled = !reportsV2PreflightUnits;
+            reportsV2UpdateActionButtons();
         }
     }
 
@@ -10322,9 +10625,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     reportsV2PreflightBtn?.addEventListener('click', reportsV2Preflight);
     reportsV2ExecuteBtn?.addEventListener('click', () => reportsV2Run({
         units: reportsV2PreflightUnits,
-        dryRun: reportsV2DryRun?.checked !== false,
+        dryRun: reportsV2DryRun?.checked === true,
         maxWrites: reportsV2WriteCap?.value === 'unlimited' ? null : Number(reportsV2WriteCap?.value || 1)
     }));
+    reportsV2AssignBtn?.addEventListener('click', reportsV2AssignAll);
+    reportsV2OrderBtn?.addEventListener('click', reportsV2StartOrderRun);
     reportsV2ResumeBtn?.addEventListener('click', () => reportsV2Run({ resume: true }));
     reportsV2RetryFailedBtn?.addEventListener('click', reportsV2RetryFailed);
     reportsV2ExportBtn?.addEventListener('click', reportsV2ExportJournal);

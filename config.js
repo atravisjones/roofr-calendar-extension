@@ -462,9 +462,22 @@ export const CONFIG = {
   
   // April 6 2026: schedule changes from old blocks to new blocks
   SCHEDULE_CUTOVER: new Date(2026, 3, 6), // months are 0-indexed, so 3 = April
+  // July 14 2026: timeframes gain an hour (8-11, 11-1, 2-5, 5-8). The widened
+  // windows are supersets of the old ones, so old-style appts still bucket the
+  // same; the cutover just keeps past days labeled with the times that were
+  // true then.
+  SCHEDULE_CUTOVER_2: new Date(2026, 6, 14), // 6 = July
 
   blockWindowForDate(date) {
     const y = date.getFullYear(), m = date.getMonth(), d = date.getDate();
+    if (date >= this.SCHEDULE_CUTOVER_2) {
+      return [
+        { key:"B1", label:"8am-11am",  start:new Date(y,m,d,8,0),  end:new Date(y,m,d,11,0) },
+        { key:"B2", label:"11am-1pm",  start:new Date(y,m,d,11,0), end:new Date(y,m,d,13,0) },
+        { key:"B3", label:"2pm-5pm",   start:new Date(y,m,d,14,0), end:new Date(y,m,d,17,0) },
+        { key:"B4", label:"5pm-8pm",   start:new Date(y,m,d,17,0), end:new Date(y,m,d,20,0) },
+      ];
+    }
     const useNew = date >= this.SCHEDULE_CUTOVER;
     if (useNew) {
       return [

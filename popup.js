@@ -6841,8 +6841,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                         // only knows the park CENTER, not the specific space — that's the wrong-GPS problem.
                         // In that case let Google Earth search the address text and use Google's own
                         // geocoder, which places the unit/space far better than the centroid ever could.
-                        const _gpsLat = (apnResult && apnResult.success && apnResult.propertyData) ? apnResult.propertyData.lat : null;
-                        const _gpsLng = (apnResult && apnResult.success && apnResult.propertyData) ? apnResult.propertyData.lng : null;
+                        // Same rule when the parcel match was AMBIGUOUS (multiple parcels survived the
+                        // narrowing) — features[0] is then a coin flip and its centroid can be a
+                        // different street entirely, so the address text is the safer pin.
+                        const _gpsOk = apnResult && apnResult.success && !apnResult.ambiguous && apnResult.propertyData;
+                        const _gpsLat = _gpsOk ? apnResult.propertyData.lat : null;
+                        const _gpsLng = _gpsOk ? apnResult.propertyData.lng : null;
                         // For the address-search fallback, Google Earth pins a unit address FAR more
                         // accurately from the bare "street #unit" than from the full string with
                         // city/state/zip (the ZIP makes it land mid-street). So when there's a unit/lot,

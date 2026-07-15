@@ -224,7 +224,10 @@ export const CONFIG = {
       if (_lm) lotToken = _lm[1].toUpperCase();
 
       // Extract house number and street name start for flexible matching
-      // This helps with variations like "Street" vs "ST", "Avenue" vs "AVE"
+      // This helps with variations like "Street" vs "ST", "Avenue" vs "AVE".
+      // Also capture what the rep DID type (exact house #, directional, street type,
+      // ZIP) so the loose result set can be narrowed back down after the query.
+      let qHouseNum = null, qDir = null, qType = null;
       const houseNumMatch = streetPart.match(/^(\d+)\s+(.+)/);
       if (houseNumMatch) {
         const houseNum = houseNumMatch[1];
@@ -234,12 +237,20 @@ export const CONFIG = {
         // abbreviated street types ("ST" not "STREET"), so including the directional
         // breaks the LIKE — e.g. "1392 EAST SARAGOSA" never matches "1392 E SARAGOSA ST".
         // Skipping it matches whether the rep typed "E", "East", or nothing.
-        const directions = ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW', 'NORTH', 'SOUTH', 'EAST', 'WEST'];
+        const DIR_ABBREV = { N:'N', S:'S', E:'E', W:'W', NE:'NE', NW:'NW', SE:'SE', SW:'SW', NORTH:'N', SOUTH:'S', EAST:'E', WEST:'W' };
         let idx = 0;
-        if (directions.includes(streetWords[0]) && streetWords.length > 1) idx = 1;
+        if (DIR_ABBREV[streetWords[0]] && streetWords.length > 1) { qDir = DIR_ABBREV[streetWords[0]]; idx = 1; }
         const streetName = streetWords[idx];
         streetPart = houseNum + '%' + streetName;
+        qHouseNum = houseNum;
+        // Street type the rep typed, normalized to the county's abbreviation.
+        // Last type-word wins so "W Parkway Dr" yields DR, not PKWY.
+        const TYPE_ABBREV = { AVENUE:'AVE', AVE:'AVE', STREET:'ST', ST:'ST', DRIVE:'DR', DR:'DR', LANE:'LN', LN:'LN', PLACE:'PL', PL:'PL', ROAD:'RD', RD:'RD', BOULEVARD:'BLVD', BLVD:'BLVD', COURT:'CT', CT:'CT', CIRCLE:'CIR', CIR:'CIR', WAY:'WAY', TRAIL:'TRL', TRL:'TRL', PARKWAY:'PKWY', PKWY:'PKWY', TERRACE:'TER', TER:'TER', HIGHWAY:'HWY', HWY:'HWY', LOOP:'LOOP' };
+        for (let i = idx + 1; i < streetWords.length; i++) { const t = TYPE_ABBREV[streetWords[i]]; if (t) qType = t; }
       }
+      // ZIP if the typed address carries one (last standalone 5-digit group)
+      const _zipGroups = address.match(/\b\d{5}\b/g);
+      const qZip = _zipGroups ? _zipGroups[_zipGroups.length - 1] : null;
 
       // Build query - search for addresses containing the street pattern
       const whereClause = `${county.addressField} LIKE '%${streetPart.replace(/'/g, "''")}%'`;
@@ -282,6 +293,21 @@ export const CONFIG = {
 
       if (data.features && data.features.length > 0) {
         let features = data.features;
+        // The loose LIKE ('%6302%37TH%') matches the same house number on DIFFERENT
+        // streets — Phoenix numbered streets especially: "6302 N 37th Ave" also pulled
+        // "6302 S 37th Ln" and "6302 N 37th Dr", and features[0] was the S 37th Ln
+        // parcel ~10 miles away (wrong APN/owner/GPS, Google Earth flew to it).
+        // It can even match a longer house number ("16302..." contains "6302").
+        // Narrow by what the rep actually typed; each narrowing is skipped if it
+        // would wipe out every candidate (county abbreviation quirks stay survivable).
+        const _fAddr = (f) => String(f.attributes[county.addressField] || '').toUpperCase();
+        const _narrow = (list, pred) => { const kept = list.filter(pred); return kept.length ? kept : list; };
+        if (features.length > 1) {
+          if (qHouseNum) features = _narrow(features, f => new RegExp('^\\s*' + qHouseNum + '\\s').test(_fAddr(f)));
+          if (qDir) features = _narrow(features, f => new RegExp('\\b' + qDir + '\\b').test(_fAddr(f)));
+          if (qType) features = _narrow(features, f => new RegExp('\\b' + qType + '\\b').test(_fAddr(f)));
+          if (qZip) features = _narrow(features, f => _fAddr(f).indexOf(qZip) !== -1);
+        }
         const totalMatches = features.length;
         // Lock to the exact unit/lot if the rep specified one in the address
         if (features.length > 1 && unitToken && county.suiteField) {

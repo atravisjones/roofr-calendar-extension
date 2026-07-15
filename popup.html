@@ -3209,6 +3209,10 @@ Available:
           <button id="dock-note-save-btn" class="btn secondary" style="align-self: stretch;">Save to Clipboard</button>
         </div>
         <div class="dock-notes-toolbar" style="display: flex; align-items: center; justify-content: space-between; gap: 4px;">
+          <div style="display: flex; align-items: center; gap: 4px;">
+            <button id="dock-note-undo" class="btn-icon-sm" title="Undo (Ctrl+Z)">↶</button>
+            <button id="dock-note-redo" class="btn-icon-sm" title="Redo (Ctrl+Y)">↷</button>
+          </div>
           <!-- Popup Window Button -->
           <button id="popout-btn" class="btn ghost" title="Open in Popup Window" style="padding: 4px 8px; font-size: 12px;">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -3238,6 +3242,16 @@ Available:
             </button>
             <div id="meetMenu" class="dropdown-menu links-menu"
               style="bottom: 100%; top: auto; margin-bottom: 4px; width: 240px; left: 50%; right: auto; transform: translateX(-50%);">
+              <a id="meet-room-link" href="https://meet.google.com/ntd-wksz-puj"
+                target="_blank" class="menu-action link-item">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                  style="margin-right:6px;flex-shrink:0;">
+                  <polygon points="23 7 16 12 23 17 23 7" />
+                  <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+                </svg>
+                Join Meet Room
+              </a>
+              <div style="border-top:1px solid var(--border);margin:4px 0;"></div>
               <label class="menu-action" style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;">
                 <span>Mute Meet sound during calls</span>
                 <input type="checkbox" id="meet-set-automute" style="margin:0;flex-shrink:0;">

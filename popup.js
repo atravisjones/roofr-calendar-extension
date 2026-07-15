@@ -5424,8 +5424,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             meetMenu.classList.toggle('show');
         });
-        // Keep the menu open while flipping toggles (document click closes dropdowns).
+        // Keep the menu open while flipping toggles (document click closes dropdowns)
+        // — except the room link, which should close it like any links-menu item.
         meetMenu.addEventListener('click', (e) => e.stopPropagation());
+        document.getElementById('meet-room-link')?.addEventListener('click', () => {
+            meetMenu.classList.remove('show');
+        });
         const MEET_TOGGLES = [
             ['meet-set-automute', 'ctm_meet_automute'],
             ['meet-set-mic-automute', 'ctm_meet_mic_automute'],

@@ -4,7 +4,11 @@
 
   const STATE_KEY = "roofr_reports_batch_v2_state";
   const JOURNAL_KEY = "roofr_reports_batch_v2_journal";
-  const SALES_EVENT_TYPE_IDS = new Set(["3107430", "3107431", "6093186", "6109795"]);
+  // Calendar event types the Reports batch works: Sales appointment (3107430),
+  // Sales followup (3107431), Self-gen appointment (6093186). D2D Sales
+  // appointment (6109795) is deliberately EXCLUDED — door-knocking leads are the
+  // D2D reps' own; Travis doesn't assign or order reports for them (2026-07-14).
+  const SALES_EVENT_TYPE_IDS = new Set(["3107430", "3107431", "6093186"]);
   const TERMINAL_OUTCOMES = new Set([
     "verified_success",
     "already_correct",

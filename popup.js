@@ -10645,7 +10645,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         URL.revokeObjectURL(url);
     }
 
-    if (reportsV2Date) reportsV2Date.value = reportsV2PhoenixDate();
+    // Default to TOMORROW — reps get assigned and reports ordered for the next day's schedule.
+    if (reportsV2Date) reportsV2Date.value = reportsV2PhoenixDate(new Date(Date.now() + 24 * 60 * 60 * 1000));
     reportsV2LoadDirectory().catch(error => reportsV2SetStatus(error.message, 'error'));
     window.RoofrReportsBatch.loadState().then(reportsV2RenderState).catch(() => {});
     reportsV2LoadBtn?.addEventListener('click', reportsV2LoadDay);

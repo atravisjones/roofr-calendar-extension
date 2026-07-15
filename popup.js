@@ -9804,7 +9804,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     const REPORTS_V2_SEED_DIRECTORY = {
         '443464': { name: 'Travis Jones' },
         '525242': { name: 'Stephen Chaidez' },
-        '500123': { name: 'Connor Hamby' }
+        '500123': { name: 'Connor Hamby' },
+        '451106': { name: 'William Ludewig' },
+        '354859': { name: 'Cole Ludewig' }
+    };
+    // Schedule-paste spellings -> the Roofr full name the directory knows.
+    const REPORTS_V2_NAME_ALIASES = {
+        'will ludewig': 'william ludewig'
     };
     let reportsV2Directory = {};
     let reportsV2Events = [];
@@ -10042,7 +10048,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function reportsV2ResolveRepId(name) {
-        const target = String(name || '').trim().toLowerCase();
+        const raw = String(name || '').trim().toLowerCase();
+        const target = REPORTS_V2_NAME_ALIASES[raw] || raw;
         const matches = Object.entries(reportsV2Directory)
             .filter(([, user]) => String(user?.name || '').trim().toLowerCase() === target);
         return matches.length === 1 ? matches[0][0] : null;
@@ -10232,7 +10239,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             return `<div class="rv2-card" title="event ${reportsV2Escape(event.id)} · job ${reportsV2Escape(event.job_id ?? 'none')}" style="margin-bottom: 5px; padding: 7px 8px; border: 1px solid var(--border); border-left: 3px solid ${border}; border-radius: 6px; opacity: ${disabled ? '0.55' : '1'};">
                 <div style="display: flex; align-items: baseline; gap: 6px;">
                     <strong style="flex-shrink: 0; font-size: 0.72rem;">${reportsV2Escape(reportsV2Time(event.start_date_time))}</strong>
-                    <span style="flex: 1; min-width: 0; font-size: 0.76rem; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${reportsV2Escape(event.title || '')}">${reportsV2Escape(event.title || 'Untitled event')}</span>
+                    <span class="${event.job_id ? 'rv2-open' : ''}" data-job-id="${reportsV2Escape(event.job_id ?? '')}" style="flex: 1; min-width: 0; font-size: 0.76rem; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;${event.job_id ? ' cursor: pointer; text-decoration: underline; text-decoration-color: var(--border); text-underline-offset: 2px;' : ''}" title="${reportsV2Escape(event.title || '')}${event.job_id ? ' — click to open the job card in Roofr' : ''}">${reportsV2Escape(event.title || 'Untitled event')}</span>
                     <span class="rv2-outcome" data-event-id="${reportsV2Escape(event.id)}" style="flex-shrink: 0;">${disabled ? `<span style="font-size: 0.66rem; color: var(--text-muted);">${reportsV2Escape(REPORTS_V2_INELIGIBLE_LABELS[check.reason] || check.reason)}</span>` : reportsV2OutcomeChip(event.id)}</span>
                 </div>
                 <div style="display: flex; justify-content: space-between; gap: 6px; margin: 2px 0 4px;">
@@ -10263,8 +10270,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         });
 
+        reportsV2Queue.querySelectorAll('.rv2-open').forEach(el => {
+            el.addEventListener('click', () => reportsV2OpenJobCard(el.dataset.jobId));
+        });
+
         reportsV2RenderSummary();
         reportsV2UpdateActionButtons();
+    }
+
+    async function reportsV2OpenJobCard(jobId) {
+        if (!jobId) return;
+        try {
+            const tab = await reportsV2GetRoofrTab();
+            await chrome.tabs.update(tab.id, { url: `https://app.roofr.com/dashboard/team/239329/jobs/list-view?selectedJobId=${jobId}`, active: true });
+            try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (_) {}
+        } catch (error) {
+            reportsV2SetStatus(error.message, 'error');
+        }
     }
 
     async function reportsV2LoadDay() {

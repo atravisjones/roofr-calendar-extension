@@ -5423,7 +5423,73 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (m !== meetMenu) m.classList.remove('show');
             });
             meetMenu.classList.toggle('show');
+            if (meetMenu.classList.contains('show')) populateMeetWhisperList();
         });
+
+        // Whisper: list reps currently on CTM calls; clicking one asks THEIR
+        // extension (via roofr-search /api/meet-whisper) to unmute their Meet
+        // SOUND so they hear the group — their mic stays muted. Target must
+        // match the rep's CTM display name (what active-calls reports and what
+        // their extension polls with).
+        async function populateMeetWhisperList() {
+            const list = document.getElementById('meet-whisper-list');
+            if (!list) return;
+            list.innerHTML = '';
+            const note = document.createElement('div');
+            note.className = 'menu-action';
+            note.style.cssText = 'cursor:default;opacity:.6;font-size:12px;';
+            note.textContent = 'Checking live calls…';
+            list.appendChild(note);
+            let agents = [];
+            try {
+                const calls = await fetchActiveCalls();
+                agents = [...new Set(calls.map(c => (c.agentName || '').trim()).filter(Boolean))];
+            } catch (_) {}
+            list.innerHTML = '';
+            if (!agents.length) {
+                const empty = document.createElement('div');
+                empty.className = 'menu-action';
+                empty.style.cssText = 'cursor:default;opacity:.6;font-size:12px;';
+                empty.textContent = 'No live calls right now';
+                list.appendChild(empty);
+                return;
+            }
+            for (const name of agents) {
+                const row = document.createElement('button');
+                row.className = 'menu-action';
+                row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;';
+                const who = document.createElement('span');
+                who.textContent = `📞 ${name}`;
+                const act = document.createElement('span');
+                act.textContent = 'Whisper';
+                act.style.cssText = 'color:#1a73e8;font-weight:700;';
+                row.appendChild(who);
+                row.appendChild(act);
+                row.addEventListener('click', async () => {
+                    row.disabled = true;
+                    try {
+                        const me = await new Promise(res => chrome.storage.sync.get({ ctm_display_name: '' }, res));
+                        const resp = await fetch('https://roofr-search.vercel.app/api/meet-whisper', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'X-Internal-Key': SLOT_HOLDS_INTERNAL_KEY },
+                            body: JSON.stringify({ target: name, from: (me.ctm_display_name || '').trim() || 'Manager' })
+                        });
+                        const j = await resp.json().catch(() => null);
+                        if (j?.success) {
+                            showToast(`Whisper sent — ${name} hears you in ~5s. Talk in Meet!`);
+                            meetMenu.classList.remove('show');
+                        } else {
+                            showToast('Whisper failed');
+                            row.disabled = false;
+                        }
+                    } catch (_) {
+                        showToast('Whisper failed');
+                        row.disabled = false;
+                    }
+                });
+                list.appendChild(row);
+            }
+        }
         // Keep the menu open while flipping toggles (document click closes dropdowns)
         // — except the room link, which should close it like any links-menu item.
         meetMenu.addEventListener('click', (e) => e.stopPropagation());

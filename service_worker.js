@@ -1222,11 +1222,12 @@ async function meetAutoMute() {
         if (s.ctm_meet_automute === false && s.ctm_meet_mic_automute === false) return;
         const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
         if (tabs.length === 0) return;
-        const store = await chrome.storage.session.get([MEET_AUTOMUTED_KEY, MEET_CHIME_KEY]);
-        // Rep deliberately opened the Meet channel mid-call (chime-in) — don't
-        // fight them if another ctm event fires while it's open. Chime-out and
-        // call-end both clear the flag before re-muting.
-        if (store[MEET_CHIME_KEY]) return;
+        const store = await chrome.storage.session.get([MEET_AUTOMUTED_KEY, MEET_CHIME_KEY, MEET_WHISPER_KEY]);
+        // Rep deliberately opened the Meet channel mid-call (chime-in), or a
+        // manager whispered their ears open — don't fight either if another ctm
+        // event fires while the channel is open. Chime-out and call-end both
+        // clear the flags before re-muting.
+        if (store[MEET_CHIME_KEY] || store[MEET_WHISPER_KEY]) return;
         const state = store[MEET_AUTOMUTED_KEY] || {};
         for (const tab of tabs) {
             const entry = state[tab.id] || { audio: false, mic: false };
@@ -1264,7 +1265,7 @@ async function meetAutoUnmute() {
         const state = store[MEET_AUTOMUTED_KEY] || {};
         const ids = Object.keys(state);
         if (ids.length === 0) return;
-        await chrome.storage.session.remove([MEET_AUTOMUTED_KEY, MEET_CHIME_KEY]);
+        await chrome.storage.session.remove([MEET_AUTOMUTED_KEY, MEET_CHIME_KEY, MEET_WHISPER_KEY]);
         for (const idStr of ids) {
             const tabId = Number(idStr);
             if (state[idStr].audio) {
@@ -1294,13 +1295,30 @@ async function meetAutoUnmute() {
 // the top of the Meet tab. Chime state lives in storage.session; chime-out
 // re-runs meetAutoMute() and call end clears everything via meetAutoUnmute().
 const MEET_CHIME_KEY = 'meet_chime_active';
+// Manager→rep WHISPER: while a rep is auto-muted on a call, a manager can
+// remotely open the rep's EARS — unmute the Meet tab's sound so the rep hears
+// the group; the rep's mic stays muted (the Meet never hears the customer
+// call). The pill polls /api/meet-whisper via MEET_WHISPER_POLL every few
+// seconds during a live call; the rep replies by clicking the pill (full
+// chime-in). Cleared with everything else at call end.
+const MEET_WHISPER_KEY = 'meet_whisper_active';
+// Same internal key the panel uses for roofr-search server-to-server calls.
+const ROOFR_SEARCH_INTERNAL_KEY = 'WSDnmjsudtcCEWvb_TKQKcyWS3TXtcjWqfuLMsnmT96XfqZF';
 
 // Runs INSIDE the Meet tab (isolated world, so chrome.runtime messaging works).
-// Self-contained: builds/updates/removes the floating status pill.
-function _meetChimePill(mode) {
+// Self-contained: builds/updates/removes the floating status pill, and drives
+// the whisper poll — every 4s it asks the SW (MEET_WHISPER_POLL) whether a
+// manager wants the rep's ears opened; the SW does the actual fetch/unmute and
+// answers with the pill mode to display. The tab hosts the timer because the
+// MV3 service worker can't keep one alive across suspensions.
+function _meetChimePill(mode, fromName) {
     const ID = '__ctmChimePill';
     let pill = document.getElementById(ID);
-    if (mode === 'remove') { if (pill) pill.remove(); return; }
+    if (mode === 'remove') {
+        if (window.__ctmChimePillPoll) { clearInterval(window.__ctmChimePillPoll); window.__ctmChimePillPoll = null; }
+        if (pill) pill.remove();
+        return;
+    }
     if (!pill) {
         pill = document.createElement('div');
         pill.id = ID;
@@ -1328,10 +1346,31 @@ function _meetChimePill(mode) {
         label.textContent = 'Live in Meet — the group can hear you';
         btn.textContent = 'Re-mute';
         pill.style.background = '#b3261e';
+    } else if (mode === 'whisper') {
+        label.textContent = `🔊 ${fromName || 'Manager'} is talking to you — you're still muted`;
+        btn.textContent = 'Reply';
+        pill.style.background = '#1a73e8';
     } else {
         label.textContent = 'Auto-muted — on a CTM call';
         btn.textContent = 'Chime in';
         pill.style.background = '#3c4043';
+    }
+    if (!window.__ctmChimePillPoll) {
+        window.__ctmChimePillPoll = setInterval(() => {
+            let p;
+            try {
+                p = chrome.runtime.sendMessage({ type: 'MEET_WHISPER_POLL' });
+            } catch (_) {
+                // Extension reloaded out from under us — stop polling; the next
+                // call's pill injection brings a fresh timer.
+                clearInterval(window.__ctmChimePillPoll);
+                window.__ctmChimePillPoll = null;
+                return;
+            }
+            if (p && p.then) p.then((resp) => {
+                if (resp && resp.mode) _meetChimePill(resp.mode, resp.from);
+            }).catch(() => {});
+        }, 4000);
     }
 }
 
@@ -1374,12 +1413,13 @@ async function meetChimeToggle() {
                     });
                 } catch (_) {}
             }
+            await chrome.storage.session.remove(MEET_WHISPER_KEY); // full open supersedes a whisper
             await chrome.storage.session.set({ [MEET_CHIME_KEY]: true });
             await meetShowChimePill(ids, 'live');
             console.log('[MeetMute] chime-in — Meet channel open on', ids.length, 'tab(s)');
         } else {
-            // Snap back: clear the flag FIRST so meetAutoMute doesn't skip.
-            await chrome.storage.session.remove(MEET_CHIME_KEY);
+            // Snap back: clear the flags FIRST so meetAutoMute doesn't skip.
+            await chrome.storage.session.remove([MEET_CHIME_KEY, MEET_WHISPER_KEY]);
             await meetAutoMute(); // re-applies per-toggle mutes + shows the 'muted' pill
             console.log('[MeetMute] chime-out — re-muted');
         }
@@ -1475,6 +1515,45 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         meetChimeToggle();
         sendResponse({ ok: true });
         return false;
+    }
+    if (msg?.type === 'MEET_WHISPER_POLL') {
+        // From the pill's 4s timer on a Meet tab during a live call. Checks the
+        // server for a pending whisper aimed at this rep; on a hit, opens the
+        // rep's EARS only (unmute this Meet tab's sound — mic stays muted) and
+        // tells the pill to show who's talking. Responds with the current pill
+        // mode either way so the pill self-corrects.
+        (async () => {
+            try {
+                const store = await chrome.storage.session.get([MEET_AUTOMUTED_KEY, MEET_CHIME_KEY, MEET_WHISPER_KEY]);
+                const state = store[MEET_AUTOMUTED_KEY] || {};
+                if (Object.keys(state).length === 0) { sendResponse({ mode: null }); return; }
+                if (store[MEET_CHIME_KEY]) { sendResponse({ mode: 'live' }); return; }
+                if (store[MEET_WHISPER_KEY]) {
+                    sendResponse({ mode: 'whisper', from: store[MEET_WHISPER_KEY].from });
+                    return;
+                }
+                const s = await chrome.storage.sync.get({ ctm_display_name: '', scanner_name: '' });
+                const identity = (s.ctm_display_name || s.scanner_name || '').trim();
+                if (!identity) { sendResponse({ mode: 'muted' }); return; }
+                const r = await fetch(
+                    `https://roofr-search.vercel.app/api/meet-whisper?target=${encodeURIComponent(identity)}`,
+                    { cache: 'no-store', headers: { 'X-Internal-Key': ROOFR_SEARCH_INTERNAL_KEY } });
+                const j = await r.json().catch(() => null);
+                const w = (j?.success && Array.isArray(j.whispers) && j.whispers[0]) || null;
+                if (!w) { sendResponse({ mode: 'muted' }); return; }
+                const from = w.requested_by || 'Manager';
+                const tabId = sender?.tab?.id;
+                if (tabId != null) {
+                    try { await chrome.tabs.update(tabId, { muted: false }); } catch (_) {}
+                }
+                await chrome.storage.session.set({ [MEET_WHISPER_KEY]: { from, at: Date.now() } });
+                console.log('[MeetMute] whisper from', from, '— opened rep ears on tab', tabId);
+                sendResponse({ mode: 'whisper', from });
+            } catch (e) {
+                sendResponse({ mode: 'muted', error: e.message });
+            }
+        })();
+        return true;
     }
     if (msg?.type === 'AD_TO_CTM') {
         (async () => {

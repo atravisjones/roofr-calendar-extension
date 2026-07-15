@@ -1847,6 +1847,21 @@ if (window.location.hostname.includes('roofr.com') && !window.__roofrBridgeLoade
       }
     }
 
+    // Strategy 1b: Roofr removed data-date entirely (confirmed live 2026-07-15).
+    // Day cells now carry their date as a class: "day-cell-<epoch ms>". Header
+    // cells stamp midnight, day-bg columns stamp 23:59:59 — both resolve to the
+    // same Phoenix calendar date, so parse either and de-dupe.
+    if (dates.size === 0) {
+      document.querySelectorAll('.rbc-header[class*="day-cell-"], .rbc-day-bg[class*="day-cell-"]').forEach(el => {
+        const m = (el.className || '').toString().match(/day-cell-(\d{12,14})/);
+        if (!m) return;
+        const iso = new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'America/Phoenix', year: 'numeric', month: '2-digit', day: '2-digit'
+        }).format(new Date(Number(m[1])));
+        dates.add(iso);
+      });
+    }
+
     // Strategy 2: Fallback to reading headers if `data-date` is not present (Weekly view fallback).
     // Promoted this to run BEFORE the text search to prioritize Weekly view structure.
     if (dates.size === 0) {

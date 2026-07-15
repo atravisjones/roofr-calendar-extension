@@ -2118,8 +2118,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (twoWeekAvailabilityInFlight) return false;
         twoWeekAvailabilityInFlight = true;
         try {
-            const startISO = phoenixTodayISO();
-            const days = Array.from({ length: 14 }, (_, i) => addDaysISO(startISO, i));
+            // Start at YESTERDAY (Phoenix), then today + the next 13 days (15 total).
+            // Reps review the previous day's appointments — the DOM weekly scan always
+            // included yesterday, but this server window started at today and silently
+            // dropped it (reported 2026-07-15).
+            const startISO = addDaysISO(phoenixTodayISO(), -1);
+            const days = Array.from({ length: 15 }, (_, i) => addDaysISO(startISO, i));
             const endISO = days[days.length - 1];
             // Only count events that actually consume appointment slots. Production has its own
             // category; retail/d2d/insurance appointments are all category 'sales' in calendar_events.

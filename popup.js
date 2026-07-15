@@ -5427,8 +5427,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Keep the menu open while flipping toggles (document click closes dropdowns)
         // — except the room link, which should close it like any links-menu item.
         meetMenu.addEventListener('click', (e) => e.stopPropagation());
-        document.getElementById('meet-room-link')?.addEventListener('click', () => {
+        document.getElementById('meet-room-link')?.addEventListener('click', async (e) => {
+            e.preventDefault(); // don't stack Meet tabs — focus the room if it's already open
             meetMenu.classList.remove('show');
+            const roomUrl = document.getElementById('meet-room-link').href;
+            try {
+                const [existing] = await chrome.tabs.query({ url: '*://meet.google.com/ntd-wksz-puj*' });
+                if (existing) {
+                    await chrome.tabs.update(existing.id, { active: true });
+                    await chrome.windows.update(existing.windowId, { focused: true });
+                    return;
+                }
+            } catch (_) {}
+            chrome.tabs.create({ url: roomUrl });
         });
         const MEET_TOGGLES = [
             ['meet-set-automute', 'ctm_meet_automute'],

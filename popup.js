@@ -9903,8 +9903,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         return tabs[0];
     }
 
-    async function reportsV2Send(message) {
-        const tab = await reportsV2GetRoofrTab();
+    async function reportsV2Send(message, forcedTabId) {
+        // forcedTabId pins the whole order-chauffeur run to the tab it navigates —
+        // re-resolving here could pick a DIFFERENT Roofr tab mid-run (throws if closed).
+        const tab = forcedTabId ? await chrome.tabs.get(forcedTabId) : await reportsV2GetRoofrTab();
         const injectAndRetry = async () => {
             await chrome.scripting.executeScript({
                 target: { tabId: tab.id },
@@ -9945,8 +9947,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             await reportsV2Harvest(detail);
             return detail;
         },
-        async getJob(jobId) {
-            return reportsV2ResponseData(await reportsV2Send({ type: 'ROOFR_API_GET_JOB', jobId }));
+        async getJob(jobId, forcedTabId) {
+            return reportsV2ResponseData(await reportsV2Send({ type: 'ROOFR_API_GET_JOB', jobId }, forcedTabId));
         },
         async setJobOwner(jobId, userId) {
             const result = await reportsV2Send({ type: 'ROOFR_API_SET_JOB_OWNER', jobId, userId });
@@ -10380,15 +10382,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    async function reportsV2WaitForOrder(jobId) {
+    async function reportsV2WaitForOrder(jobId, tabId) {
         while (true) {
             const run = reportsV2OrderState;
             if (!run || run.stopped || run.skipRequested) return false;
             try {
-                const job = await reportsV2ApiAdapter.getJob(jobId);
+                const job = await reportsV2ApiAdapter.getJob(jobId, tabId);
                 if ((job?.measurementQueues || []).length || (job?.reports || []).length) return true;
-            } catch (_) {
-                // Tab may be mid-navigation; keep polling.
+            } catch (error) {
+                // Mid-navigation errors are fine — keep polling. A closed tab is not.
+                if (/No tab with id/i.test(error?.message || '')) {
+                    if (reportsV2OrderState) reportsV2OrderState.stopped = true;
+                    return false;
+                }
             }
             await new Promise(resolve => setTimeout(resolve, 4000));
         }
@@ -10398,10 +10404,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (reportsV2OrderState) return;
         const jobs = reportsV2OrderQueueJobs();
         if (!jobs.length) return;
-        reportsV2OrderState = { jobs, index: 0, stopped: false, skipRequested: false };
+        reportsV2OrderState = { jobs, index: 0, stopped: false, skipRequested: false, tabId: null };
         reportsV2UpdateActionButtons();
         try {
             const tab = await reportsV2GetRoofrTab();
+            reportsV2OrderState.tabId = tab.id;
             for (let i = 0; i < jobs.length; i++) {
                 if (!reportsV2OrderState || reportsV2OrderState.stopped) break;
                 reportsV2OrderState.index = i;
@@ -10413,7 +10420,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 await new Promise(resolve => setTimeout(resolve, 2500));
                 let prep;
                 try {
-                    prep = await reportsV2Send({ type: 'PREP_REPORT_ORDER' });
+                    prep = await reportsV2Send({ type: 'PREP_REPORT_ORDER' }, tab.id);
                 } catch (error) {
                     prep = { ok: false, error: error.message };
                 }
@@ -10421,7 +10428,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // The SPA or content script may still have been booting — one retry.
                     await new Promise(resolve => setTimeout(resolve, 3000));
                     try {
-                        prep = await reportsV2Send({ type: 'PREP_REPORT_ORDER' });
+                        prep = await reportsV2Send({ type: 'PREP_REPORT_ORDER' }, tab.id);
                     } catch (error) {
                         prep = { ok: false, error: error.message };
                     }
@@ -10431,7 +10438,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 } else {
                     reportsV2RenderOrderPanel(`Couldn't auto-open the report flow (${prep?.error || 'unknown'}). Order it manually and I'll detect it — or Skip.`);
                 }
-                const ordered = await reportsV2WaitForOrder(jobId);
+                const ordered = await reportsV2WaitForOrder(jobId, tab.id);
                 if (reportsV2OrderState?.stopped) break;
                 if (ordered) {
                     reportsV2JobReports[jobId] = { ...(reportsV2JobReports[jobId] || {}), status: 'ordered' };

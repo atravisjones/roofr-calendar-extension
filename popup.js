@@ -3361,6 +3361,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (ts !== 0) return ts;
             const la = (a.domLeft ?? Infinity), lb = (b.domLeft ?? Infinity);
             if (la !== lb) return la - lb;
+            // Server-path events carry no scan position — Roofr tiles same-slot
+            // appts left→right by ascending event id (verified live 2026-07-15),
+            // so numeric id order reproduces the on-screen order.
+            const ia = Number(a.eventId), ib = Number(b.eventId);
+            if (Number.isFinite(ia) && Number.isFinite(ib) && ia !== ib) return ia - ib;
             return (a.domTop ?? 0) - (b.domTop ?? 0);
         });
         const dateHeader = day.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", year: "numeric" });

@@ -5431,15 +5431,36 @@ document.addEventListener('DOMContentLoaded', async () => {
             e.preventDefault(); // don't stack Meet tabs — focus the room if it's already open
             meetMenu.classList.remove('show');
             const roomUrl = document.getElementById('meet-room-link').href;
+            const ROOM_PATTERN = '*://meet.google.com/ntd-wksz-puj*';
+            // The window the rep is working in (popout mode targets the original
+            // browser window — same resolution the scan flow uses).
+            let workingWindowId = window.__targetWindowId || null;
+            if (!workingWindowId) {
+                try { workingWindowId = (await chrome.windows.getCurrent()).id; } catch (_) {}
+            }
             try {
-                const [existing] = await chrome.tabs.query({ url: '*://meet.google.com/ntd-wksz-puj*' });
-                if (existing) {
-                    await chrome.tabs.update(existing.id, { active: true });
-                    await chrome.windows.update(existing.windowId, { focused: true });
+                // Prefer the room tab in THIS window — switching to it shouldn't
+                // yank focus to some other window/monitor.
+                if (workingWindowId) {
+                    const [sameWin] = await chrome.tabs.query({ url: ROOM_PATTERN, windowId: workingWindowId });
+                    if (sameWin) {
+                        await chrome.tabs.update(sameWin.id, { active: true });
+                        await chrome.windows.update(sameWin.windowId, { focused: true });
+                        return;
+                    }
+                }
+                // Open in another window? Jump there rather than double-joining.
+                const [anyWin] = await chrome.tabs.query({ url: ROOM_PATTERN });
+                if (anyWin) {
+                    await chrome.tabs.update(anyWin.id, { active: true });
+                    await chrome.windows.update(anyWin.windowId, { focused: true });
                     return;
                 }
             } catch (_) {}
-            chrome.tabs.create({ url: roomUrl });
+            // Not open anywhere — new tab in the rep's working window.
+            const createOpts = { url: roomUrl };
+            if (workingWindowId) createOpts.windowId = workingWindowId;
+            chrome.tabs.create(createOpts);
         });
         const MEET_TOGGLES = [
             ['meet-set-automute', 'ctm_meet_automute'],

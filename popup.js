@@ -411,7 +411,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         ignoredEvents: {}, // Store ignored uncategorized events: "Event Title + Start Time" -> true
         earliestAvailableByCity: {}, // Track earliest available date per city across weeks: { "MESA": "2025-12-27", ... }
         recentAddresses: [], // Track last 3 entered addresses/cities for quick access
-        weekDataCache: {} // Cache scan data per week: { "2026-01-04": { events, availability, weekDays, timestamp } }
+        weekDataCache: {}, // Cache scan data per week: { "2026-01-04": { events, availability, weekDays, timestamp } }
+        domPastDayEvents: {} // Yesterday's on-screen events (dateISO -> events[]) — overlays the server mirror for past days
     };
     let clipboards = [];
     let findStats = { count: 0, index: 0 };
@@ -2121,7 +2122,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Start at YESTERDAY (Phoenix), then today + the next 13 days (15 total).
             // Reps review the previous day's appointments — the DOM weekly scan always
             // included yesterday, but this server window started at today and silently
-            // dropped it (reported 2026-07-15).
+            // dropped it (reported 2026-07-15). The server copy of yesterday is only
+            // the FALLBACK: overlayPastDaysFromDom() below replaces it with the live
+            // on-screen events whenever a calendar tab is showing that day.
             const startISO = addDaysISO(phoenixTodayISO(), -1);
             const days = Array.from({ length: 15 }, (_, i) => addDaysISO(startISO, i));
             const endISO = days[days.length - 1];
@@ -2147,6 +2150,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 .filter(ev => ev.start && ev.end && ev.title);
             state.parsedJobs = state.allEvents.map(ev => CONFIG.parseJobDetails(ev));
 
+            // Past days (yesterday) prefer the LIVE on-screen calendar over the
+            // server mirror: the mirror carries EVERY rep's sales events, while the
+            // rep's screen reflects her team/event-type filters — reviewing yesterday
+            // must match what she sees (Travis, 2026-07-15). Future days stay
+            // server-sourced so the 2-week availability never depends on a Roofr tab.
+            await overlayPastDaysFromDom();
+
             const distinctSundays = [...new Set(state.weekDays.map(weekSundayKey))].sort();
             const availabilityResults = await Promise.all(distinctSundays.map(s => computeAvailabilityForSunday(s)));
             state.availabilityByWeek = {};
@@ -2170,6 +2180,56 @@ document.addEventListener('DOMContentLoaded', async () => {
         } finally {
             twoWeekAvailabilityInFlight = false;
         }
+    }
+
+    // Replace past-window days' events (yesterday) with what's actually rendered on
+    // the rep's Roofr calendar. DOM events also carry on-screen positions, so Copy
+    // order matches the screen exactly. The latest good read is kept in
+    // state.domPastDayEvents so the 5-min server refresh doesn't flip yesterday back
+    // to the server mirror after the rep navigates the calendar to another week.
+    // Server events stay in place when no calendar tab shows those days and nothing
+    // is cached yet.
+    async function overlayPastDaysFromDom() {
+        const todayISO = phoenixTodayISO();
+        const pastWindowDays = state.weekDays.filter(d => d < todayISO);
+        if (!pastWindowDays.length) return;
+
+        if (!state.domPastDayEvents || typeof state.domPastDayEvents !== 'object') state.domPastDayEvents = {};
+        try {
+            const visible = await sendFindCommand({ type: "GET_VISIBLE_DATES" });
+            const visibleSet = new Set(visible?.ok && Array.isArray(visible.datesISO) ? visible.datesISO : []);
+            const liveDays = pastWindowDays.filter(d => visibleSet.has(d));
+            if (liveDays.length) {
+                const eventData = await sendFindCommand({ type: "EXTRACT_ROOFR_EVENTS" });
+                // Require SOME events on the page before trusting the read — an empty
+                // extraction usually means the grid hasn't painted yet, and caching it
+                // would blank yesterday.
+                if (eventData?.events?.length) {
+                    for (const d of liveDays) {
+                        state.domPastDayEvents[d] = eventData.events.filter(ev => ev?.start && localDayKey(ev.start) === d);
+                    }
+                }
+            }
+        } catch (e) {
+            addLog(`Live read of past days failed: ${e.message}`, 'WARN');
+        }
+
+        // Drop cached days that fell out of the window (day rollover).
+        for (const d of Object.keys(state.domPastDayEvents)) {
+            if (!pastWindowDays.includes(d)) delete state.domPastDayEvents[d];
+        }
+
+        const overlayDays = pastWindowDays.filter(d => Array.isArray(state.domPastDayEvents[d]));
+        if (!overlayDays.length) {
+            addLog(`No on-screen read of ${pastWindowDays.join(', ')} yet — showing server events (all reps) for it.`);
+            return;
+        }
+        const overlaySet = new Set(overlayDays);
+        const serverPastCount = state.allEvents.filter(ev => overlaySet.has(localDayKey(ev.start))).length;
+        const domPast = overlayDays.flatMap(d => state.domPastDayEvents[d]);
+        state.allEvents = state.allEvents.filter(ev => !overlaySet.has(localDayKey(ev.start))).concat(domPast);
+        state.parsedJobs = state.allEvents.map(ev => CONFIG.parseJobDetails(ev));
+        addLog(`Yesterday from live calendar: ${domPast.length} on-screen events (server mirror had ${serverPastCount}).`);
     }
 
     /* ========= Roofr bridge ========= */
@@ -4759,6 +4819,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 state.allEvents = eventData?.events || [];
                 state.parsedJobs = state.allEvents.map(ev => CONFIG.parseJobDetails(ev));
+
+                // Keep the DOM read of past days (yesterday) so the next server
+                // availability refresh overlays it instead of the server mirror.
+                const scanTodayISO = phoenixTodayISO();
+                if (!state.domPastDayEvents || typeof state.domPastDayEvents !== 'object') state.domPastDayEvents = {};
+                for (const d of state.weekDays.filter(dd => dd < scanTodayISO)) {
+                    state.domPastDayEvents[d] = state.allEvents.filter(ev => ev?.start && localDayKey(ev.start) === d);
+                }
 
                 // Cache this week's data for quick access later
                 const weekKey = state.weekDays[0]; // Use first day as key

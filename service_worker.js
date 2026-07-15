@@ -344,6 +344,23 @@ chrome.runtime.onInstalled.addListener(async () => {
     await startUpdateCheckAlarm();
     // Check for updates after a short delay to not slow down install
     setTimeout(() => checkForUpdates(true), 5000);
+
+    // 5) Re-arm CTM tabs that were ALREADY open. Manifest content scripts only
+    // inject on page load, so a fresh install/update leaves a long-lived
+    // softphone tab bridge-less (or with an orphaned pre-update bridge whose
+    // chrome.runtime is dead) until the rep clicks into it — meanwhile call
+    // events silently stop, so Meet auto-mute/chime never fire. Found
+    // 2026-07-15: Travis's softphone tab predated his install; "still no pill".
+    try {
+        const ctmTabs = await chrome.tabs.query({ url: '*://*.calltrackingmetrics.com/*' });
+        for (const t of ctmTabs) {
+            _lastInjectAt.delete(t.id);
+            injectDialerBridge(t.id);
+        }
+        if (ctmTabs.length) console.log('[AutoDialer-SW] onInstalled: re-armed', ctmTabs.length, 'CTM tab(s)');
+    } catch (e) {
+        console.warn('onInstalled CTM re-arm failed:', e.message);
+    }
 });
 
 // Listen for changes in URL to toggle side panel if in "Roofr Only" mode

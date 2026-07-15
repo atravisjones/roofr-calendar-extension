@@ -1,10 +1,10 @@
 {
-  "version": "3.0.9",
+  "version": "3.1.0",
   "minimum_chrome_version": "116",
-  "release_date": "2026-07-14T22:31:19.044Z",
+  "release_date": "2026-07-15T00:02:34.874Z",
   "changelog": [
     "Links menu: added Leads Form, Missed Calls (Speed to Leads), and LSA's (LeadTruffle) to the footer Links dropdown"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.0.9/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.0.9"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.1.0/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.1.0"
 }

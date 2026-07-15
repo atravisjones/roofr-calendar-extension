@@ -71,6 +71,15 @@ run(`git tag v${v}`);
 run('git push');
 run('git push --tags');
 syncToTestFolder(v);
+// Also refresh the key-stripped LOCAL TEST build — Travis's own Chrome runs
+// unpacked from that folder (no managed install on his machine), so skipping
+// this left him a month behind (discovered 2026-07-15 at 2.1.39 vs 3.1.11).
+// He still has to hit reload at chrome://extensions to pick it up.
+try {
+  run('node scripts/test-build.cjs');
+} catch (e) {
+  console.log(`(local test build refresh failed — run "npm run test:local" by hand: ${e.message})`);
+}
 console.log(`\n✅ Shipped v${v}.`);
 console.log('   CI is building + signing now: https://github.com/atravisjones/roofr-calendar-extension/actions');
 console.log('   Every managed Chrome auto-updates within a few hours.');

@@ -5411,6 +5411,42 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
+    // Meet call-mute settings dropdown (footer). Writes the same
+    // chrome.storage.sync keys the Options page uses, so the two stay in sync
+    // and the service worker picks changes up on the next call event.
+    const meetBtn = document.getElementById('meetBtn');
+    const meetMenu = document.getElementById('meetMenu');
+    if (meetBtn && meetMenu) {
+        meetBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            document.querySelectorAll('.dropdown-menu.show').forEach(m => {
+                if (m !== meetMenu) m.classList.remove('show');
+            });
+            meetMenu.classList.toggle('show');
+        });
+        // Keep the menu open while flipping toggles (document click closes dropdowns).
+        meetMenu.addEventListener('click', (e) => e.stopPropagation());
+        const MEET_TOGGLES = [
+            ['meet-set-automute', 'ctm_meet_automute'],
+            ['meet-set-mic-automute', 'ctm_meet_mic_automute'],
+            ['meet-set-chime-pill', 'ctm_meet_chime_pill'],
+        ];
+        chrome.storage.sync.get(
+            { ctm_meet_automute: true, ctm_meet_mic_automute: true, ctm_meet_chime_pill: true },
+            (s) => {
+                for (const [elId, key] of MEET_TOGGLES) {
+                    const el = document.getElementById(elId);
+                    if (el) el.checked = s[key] !== false;
+                }
+            }
+        );
+        for (const [elId, key] of MEET_TOGGLES) {
+            document.getElementById(elId)?.addEventListener('change', (e) => {
+                chrome.storage.sync.set({ [key]: e.target.checked });
+            });
+        }
+    }
+
     // Popout button - opens extension in a separate popup window OR reconnects if already in popout
     if (popoutBtn) {
         // If in popout mode, change button to "Reconnect"

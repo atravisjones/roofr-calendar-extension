@@ -146,6 +146,12 @@
         "default": "Alt+Shift+D"
       },
       "description": "Open the Auto-Dialer window"
+    },
+    "meet-chime-toggle": {
+      "suggested_key": {
+        "default": "Alt+Shift+M"
+      },
+      "description": "Chime in/out of Google Meet while on a CTM call"
     }
   }
 }

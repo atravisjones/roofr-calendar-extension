@@ -3209,16 +3209,6 @@ Available:
           <button id="dock-note-save-btn" class="btn secondary" style="align-self: stretch;">Save to Clipboard</button>
         </div>
         <div class="dock-notes-toolbar" style="display: flex; align-items: center; justify-content: space-between; gap: 4px;">
-          <div style="display: flex; align-items: center; gap: 4px;">
-            <button id="dock-note-toggle-format" class="btn-icon-sm active"
-              title="Formatting: ON (click to toggle)">T</button>
-            <button id="dock-note-size-down" class="btn-icon-sm" title="Decrease Text Size">A-</button>
-            <span id="dock-note-size-display" class="dock-note-size-label">100%</span>
-            <button id="dock-note-size-up" class="btn-icon-sm" title="Increase Text Size">A+</button>
-            <span style="border-left: 1px solid var(--border); height: 16px; margin: 0 2px;"></span>
-            <button id="dock-note-undo" class="btn-icon-sm" title="Undo (Ctrl+Z)">↶</button>
-            <button id="dock-note-redo" class="btn-icon-sm" title="Redo (Ctrl+Y)">↷</button>
-          </div>
           <!-- Popup Window Button -->
           <button id="popout-btn" class="btn ghost" title="Open in Popup Window" style="padding: 4px 8px; font-size: 12px;">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -3229,6 +3219,42 @@ Available:
             </svg>
             Popup
           </button>
+          <!-- Meet call-mute settings dropdown -->
+          <div class="dropdown meet-dropdown" style="position: relative;">
+            <button id="meetBtn" class="btn ghost" title="Google Meet call-mute settings" style="padding: 4px 8px; font-size: 12px;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" style="margin-right:3px;">
+                <line x1="1" y1="1" x2="23" y2="23"></line>
+                <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path>
+                <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"></path>
+                <line x1="12" y1="19" x2="12" y2="23"></line>
+                <line x1="8" y1="23" x2="16" y2="23"></line>
+              </svg>
+              Meet
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" style="margin-left:2px;">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </button>
+            <div id="meetMenu" class="dropdown-menu links-menu"
+              style="bottom: 100%; top: auto; margin-bottom: 4px; width: 240px; left: 50%; right: auto; transform: translateX(-50%);">
+              <label class="menu-action" style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;">
+                <span>Mute Meet sound during calls</span>
+                <input type="checkbox" id="meet-set-automute" style="margin:0;flex-shrink:0;">
+              </label>
+              <label class="menu-action" style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;">
+                <span>Mute Meet mic during calls</span>
+                <input type="checkbox" id="meet-set-mic-automute" style="margin:0;flex-shrink:0;">
+              </label>
+              <label class="menu-action" style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;">
+                <span>Chime-in button on Meet</span>
+                <input type="checkbox" id="meet-set-chime-pill" style="margin:0;flex-shrink:0;">
+              </label>
+              <div class="menu-action" style="cursor:default;opacity:.65;font-size:11px;">
+                Chime in/out hotkey: Alt+Shift+M
+              </div>
+            </div>
+          </div>
           <!-- Links Dropdown -->
           <div class="dropdown links-dropdown" style="position: relative;">
             <button id="linksBtn" class="btn ghost" title="Quick Links" style="padding: 4px 8px; font-size: 12px;">
@@ -3568,14 +3594,6 @@ Available:
           <span class="setting-label">Show Find Bar</span>
           <label class="switch">
             <input type="checkbox" id="setting-show-find">
-            <span class="slider"></span>
-          </label>
-        </div>
-
-        <div class="setting-row">
-          <span class="setting-label">Show Formatting Tools</span>
-          <label class="switch">
-            <input type="checkbox" id="setting-show-formatting">
             <span class="slider"></span>
           </label>
         </div>

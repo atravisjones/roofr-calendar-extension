@@ -96,6 +96,7 @@ const SEED_DEFAULTS = {
     ctm_group_tabs: true,
     ctm_meet_automute: true,
     ctm_meet_mic_automute: true,
+    ctm_meet_chime_pill: true,
 
     // =====================
     // JOB SORTING SETTINGS
@@ -1204,7 +1205,11 @@ async function meetAutoMute() {
         if (s.ctm_meet_automute === false && s.ctm_meet_mic_automute === false) return;
         const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
         if (tabs.length === 0) return;
-        const store = await chrome.storage.session.get(MEET_AUTOMUTED_KEY);
+        const store = await chrome.storage.session.get([MEET_AUTOMUTED_KEY, MEET_CHIME_KEY]);
+        // Rep deliberately opened the Meet channel mid-call (chime-in) — don't
+        // fight them if another ctm event fires while it's open. Chime-out and
+        // call-end both clear the flag before re-muting.
+        if (store[MEET_CHIME_KEY]) return;
         const state = store[MEET_AUTOMUTED_KEY] || {};
         for (const tab of tabs) {
             const entry = state[tab.id] || { audio: false, mic: false };
@@ -1228,6 +1233,7 @@ async function meetAutoMute() {
         }
         if (Object.keys(state).length > 0) {
             await chrome.storage.session.set({ [MEET_AUTOMUTED_KEY]: state });
+            await meetShowChimePill(Object.keys(state).map(Number), 'muted');
             console.log('[MeetMute] call live — muted Meet tab(s):', state);
         }
     } catch (e) {
@@ -1241,7 +1247,7 @@ async function meetAutoUnmute() {
         const state = store[MEET_AUTOMUTED_KEY] || {};
         const ids = Object.keys(state);
         if (ids.length === 0) return;
-        await chrome.storage.session.remove(MEET_AUTOMUTED_KEY);
+        await chrome.storage.session.remove([MEET_AUTOMUTED_KEY, MEET_CHIME_KEY]);
         for (const idStr of ids) {
             const tabId = Number(idStr);
             if (state[idStr].audio) {
@@ -1257,9 +1263,111 @@ async function meetAutoUnmute() {
                 } catch (_) {}
             }
         }
+        await meetShowChimePill(ids.map(Number), 'remove');
         console.log('[MeetMute] call ended — restored', ids.length, 'Meet tab(s)');
     } catch (e) {
         console.warn('[MeetMute] unmute failed:', e.message);
+    }
+}
+
+// ── MEET CHIME-IN ──────────────────────────────────────────
+// While auto-muted on a live CTM call, the rep can temporarily reopen the Meet
+// channel — mic AND tab audio — to talk with the group, then snap back to
+// muted. Triggered by the Alt+Shift+M command or the pill button injected at
+// the top of the Meet tab. Chime state lives in storage.session; chime-out
+// re-runs meetAutoMute() and call end clears everything via meetAutoUnmute().
+const MEET_CHIME_KEY = 'meet_chime_active';
+
+// Runs INSIDE the Meet tab (isolated world, so chrome.runtime messaging works).
+// Self-contained: builds/updates/removes the floating status pill.
+function _meetChimePill(mode) {
+    const ID = '__ctmChimePill';
+    let pill = document.getElementById(ID);
+    if (mode === 'remove') { if (pill) pill.remove(); return; }
+    if (!pill) {
+        pill = document.createElement('div');
+        pill.id = ID;
+        pill.title = 'Alt+Shift+M also toggles this';
+        pill.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);' +
+            'z-index:2147483647;display:flex;align-items:center;gap:10px;padding:7px 12px;' +
+            'border-radius:24px;font:13px/1.2 "Google Sans",Roboto,Arial,sans-serif;color:#fff;' +
+            'box-shadow:0 2px 10px rgba(0,0,0,.45);';
+        const label = document.createElement('span');
+        label.id = ID + 'Label';
+        const btn = document.createElement('button');
+        btn.id = ID + 'Btn';
+        btn.style.cssText = 'border:0;border-radius:16px;padding:5px 12px;cursor:pointer;' +
+            'font:600 12px/1 "Google Sans",Roboto,Arial,sans-serif;background:#8ab4f8;color:#202124;';
+        btn.addEventListener('click', () => {
+            try { chrome.runtime.sendMessage({ type: 'MEET_CHIME_TOGGLE' }); } catch (_) {}
+        });
+        pill.appendChild(label);
+        pill.appendChild(btn);
+        (document.body || document.documentElement).appendChild(pill);
+    }
+    const label = document.getElementById(ID + 'Label');
+    const btn = document.getElementById(ID + 'Btn');
+    if (mode === 'live') {
+        label.textContent = 'Live in Meet — the group can hear you';
+        btn.textContent = 'Re-mute';
+        pill.style.background = '#b3261e';
+    } else {
+        label.textContent = 'Auto-muted — on a CTM call';
+        btn.textContent = 'Chime in';
+        pill.style.background = '#3c4043';
+    }
+}
+
+async function meetShowChimePill(tabIds, mode) {
+    try {
+        if (mode !== 'remove') {
+            const s = await chrome.storage.sync.get({ ctm_meet_chime_pill: true });
+            if (s.ctm_meet_chime_pill === false) return;
+        }
+        for (const tabId of tabIds) {
+            try {
+                await chrome.scripting.executeScript({
+                    target: { tabId },
+                    func: _meetChimePill,
+                    args: [mode],
+                });
+            } catch (_) {}
+        }
+    } catch (e) {
+        console.warn('[MeetMute] pill update failed:', e.message);
+    }
+}
+
+async function meetChimeToggle() {
+    try {
+        const store = await chrome.storage.session.get([MEET_AUTOMUTED_KEY, MEET_CHIME_KEY]);
+        const state = store[MEET_AUTOMUTED_KEY] || {};
+        const ids = Object.keys(state).map(Number);
+        if (ids.length === 0) return; // no live-call auto-mute in effect — nothing to chime into
+        if (!store[MEET_CHIME_KEY]) {
+            // Open the channel: unmute BOTH directions on every tab we auto-muted.
+            // Deliberate rep action, so this overrides even a hand-muted mic.
+            for (const tabId of ids) {
+                try { await chrome.tabs.update(tabId, { muted: false }); } catch (_) {}
+                try {
+                    await chrome.scripting.executeScript({
+                        target: { tabId },
+                        func: _meetSetMicMuted,
+                        args: [false],
+                    });
+                } catch (_) {}
+            }
+            await chrome.storage.session.set({ [MEET_CHIME_KEY]: true });
+            await meetShowChimePill(ids, 'live');
+            console.log('[MeetMute] chime-in — Meet channel open on', ids.length, 'tab(s)');
+        } else {
+            // Snap back: clear the flag FIRST so meetAutoMute doesn't skip.
+            await chrome.storage.session.remove(MEET_CHIME_KEY);
+            await meetAutoMute(); // re-applies per-toggle mutes + shows the 'muted' pill
+            console.log('[MeetMute] chime-out — re-muted');
+        }
+    } catch (e) {
+        console.warn('[MeetMute] chime toggle failed:', e.message);
     }
 }
 
@@ -1341,9 +1449,16 @@ async function openAutoDialerWindow() {
 
 chrome.commands?.onCommand.addListener(async (command) => {
     if (command === 'open-auto-dialer') await openAutoDialerWindow();
+    if (command === 'meet-chime-toggle') await meetChimeToggle();
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg?.type === 'MEET_CHIME_TOGGLE') {
+        // From the pill button on a Meet tab (or anywhere else in the extension).
+        meetChimeToggle();
+        sendResponse({ ok: true });
+        return false;
+    }
     if (msg?.type === 'AD_TO_CTM') {
         (async () => {
             const tabId = await findCtmTabId(msg.windowId);

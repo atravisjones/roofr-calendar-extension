@@ -2317,6 +2317,14 @@
         _statusCount++;
         return;
       }
+      // TEMP DIAGNOSTIC — bridge samples live-activity payload + softphone UI
+      // text 1/sec so we can find CTM's real "answered" marker (no outbound
+      // pickup event exists). Log-only; never touches the phase machine.
+      if (p.event === "ctm:live-activity-sample") {
+        const d = p.detail || {};
+        log(`liveact ${d.sample || ""} · ui="${d.ui || ""}"`, "info", "diag");
+        return;
+      }
       // SOFTPHONE-BUSY TRACKER — runs BEFORE the wrap-up lockout below so the
       // dialer always knows when a call is live on the softphone, including an
       // INBOUND call the rep answered mid-wrap-up (which the lockout hides
@@ -2551,7 +2559,7 @@
       resolveRepName(s);
       testMode = !!s.dialer_test_mode;
       els.testModeToggle.checked = testMode;
-      if (els.ringMuteToggle) els.ringMuteToggle.checked = s.ctm_ring_mute !== false;
+      if (els.ringMuteToggle) els.ringMuteToggle.checked = s.ctm_ring_mute === true;
       if (testMode) log("TEST MODE active on startup", "warn", "init");
       const storedLimit = parseInt(s.dialer_session_limit) || 25;
       sessionLimit = Math.min(100, Math.max(5, storedLimit));
@@ -2567,7 +2575,7 @@
       if (area !== "sync") return;
       // Keep the footer ring-mute toggle in sync with the options page.
       if ("ctm_ring_mute" in changes && els.ringMuteToggle) {
-        els.ringMuteToggle.checked = changes.ctm_ring_mute.newValue !== false;
+        els.ringMuteToggle.checked = changes.ctm_ring_mute.newValue === true;
       }
       const watch = ["ctm_csr", "ctm_display_name", "ctm_user"];
       if (!watch.some(k => k in changes)) return;

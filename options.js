@@ -217,7 +217,7 @@ const defaults = {
   ctm_group_tabs: true,
   ctm_meet_automute: true,
   ctm_meet_mic_automute: true,
-  ctm_ring_mute: true,
+  ctm_ring_mute: false,
 
   // Reports
   reports_enabled: true,

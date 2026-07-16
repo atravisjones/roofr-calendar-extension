@@ -97,7 +97,7 @@ const SEED_DEFAULTS = {
     ctm_meet_automute: true,
     ctm_meet_mic_automute: true,
     ctm_meet_chime_pill: true,
-    ctm_ring_mute: true,
+    ctm_ring_mute: false,   // opt-in — reps enable via the dialer footer 🔕 checkbox
 
     // =====================
     // JOB SORTING SETTINGS
@@ -1337,8 +1337,8 @@ function ctmRingMute() { return _queueRingOp(_ctmRingMuteNow); }
 function ctmRingUnmute(reason) { return _queueRingOp(() => _ctmRingUnmuteNow(reason)); }
 
 async function _ctmRingMuteNow() {
-    const s = await chrome.storage.sync.get({ ctm_ring_mute: true });
-    if (s.ctm_ring_mute === false) return;
+    const s = await chrome.storage.sync.get({ ctm_ring_mute: false });
+    if (s.ctm_ring_mute !== true) return; // opt-in: mute only when explicitly enabled
     const tabs = await chrome.tabs.query({ url: '*://app.calltrackingmetrics.com/*' });
     if (tabs.length === 0) return;
     const store = await chrome.storage.session.get(RING_MUTED_KEY);

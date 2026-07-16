@@ -192,6 +192,29 @@
         postToRelay({ type: "ctm-event", event: name, detail, ts: Date.now() });
       }, { signal });
     }
+    // TEMP DIAGNOSTIC (ring-mute pickup detection): CTM emits no outbound
+    // "answered" event — ctm:start fires at channel-up (+0.3s) while ringback
+    // still plays. To find what actually changes at pickup, sample the
+    // otherwise-discarded ctm:live-activity stream (1/sec) plus the softphone
+    // UI text. Lands in the dialer log / DialerLog sheet. Remove once the
+    // answered trigger ships.
+    let _lastLiveSample = 0;
+    el.addEventListener("ctm:live-activity", (e) => {
+      const now = Date.now();
+      if (now - _lastLiveSample < 1000) return;
+      _lastLiveSample = now;
+      let sample = "";
+      try { sample = JSON.stringify(e.detail).slice(0, 400); } catch (_) { sample = "unserializable"; }
+      let ui = "";
+      try {
+        for (const f of el.querySelectorAll("iframe")) {
+          const d = f.contentDocument;
+          if (d?.body) { ui = (d.body.innerText || "").replace(/\s+/g, " ").slice(0, 200); break; }
+        }
+      } catch (_) {}
+      postToRelay({ type: "ctm-event", event: "ctm:live-activity-sample", detail: { sample, ui }, ts: now });
+    }, { signal });
+
     // When our AbortController fires (next cleanup), clear the mark so the
     // NEXT bridge instance knows it can safely re-hook.
     signal.addEventListener("abort", () => {

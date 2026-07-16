@@ -1352,9 +1352,10 @@ async function _ctmRingMuteNow() {
     }
     if (Object.keys(state).length > 0) {
         await chrome.storage.session.set({ [RING_MUTED_KEY]: state });
-        // Failsafe: if the connect/end event is ever missed, never leave the
-        // softphone silent — force-unmute after 90s (longer than any ring).
-        chrome.alarms.create(RING_MUTE_WATCHDOG_ALARM, { when: Date.now() + 90 * 1000 });
+        // Failsafe: if answered/end detection ever misses, never leave the
+        // softphone silent — force-unmute after 40s (the dialer hangs up
+        // unanswered rings at 35s, so a live call is deaf ≤40s worst-case).
+        chrome.alarms.create(RING_MUTE_WATCHDOG_ALARM, { when: Date.now() + 40 * 1000 });
         console.log('[RingMute] outbound ringing — muted CTM tab(s):', Object.keys(state));
         _ringNotifyDialer('muted', Object.keys(state).length);
     }
@@ -1719,7 +1720,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             // and one arriving after ctm:start muted the LIVE call (7/16,
             // "single ring then silence carrying into the call"). A stray
             // event now restores audio early at worst — never kills a call.
-            if (ev === 'ctm:start' || ev === 'ctm:end-activity' || ev === 'ctm:wrapup_start' || ev === 'ctm:failed') {
+            // ctm:answered is SYNTHETIC — the bridge watches the softphone UI
+            // call timer (CTM has no native outbound pickup event) and emits
+            // it once at answer. That's the unmute that matters; the rest are
+            // call-over backstops.
+            if (ev === 'ctm:answered' || ev === 'ctm:end-activity' || ev === 'ctm:wrapup_start' || ev === 'ctm:failed') {
                 ctmRingUnmute(ev);
             }
         }

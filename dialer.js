@@ -359,7 +359,12 @@
 
   function setPhase(p) {
     phase = p;
-    ringMuteSignal(p === "dialing" || p === "ringing");
+    // Ring-mute window: open on dial, but "connected" does NOT close it —
+    // that phase fires at ctm:start (+0.3s, audio channel up) while ringback
+    // is still playing. The close comes from the bridge's synthetic
+    // ctm:answered (softphone UI call timer starts) or the call-over phases.
+    if (p === "dialing" || p === "ringing") ringMuteSignal(true);
+    else if (p !== "connected") ringMuteSignal(false);
     els.startBtn.disabled = mode === "running" || !ctmTabOpen || !bridgeReady;
     els.stopBtn.disabled = mode === "idle";
     renderCurrent();
@@ -2447,6 +2452,11 @@
       callStartMs = Date.now();
       clearTimeout(ringTimeoutId);
       log(`call → CONNECTED (audio channel up — could be human OR voicemail)`, "ok", "call");
+    } else if (name === "ctm:answered") {
+      // Synthetic, from the bridge's softphone-UI watcher: the call timer
+      // started — the callee (human or VM) actually picked up.
+      ringMuteSignal(false);
+      log(`📞 ANSWERED (${detail.via || "ui"}, +${((detail.afterMs || 0) / 1000).toFixed(1)}s after channel-up)`, "ok", "call");
     } else if (name === "ctm:failed") {
       log(`call FAILED: ${JSON.stringify(detail).slice(0, 200)}`, "err", "call");
       onCallEnded({ source: "failed" });
@@ -3095,11 +3105,12 @@
   // Separate CTM router — only acts when a rescheduled call is active.
   function rschedHandleCtmEvent(eventName) {
     if (!_rschedDialActive) return;
-    // Ring is over the moment the call connects OR dies — signal false NOW.
+    // Ring is over at real pickup (synthetic ctm:answered — NOT ctm:start,
+    // which is just channel-up at +0.3s) or call death — signal false NOW.
     // The UI stays on "calling" through the whole conversation, so without
     // this a stray late AD_RING_MUTE:true (fast pickup racing the dial-time
     // signal) would mute the live call with nothing to correct it.
-    if (["ctm:start", "ctm:end-activity", "ctm:wrapup_start", "ctm:failed"].includes(eventName)) {
+    if (["ctm:answered", "ctm:end-activity", "ctm:wrapup_start", "ctm:failed"].includes(eventName)) {
       ringMuteSignal(false);
     }
     if (eventName === "ctm:start") {
@@ -3475,8 +3486,9 @@
   // Separate CTM router — only acts while a welcome call is dialing.
   function wcHandleCtmEvent(eventName) {
     if (!_wcDialActive) return;
-    // Ring over (pickup or death) → signal false NOW — see rschedHandleCtmEvent.
-    if (["ctm:start", "ctm:end-activity", "ctm:wrapup_start", "ctm:failed"].includes(eventName)) {
+    // Ring over (real pickup via synthetic ctm:answered, or call death) →
+    // signal false NOW — see rschedHandleCtmEvent.
+    if (["ctm:answered", "ctm:end-activity", "ctm:wrapup_start", "ctm:failed"].includes(eventName)) {
       ringMuteSignal(false);
     }
     if (eventName === "ctm:start") {

@@ -192,28 +192,65 @@
         postToRelay({ type: "ctm-event", event: name, detail, ts: Date.now() });
       }, { signal });
     }
-    // TEMP DIAGNOSTIC (ring-mute pickup detection): CTM emits no outbound
-    // "answered" event — ctm:start fires at channel-up (+0.3s) while ringback
-    // still plays. To find what actually changes at pickup, sample the
-    // otherwise-discarded ctm:live-activity stream (1/sec) plus the softphone
-    // UI text. Lands in the dialer log / DialerLog sheet. Remove once the
-    // answered trigger ships.
-    let _lastLiveSample = 0;
-    el.addEventListener("ctm:live-activity", (e) => {
-      const now = Date.now();
-      if (now - _lastLiveSample < 1000) return;
-      _lastLiveSample = now;
-      let sample = "";
-      try { sample = JSON.stringify(e.detail).slice(0, 400); } catch (_) { sample = "unserializable"; }
-      let ui = "";
+    // ── ANSWERED DETECTION (synthetic ctm:answered) ──
+    // CTM emits no outbound "answered" event — ctm:start fires at channel-up
+    // (+0.3s) while ringback still plays in-band. But the softphone UI knows:
+    // during ring its text reads "Connecting … -0:-0 … Starting call...", and
+    // at pickup the call timer starts counting ("0:01"). So while a call is
+    // active we poll the embed iframe text every 300ms and emit ONE synthetic
+    // ctm:answered when either (a) a running m:ss timer appears ("-0:-0"
+    // never matches \d+:\d{2}), or (b) the "Starting call/Connecting" status
+    // vanishes — (b) only counts after we've actually SEEN it this call, so a
+    // slow-painting UI at +0.3s can't false-fire. The ring-mute unmutes on it.
+    function readEmbedUiText() {
       try {
         for (const f of el.querySelectorAll("iframe")) {
           const d = f.contentDocument;
-          if (d?.body) { ui = (d.body.innerText || "").replace(/\s+/g, " ").slice(0, 200); break; }
+          if (d?.body) return (d.body.innerText || "").replace(/\s+/g, " ").slice(0, 220);
         }
       } catch (_) {}
-      postToRelay({ type: "ctm-event", event: "ctm:live-activity-sample", detail: { sample, ui }, ts: now });
-    }, { signal });
+      return "";
+    }
+    let _callWatchTimer = null;
+    function endCallWatch() {
+      if (_callWatchTimer) { clearInterval(_callWatchTimer); _callWatchTimer = null; }
+    }
+    function beginCallWatch() {
+      if (_callWatchTimer) return;
+      let sawStarting = false;
+      let answered = false;
+      let lastDiag = 0;
+      const t0 = Date.now();
+      _callWatchTimer = setInterval(() => {
+        const txt = readEmbedUiText();
+        if (!txt) return;
+        const starting = /starting call|connecting/i.test(txt);
+        if (starting) sawStarting = true;
+        const timerRunning = /(?:^|\s)\d+:\d{2}(?:\s|$)/.test(txt);
+        if (!answered && (timerRunning || (sawStarting && !starting))) {
+          answered = true;
+          postToRelay({ type: "ctm-event", event: "ctm:answered", detail: {
+            via: timerRunning ? "timer" : "status-clear",
+            afterMs: Date.now() - t0,
+          }, ts: Date.now() });
+        }
+        // TEMP diagnostic: 1/sec UI snapshots so we can verify the answered
+        // state's real text against these heuristics. Remove once confirmed.
+        const now = Date.now();
+        if (now - lastDiag >= 1000) {
+          lastDiag = now;
+          postToRelay({ type: "ctm-event", event: "ctm:live-activity-sample", detail: { ui: txt, answered }, ts: now });
+        }
+        // Self-limit: nothing rings past 60s (dialer hangs up at 35s) — stop
+        // polling so a missed end event can't leave a forever-interval.
+        if (now - t0 > 60000) endCallWatch();
+      }, 300);
+    }
+    el.addEventListener("ctm:start", beginCallWatch, { signal });
+    el.addEventListener("ctm:end-activity", endCallWatch, { signal });
+    el.addEventListener("ctm:failed", endCallWatch, { signal });
+    el.addEventListener("ctm:wrapup_start", endCallWatch, { signal });
+    signal.addEventListener("abort", endCallWatch);
 
     // When our AbortController fires (next cleanup), clear the mark so the
     // NEXT bridge instance knows it can safely re-hook.

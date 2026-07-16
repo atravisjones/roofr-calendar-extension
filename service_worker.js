@@ -1322,10 +1322,6 @@ function _queueRingOp(fn) {
     return _ringOpChain;
 }
 
-// Newest connect/end event timestamp we've acted on — the stale-connecting
-// guard at the AUTODIALER_FROM_BRIDGE call site compares against this.
-let _ringLastUnmuteTs = 0;
-
 // Surface ring-mute activity in the dialer's own log pane (the SW console
 // isn't visible to reps) — rides the same AD_FROM_CTM broadcast the events use.
 function _ringNotifyDialer(action, tabs, reason) {
@@ -1372,15 +1368,12 @@ async function _ctmRingUnmuteNow(reason) {
     await chrome.storage.session.remove(RING_MUTED_KEY);
     chrome.alarms.clear(RING_MUTE_WATCHDOG_ALARM);
     for (const idStr of ids) {
-        try {
-            // Only undo a mute WE applied. If the rep re-muted this tab by
-            // hand mid-ring, mutedInfo.extensionId no longer points at us
-            // (reason flips to 'user') — leave their choice alone.
-            const tab = await chrome.tabs.get(Number(idStr));
-            if (tab.mutedInfo?.muted && tab.mutedInfo?.extensionId === chrome.runtime.id) {
-                await chrome.tabs.update(tab.id, { muted: false });
-            }
-        } catch (_) {}
+        // FAIL-OPEN: unconditionally unmute every tab we recorded — same as
+        // Meet auto-mute. An ownership check (mutedInfo.extensionId) was tried
+        // here and skipped silently when Chrome didn't report it, leaving the
+        // softphone dead ("can't hear the customer"). A rep hand-muting CTM
+        // during the few seconds of ring is not a case worth that risk.
+        try { await chrome.tabs.update(Number(idStr), { muted: false }); } catch (_) {}
     }
     console.log(`[RingMute] ${reason} — restored ${ids.length} CTM tab(s)`);
     _ringNotifyDialer('restored', ids.length, reason);
@@ -1393,6 +1386,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
         ctmRingUnmute('setting turned off');
     }
 });
+
+// SW cold start: restore anything a dead SW left muted (extension reload or
+// crash mid-ring). No-op when state is empty, and serialized behind any
+// in-flight op. Can't fire mid-ring in practice — the dialer panel pings the
+// SW every 2s while open, keeping it alive for the whole call.
+ctmRingUnmute('sw-init');
 
 // ── MEET CHIME-IN ──────────────────────────────────────────
 // While auto-muted on a live CTM call, the rep can temporarily reopen the Meet
@@ -1713,26 +1712,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             } else if (ev === 'ctm:end-activity' || ev === 'ctm:wrapup_start' || ev === 'ctm:failed') {
                 meetAutoUnmute();
             }
-            // Ring-mute rides the same events but splits differently: the ring
-            // is only audible between connecting (dial out) and start (pickup),
-            // so ctm:start UNmutes CTM here while it keeps Meet muted above.
-            // STALE-EVENT GUARD: CTM flushes queued events 6-12s after a hangup
-            // (see dialer.js), and the bridge runs in every frame of every CTM
-            // tab — a late duplicate ctm:connecting arriving AFTER the call
-            // connected must not mute a live call (tab-mute mid-call = the rep
-            // can't hear the customer). Drop any connecting whose source ts
-            // predates the newest connect/end we've processed. Module state —
-            // lost on SW restart, but then the 90s watchdog is the backstop.
-            if (ev === 'ctm:connecting') {
-                if ((msg.payload.ts || Date.now()) >= _ringLastUnmuteTs) ctmRingMute();
-            } else if (ev === 'ctm:start' || ev === 'ctm:end-activity' || ev === 'ctm:wrapup_start' || ev === 'ctm:failed') {
-                _ringLastUnmuteTs = Math.max(_ringLastUnmuteTs, msg.payload.ts || Date.now());
+            // Ring-mute: raw CTM events may only ever UNMUTE (backstop for a
+            // closed/stalled dialer panel). Muting is exclusively dialer-driven
+            // via AD_RING_MUTE — using ctm:connecting as a mute trigger proved
+            // unsafe: CTM re-emits it late/duplicated across tabs and frames,
+            // and one arriving after ctm:start muted the LIVE call (7/16,
+            // "single ring then silence carrying into the call"). A stray
+            // event now restores audio early at worst — never kills a call.
+            if (ev === 'ctm:start' || ev === 'ctm:end-activity' || ev === 'ctm:wrapup_start' || ev === 'ctm:failed') {
                 ctmRingUnmute(ev);
             }
         }
         try {
             chrome.runtime.sendMessage({ type: 'AD_FROM_CTM', payload: msg.payload }).catch(() => {});
         } catch (_) {}
+        sendResponse({ ok: true });
+        return false;
+    }
+    if (msg?.type === 'AD_RING_MUTE') {
+        // Dialer phase machine drives the mute window (the ONLY mute source);
+        // false is also accepted for symmetry/immediacy, though the CTM-event
+        // backstop above usually restores first.
+        if (msg.mute) ctmRingMute(); else ctmRingUnmute('dialer phase');
         sendResponse({ ok: true });
         return false;
     }

@@ -340,8 +340,26 @@
   }
 
   // ── Phase setter (also enables/disables buttons) ──
+  // ── Ring-mute signal ──
+  // The dialer's phase machine — not raw CTM events — decides when the
+  // outbound ring gets silenced. Raw ctm:connecting proved unsafe as a mute
+  // trigger: CTM re-emits it late/duplicated (multiple tabs/frames), and one
+  // arriving after ctm:start re-muted the LIVE call (7/16: "single ring then
+  // silence carrying into the call"). The SW only ever MUTES on this explicit
+  // signal; its own event handling only UNmutes (backstop) — so a stray CTM
+  // event can restore audio early at worst, never kill a live call.
+  // _ringMuteSent mirrors actual SW state via the ring-mute broadcasts in the
+  // AD_FROM_CTM listener, so a backstop unmute never strands the dedup flag.
+  let _ringMuteSent = false;
+  function ringMuteSignal(mute) {
+    if (mute === _ringMuteSent) return;
+    _ringMuteSent = mute;
+    try { chrome.runtime.sendMessage({ type: "AD_RING_MUTE", mute }).catch(() => {}); } catch (_) {}
+  }
+
   function setPhase(p) {
     phase = p;
+    ringMuteSignal(p === "dialing" || p === "ringing");
     els.startBtn.disabled = mode === "running" || !ctmTabOpen || !bridgeReady;
     els.stopBtn.disabled = mode === "idle";
     renderCurrent();
@@ -2281,6 +2299,10 @@
       return;
     }
     if (p.type === "ring-mute") {
+      // Mirror the SW's actual mute state so the signal dedup can't strand:
+      // a backstop unmute (SW acting on ctm:start with the panel mid-flow)
+      // must re-arm ringMuteSignal for the next dial.
+      _ringMuteSent = p.action === "muted";
       log(p.action === "muted"
         ? `🔕 ring muted (${p.tabs} CTM tab${p.tabs === 1 ? "" : "s"})`
         : `🔔 ring audio restored (${p.reason || "call ended"})`, "info", "ring");
@@ -2405,6 +2427,10 @@
       return;
     }
     if (name === "ctm:connecting") {
+      // Once the call has connected, a late/duplicate ctm:connecting (CTM
+      // re-emits from other tabs/frames) must NOT regress phase to "dialing" —
+      // that re-armed the ring-mute over a live call and confused the timers.
+      if (connectedThisCall) { _staleEndCount++; return; }
       setPhase("dialing");
       log(`call → connecting (channel opening)`, "info", "call");
     } else if (name === "ctm:start") {
@@ -2476,6 +2502,10 @@
   // ── Init ──
   async function init() {
     log(`dialer loaded`, "info", "init");
+    // A panel reload mid-ring resets _ringMuteSent to false, so the idle
+    // setPhase would dedup-suppress the unmute — send one unconditionally so
+    // a fresh panel never inherits muted CTM tabs (beats the 90s watchdog).
+    try { chrome.runtime.sendMessage({ type: "AD_RING_MUTE", mute: false }).catch(() => {}); } catch (_) {}
     loadDailyDone(); // restore today's running Done list + count (survives reloads)
     syncThemeFromParent();
     // Re-sync periodically in case parent toggles theme
@@ -2845,6 +2875,10 @@
   }
 
   function rschedShowPhase(ph) {
+    // Single mute-signal source for this flow (mirrors setPhase): every
+    // transition — including event-less ones like dial-command failure —
+    // opens/closes the ring-mute window as a side effect of rendering it.
+    ringMuteSignal(ph === "calling");
     const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? "" : "none"; };
     show("rsched-review-card", ph !== "idle");
     show("rsched-stage1", ph === "reviewing");
@@ -3053,6 +3087,13 @@
   // Separate CTM router — only acts when a rescheduled call is active.
   function rschedHandleCtmEvent(eventName) {
     if (!_rschedDialActive) return;
+    // Ring is over the moment the call connects OR dies — signal false NOW.
+    // The UI stays on "calling" through the whole conversation, so without
+    // this a stray late AD_RING_MUTE:true (fast pickup racing the dial-time
+    // signal) would mute the live call with nothing to correct it.
+    if (["ctm:start", "ctm:end-activity", "ctm:wrapup_start", "ctm:failed"].includes(eventName)) {
+      ringMuteSignal(false);
+    }
     if (eventName === "ctm:start") {
       // CONNECTED — cancel the 35s no-answer guillotine. Without this the ring
       // timeout fires mid-conversation (_rschedPhase stays "calling" for the
@@ -3245,6 +3286,9 @@
   function wcStopRenew() { if (_wcRenewTimerId) { clearInterval(_wcRenewTimerId); _wcRenewTimerId = null; } }
 
   function wcShowPhase(ph) {
+    // Single mute-signal source for this flow (mirrors setPhase) — see
+    // rschedShowPhase for why.
+    ringMuteSignal(ph === "calling");
     const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? "" : "none"; };
     show("wc-review-card", ph !== "idle");
     show("wc-stage1", ph === "reviewing");
@@ -3423,6 +3467,10 @@
   // Separate CTM router — only acts while a welcome call is dialing.
   function wcHandleCtmEvent(eventName) {
     if (!_wcDialActive) return;
+    // Ring over (pickup or death) → signal false NOW — see rschedHandleCtmEvent.
+    if (["ctm:start", "ctm:end-activity", "ctm:wrapup_start", "ctm:failed"].includes(eventName)) {
+      ringMuteSignal(false);
+    }
     if (eventName === "ctm:start") {
       // CONNECTED — cancel the 35s no-answer guillotine. Without this, the ring
       // timeout fires mid-conversation (phase stays "calling" the whole call)

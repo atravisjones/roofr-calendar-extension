@@ -10034,6 +10034,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     let reportsV2Directory = {};
     let reportsV2Events = [];
     let reportsV2Selections = {};
+    // Names of everyone who is (or ever was) a scheduled sales rep: cumulative
+    // paste-schedule headings (persisted) + the sheet-synced PEOPLE_REPS list.
+    // These are the ONLY attendees a re-apply may swap OFF an event — ride-alongs
+    // (managers, insurance, trainees) are never in this set and always survive.
+    const REPORTS_V2_ROSTER_KEY = 'roofr_reports_rep_roster_v1';
+    let reportsV2RosterNames = new Set();
     let reportsV2PreflightUnits = null;
     let reportsV2Running = false;
     let reportsV2JobReports = {};   // jobId -> { status, pinFlag, ... } from the report check
@@ -10090,9 +10096,41 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function reportsV2LoadDirectory() {
-        const stored = await chrome.storage.local.get(REPORTS_V2_DIRECTORY_KEY);
+        const stored = await chrome.storage.local.get([REPORTS_V2_DIRECTORY_KEY, REPORTS_V2_ROSTER_KEY]);
         reportsV2Directory = { ...REPORTS_V2_SEED_DIRECTORY, ...(stored[REPORTS_V2_DIRECTORY_KEY] || {}) };
+        reportsV2RosterNames = new Set(Array.isArray(stored[REPORTS_V2_ROSTER_KEY]) ? stored[REPORTS_V2_ROSTER_KEY] : []);
+        try {
+            const sync = await chrome.storage.sync.get('PEOPLE_REPS');
+            for (const name of String(sync.PEOPLE_REPS || '').split(',')) {
+                const trimmed = name.trim().toLowerCase();
+                if (trimmed) reportsV2RosterNames.add(trimmed);
+            }
+        } catch (_) { /* roster still has persisted paste headings */ }
         await reportsV2SaveDirectory();
+    }
+
+    async function reportsV2RememberRosterNames(names) {
+        let changed = false;
+        for (const name of names || []) {
+            const trimmed = String(name || '').trim().toLowerCase();
+            if (trimmed && !reportsV2RosterNames.has(trimmed)) {
+                reportsV2RosterNames.add(trimmed);
+                changed = true;
+            }
+        }
+        if (changed) await chrome.storage.local.set({ [REPORTS_V2_ROSTER_KEY]: [...reportsV2RosterNames] });
+    }
+
+    // Roster names -> Roofr user ids, resolved fresh each time (the directory
+    // keeps growing after Load). Unresolvable names just drop out — they can't
+    // match an attendee id anyway.
+    function reportsV2RosterUserIds() {
+        const ids = new Set();
+        for (const name of reportsV2RosterNames) {
+            const id = reportsV2ResolveRepId(name);
+            if (id) ids.add(String(id));
+        }
+        return [...ids];
     }
 
     async function reportsV2Harvest(detail) {
@@ -10197,6 +10235,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         },
         async addAttendee(eventId, userId, jobId) {
             const result = await reportsV2Send({ type: 'ROOFR_API_ADD_ATTENDEE', eventId, userId, jobId });
+            if (result?.before) await reportsV2Harvest(result.before);
+            if (result?.after) await reportsV2Harvest(result.after);
+            return result || { ok: false, verified: false, error: { message: 'No response from Roofr tab' } };
+        },
+        async swapAttendees(eventId, userId, removableUserIds, jobId) {
+            const result = await reportsV2Send({ type: 'ROOFR_API_SWAP_ATTENDEES', eventId, userId, removableUserIds, jobId });
             if (result?.before) await reportsV2Harvest(result.before);
             if (result?.after) await reportsV2Harvest(result.after);
             return result || { ok: false, verified: false, error: { message: 'No response from Roofr tab' } };
@@ -10324,6 +10368,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function reportsV2ApplySchedule() {
         const parsed = reportsV2ParseSchedule(reportsV2Schedule?.value || '');
+        // Every heading name is a scheduled sales rep — remember them (persisted)
+        // so a later re-shuffle can swap them OFF events they no longer own.
+        reportsV2RememberRosterNames(parsed.map(appointment => appointment.repName)).catch(() => {});
         const result = { bound: 0, noJid: [], notInDay: [], unresolved: [], ambiguous: [] };
         for (const appointment of parsed) {
             if (!appointment.jid) {
@@ -10785,10 +10832,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function reportsV2MakeUnits() {
+        const rosterIds = reportsV2RosterUserIds();
         return reportsV2Events.map(event => window.RoofrReportsBatch.createWorkUnit(
             event,
-            reportsV2Selections[String(event.id)] || null
+            reportsV2Selections[String(event.id)] || null,
+            rosterIds
         ));
+    }
+
+    // Attendee ids currently on a LOADED event (detail shape or day-list shape).
+    function reportsV2EventAttendeeIds(event) {
+        const attendees = Array.isArray(event?.attendees) ? event.attendees : [];
+        const ids = attendees.length
+            ? attendees.map(attendee => attendee?.resource?.id ?? attendee?.id).filter(Boolean)
+            : (event?.attendee_user_ids || []);
+        return ids.map(String);
     }
 
     function reportsV2UpdateLiveChips(state) {
@@ -10840,10 +10898,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         reportsV2PreflightUnits = reportsV2MakeUnits();
         const planned = reportsV2PreflightUnits.filter(unit => unit.state === 'pending');
         const skipped = reportsV2PreflightUnits.filter(unit => unit.outcome === 'skipped');
+        const eventById = new Map(reportsV2Events.map(event => [String(event.id), event]));
+        const describe = (unit) => {
+            const repName = reportsV2Directory[String(unit.repUserId)]?.name || `id:${unit.repUserId}`;
+            // Advisory swap preview from the LOADED event's attendees (the run
+            // re-reads live state before writing) — which roster reps get dropped.
+            const attendeeIds = reportsV2EventAttendeeIds(eventById.get(String(unit.eventId)));
+            const stale = (unit.removableUserIds || [])
+                .filter(id => id !== String(unit.repUserId) && attendeeIds.includes(id))
+                .map(id => reportsV2Directory[id]?.name || `id:${id}`);
+            const swapText = stale.length ? ` (swapping out: ${stale.join(', ')})` : '';
+            return `event:${unit.eventId} job:${unit.jobId} -> ${repName}${swapText}`;
+        };
         reportsV2PreflightSummary.style.display = 'block';
         reportsV2PreflightSummary.textContent = [
             `Planned writes: ${planned.length}`,
-            ...planned.map(unit => `event:${unit.eventId} job:${unit.jobId} -> ${reportsV2Directory[String(unit.repUserId)]?.name || `id:${unit.repUserId}`}`),
+            ...planned.map(describe),
             `Skipped: ${skipped.length}`,
             ...skipped.map(unit => `event:${unit.eventId} (${unit.error?.reason || 'unknown'})`)
         ].join('\n');

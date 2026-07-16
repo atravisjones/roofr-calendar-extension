@@ -19,6 +19,13 @@
         return { ok: true, before, after: before, verified: false, dryRun: true };
       }
       return window.RoofrApi.addAttendee(msg.eventId, msg.userId, msg.jobId);
+    },
+    ROOFR_API_SWAP_ATTENDEES: async (msg) => {
+      if (msg.dryRun) {
+        const before = await window.RoofrApi.getEvent(msg.eventId);
+        return { ok: true, before, after: before, verified: false, dryRun: true };
+      }
+      return window.RoofrApi.swapAttendees(msg.eventId, msg.userId, msg.removableUserIds, msg.jobId);
     }
   };
 

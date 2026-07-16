@@ -32,12 +32,15 @@
     return { eligible: true, reason: null };
   }
 
-  function createWorkUnit(event, repUserId) {
+  function createWorkUnit(event, repUserId, removableUserIds) {
     const check = eligibility(event, repUserId);
     return {
       eventId: event.id,
       jobId: event.job_id ?? null,
       repUserId: repUserId ?? null,
+      // Sales-rep user ids that MAY be swapped out of this event if present
+      // (re-shuffled schedule). Anyone not listed is a ride-along and survives.
+      removableUserIds: Array.isArray(removableUserIds) ? removableUserIds.map(String) : [],
       state: check.eligible ? "pending" : "terminal",
       outcome: check.eligible ? null : "skipped",
       beforeState: null,
@@ -198,7 +201,15 @@
           break;
         }
 
-        if (detailAttendeeIds(before).has(String(unit.repUserId))) {
+        // Stale reps = removable roster members still on the event who aren't the
+        // new rep (schedule got re-shuffled after a previous apply). Their presence
+        // forces a swap write even when the new rep is already an attendee.
+        const beforeIds = detailAttendeeIds(before);
+        const staleReps = (unit.removableUserIds || [])
+          .map(String)
+          .filter((id) => id !== String(unit.repUserId) && beforeIds.has(id));
+
+        if (!staleReps.length && beforeIds.has(String(unit.repUserId))) {
           unit.state = "writing_owner";
           await checkpoint(state);
           state.writesThisRun += 1;
@@ -213,7 +224,9 @@
 
         unit.state = "writing";
         await checkpoint(state);
-        const result = await api.addAttendee(unit.eventId, unit.repUserId, unit.jobId);
+        const result = staleReps.length && typeof api.swapAttendees === "function"
+          ? await api.swapAttendees(unit.eventId, unit.repUserId, staleReps, unit.jobId)
+          : await api.addAttendee(unit.eventId, unit.repUserId, unit.jobId);
         state.writesThisRun += 1;
         if (result.verified) {
           unit.state = "writing_owner";

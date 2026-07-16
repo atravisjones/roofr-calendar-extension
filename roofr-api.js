@@ -66,12 +66,16 @@
     return true;
   }
 
-  function assertZeroRemovals(beforeAttendees, afterAttendees) {
+  // Default guard: attendee writes may never remove anyone (mass-invite incident
+  // class). swapAttendees passes an explicit allow-set for schedule re-shuffles —
+  // any removal outside that set still throws.
+  function assertZeroRemovals(beforeAttendees, afterAttendees, allowedRemovals) {
     const beforeIds = attendeeIdSet(beforeAttendees);
     const afterIds = attendeeIdSet(afterAttendees);
     const removed = [...beforeIds].filter((id) => !afterIds.has(id));
-    if (removed.length) {
-      const error = structuredError("network", `Attendee update would remove: ${removed.join(", ")}`);
+    const illegal = allowedRemovals ? removed.filter((id) => !allowedRemovals.has(String(id))) : removed;
+    if (illegal.length) {
+      const error = structuredError("network", `Attendee update would remove: ${illegal.join(", ")}`);
       error.ambiguous = true;
       throw error;
     }
@@ -257,10 +261,10 @@
     };
   }
 
-  async function performAttendeeWrite(id, before, payload) {
+  async function performAttendeeWrite(id, before, payload, allowedRemovals) {
     const expectedIds = attendeeIdSet(payload.attendees);
     const beforeIds = attendeeIdSet(getDetailAttendees(before));
-    assertZeroRemovals(getDetailAttendees(before), payload.attendees);
+    assertZeroRemovals(getDetailAttendees(before), payload.attendees, allowedRemovals);
     const matchesExpected = (detail) => sameSet(attendeeIdSet(getDetailAttendees(detail)), expectedIds);
     const matchesBefore = (detail) => sameSet(attendeeIdSet(getDetailAttendees(detail)), beforeIds);
 
@@ -301,6 +305,26 @@
     return performAttendeeWrite(eventId, before, payload);
   }
 
+  // Schedule re-shuffle: assign userId AND drop stale reps in one write. Only ids
+  // in removableUserIds (the scheduled-reps roster the caller resolved) may be
+  // removed — ride-along attendees (managers, insurance, trainees) are never in
+  // that set and always survive. userId itself is never removable.
+  async function swapAttendees(eventId, userId, removableUserIds, jobId) {
+    const before = await getEvent(eventId);
+    const allowed = new Set((Array.isArray(removableUserIds) ? removableUserIds : []).map(String));
+    allowed.delete(String(userId));
+    const current = normalizeAttendees(getDetailAttendees(before));
+    const kept = current.filter((attendee) => !allowed.has(String(attendee.id)));
+    const removedAny = kept.length !== current.length;
+    const alreadyIn = attendeeIdSet(current).has(String(userId));
+    if (!removedAny && alreadyIn) {
+      return { ok: true, before, after: before, verified: true, alreadyCorrect: true };
+    }
+    if (!alreadyIn) kept.push({ id: userId, type: "user" });
+    const payload = buildEventAttendeePayload(before, kept, jobId);
+    return performAttendeeWrite(eventId, before, payload, allowed);
+  }
+
   async function deleteEvent(id) {
     const before = await getEvent(id);
     try {
@@ -328,6 +352,7 @@
     setJobOwner,
     setEventAttendees,
     addAttendee,
+    swapAttendees,
     deleteEvent,
     reconcileThenRetryOnce,
     serializeError

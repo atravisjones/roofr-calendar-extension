@@ -230,6 +230,15 @@
     return unwrapData(await getWithRetry(`/api/job/${encodeURIComponent(id)}`));
   }
 
+  // One recent-jobs page is the only reliable full-team user source: /api/team
+  // returns team-level objects with no users, and a single job's permitted_users
+  // only lists users permitted on THAT job (sales reps are missing until assigned).
+  // The union of permitted_users/assignees/job_owner across 100 recent jobs covers
+  // every active rep — same technique as roofr-sync's scrape-calendar user map.
+  async function listRecentJobs() {
+    return unwrapData(await getWithRetry("/api/jobs?per_page=100&page=1"));
+  }
+
   async function setJobOwner(jobId, userId) {
     const before = await getJob(jobId);
     const customerId = before?.customer_id ?? before?.customer?.id;
@@ -315,6 +324,7 @@
     getDayEvents,
     getEvent,
     getJob,
+    listRecentJobs,
     setJobOwner,
     setEventAttendees,
     addAttendee,

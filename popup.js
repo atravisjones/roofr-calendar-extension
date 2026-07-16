@@ -10097,14 +10097,27 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function reportsV2Harvest(detail) {
         let changed = false;
-        for (const attendee of Array.isArray(detail?.attendees) ? detail.attendees : []) {
-            const resource = attendee?.resource || attendee;
-            const id = resource?.id ?? attendee?.id;
+        const learn = (userLike) => {
+            const resource = userLike?.resource || userLike;
+            const id = resource?.id ?? userLike?.id;
             const name = resource?.full_name || resource?.name;
-            if (!id || !name) continue;
+            if (!id || !name) return;
             if (reportsV2Directory[String(id)]?.name !== name) {
                 reportsV2Directory[String(id)] = { name };
                 changed = true;
+            }
+        };
+        // Accepts one event/job detail OR an array of them (jobs-list harvest).
+        for (const item of Array.isArray(detail) ? detail : [detail]) {
+            if (!item) continue;
+            for (const attendee of Array.isArray(item.attendees) ? item.attendees : []) learn(attendee);
+            // Job shapes carry users too — permitted_users/assignees arrays plus
+            // single-user fields. Across a recent-jobs page this is the full team.
+            for (const field of ['permitted_users', 'assignees']) {
+                for (const user of Array.isArray(item[field]) ? item[field] : []) learn(user);
+            }
+            for (const field of ['assignee', 'job_owner', 'author']) {
+                if (item[field]) learn(item[field]);
             }
         }
         if (changed) await reportsV2SaveDirectory();
@@ -10269,9 +10282,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     function reportsV2ResolveRepId(name) {
         const raw = String(name || '').trim().toLowerCase();
         const target = REPORTS_V2_NAME_ALIASES[raw] || raw;
-        const matches = Object.entries(reportsV2Directory)
-            .filter(([, user]) => String(user?.name || '').trim().toLowerCase() === target);
-        return matches.length === 1 ? matches[0][0] : null;
+        const entries = Object.entries(reportsV2Directory);
+        let matches = entries.filter(([, user]) => String(user?.name || '').trim().toLowerCase() === target);
+        if (matches.length === 1) return matches[0][0];
+        if (matches.length) return null;
+        // No exact hit — allow a UNIQUE relaxed match so paste spellings survive
+        // Roofr account-name drift ("Josh Jewett" vs "Joshua Jewett"): same last
+        // name, first names where one starts with the other. Any ambiguity (two
+        // possible people) stays unresolved rather than guessing.
+        const [tFirst, ...tRest] = target.split(/\s+/);
+        const tLast = tRest.join(' ');
+        if (tFirst && tLast) {
+            matches = entries.filter(([, user]) => {
+                const parts = String(user?.name || '').trim().toLowerCase().split(/\s+/);
+                const uFirst = parts[0] || '';
+                const uLast = parts.slice(1).join(' ');
+                return uLast === tLast && uFirst && (uFirst.startsWith(tFirst) || tFirst.startsWith(uFirst));
+            });
+            if (matches.length === 1) return matches[0][0];
+        }
+        return null;
     }
 
     function reportsV2RenderApplyResults(result) {
@@ -10517,6 +10547,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
             const dayEvents = reportsV2ResponseData(await reportsV2Send({ type: 'ROOFR_API_GET_DAY_EVENTS', dateStr }));
             const salesEvents = (Array.isArray(dayEvents) ? dayEvents : []).filter(reportsV2SalesEvent);
+            // Refill the user directory from a recent-jobs page on every Load. The
+            // directory lives in storage.local, so a reinstall wipes it back to the
+            // 4-name seed and paste-schedule rep resolution goes blind (17/31 names
+            // unresolved on 2026-07-15). One request rebuilds the whole team.
+            try {
+                const recentJobs = reportsV2ResponseData(await reportsV2Send({ type: 'ROOFR_API_LIST_RECENT_JOBS' }));
+                await reportsV2Harvest(recentJobs);
+            } catch (_) { /* keep whatever the directory already has */ }
             const detailed = [];
             for (const event of salesEvents) {
                 try {

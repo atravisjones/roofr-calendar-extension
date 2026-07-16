@@ -90,6 +90,7 @@ const fields = [
   "ctm_group_tabs",
   "ctm_meet_automute",
   "ctm_meet_mic_automute",
+  "ctm_ring_mute",
 
   // Reports toggles
   "reports_enabled",
@@ -216,6 +217,7 @@ const defaults = {
   ctm_group_tabs: true,
   ctm_meet_automute: true,
   ctm_meet_mic_automute: true,
+  ctm_ring_mute: true,
 
   // Reports
   reports_enabled: true,

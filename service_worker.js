@@ -97,6 +97,10 @@ const SEED_DEFAULTS = {
     ctm_meet_automute: true,
     ctm_meet_mic_automute: true,
     ctm_meet_chime_pill: true,
+    // ctm_ring_mute is deliberately NOT seeded: onInstalled's `if (!current[key])`
+    // check treats a stored `false` as missing, so seeding `true` here would
+    // re-enable ring-mute on every update for reps who turned it off. All
+    // readers default it to true inline instead.
 
     // =====================
     // JOB SORTING SETTINGS
@@ -1161,6 +1165,10 @@ chrome.alarms.onAlarm.addListener((alarm) => {
         console.log('[Update] Periodic update check triggered');
         checkForUpdates();
     }
+    // Ring-mute failsafe: a missed connect/end event left CTM tabs muted — restore.
+    if (alarm.name === RING_MUTE_WATCHDOG_ALARM) {
+        ctmRingUnmute('watchdog — no connect/end event within 90s');
+    }
 });
 
 // Check on startup
@@ -1287,6 +1295,90 @@ async function meetAutoUnmute() {
         console.warn('[MeetMute] unmute failed:', e.message);
     }
 }
+
+// ── RING-MUTE (outbound ringback silencer) ──────────────────
+// The team dials all day and the outbound ringback is in-band call audio
+// coming out of the CTM softphone tab — there is no CTM setting to silence
+// it. While an outbound dial is ringing (ctm:connecting), tab-mute every
+// app.calltrackingmetrics.com tab; restore the instant the call connects
+// (ctm:start — fires at pickup, human or voicemail) or dies (failed/end).
+// Inbound is untouched: ctm:incomingCall never triggers this, so the inbound
+// ringtone still plays. Per-tab state lives in storage.session so it survives
+// SW suspension; only tabs WE muted get restored — a CTM tab the rep muted by
+// hand stays muted. Toggle: ctm_ring_mute (dialer footer + options page).
+const RING_MUTED_KEY = 'ctm_ring_muted_state';
+const RING_MUTE_WATCHDOG_ALARM = 'ctm-ring-mute-watchdog';
+
+// Mute and unmute are serialized through one promise chain: ctm:start can
+// arrive while the ctm:connecting mute is still mid-flight (instant VM
+// pickup), and an unmute that runs BEFORE the mute finishes would no-op on
+// empty state, leaving the tabs silenced until the watchdog.
+let _ringOpChain = Promise.resolve();
+function _queueRingOp(fn) {
+    _ringOpChain = _ringOpChain
+        .then(fn)
+        .catch((e) => console.warn('[RingMute] op failed:', e?.message));
+    return _ringOpChain;
+}
+
+// Newest connect/end event timestamp we've acted on — the stale-connecting
+// guard at the AUTODIALER_FROM_BRIDGE call site compares against this.
+let _ringLastUnmuteTs = 0;
+
+function ctmRingMute() { return _queueRingOp(_ctmRingMuteNow); }
+function ctmRingUnmute(reason) { return _queueRingOp(() => _ctmRingUnmuteNow(reason)); }
+
+async function _ctmRingMuteNow() {
+    const s = await chrome.storage.sync.get({ ctm_ring_mute: true });
+    if (s.ctm_ring_mute === false) return;
+    const tabs = await chrome.tabs.query({ url: '*://app.calltrackingmetrics.com/*' });
+    if (tabs.length === 0) return;
+    const store = await chrome.storage.session.get(RING_MUTED_KEY);
+    const state = store[RING_MUTED_KEY] || {};
+    for (const tab of tabs) {
+        if (tab.mutedInfo?.muted) continue; // user-muted (or already ours) — leave it
+        try {
+            await chrome.tabs.update(tab.id, { muted: true });
+            state[tab.id] = true;
+        } catch (_) {}
+    }
+    if (Object.keys(state).length > 0) {
+        await chrome.storage.session.set({ [RING_MUTED_KEY]: state });
+        // Failsafe: if the connect/end event is ever missed, never leave the
+        // softphone silent — force-unmute after 90s (longer than any ring).
+        chrome.alarms.create(RING_MUTE_WATCHDOG_ALARM, { when: Date.now() + 90 * 1000 });
+        console.log('[RingMute] outbound ringing — muted CTM tab(s):', Object.keys(state));
+    }
+}
+
+async function _ctmRingUnmuteNow(reason) {
+    const store = await chrome.storage.session.get(RING_MUTED_KEY);
+    const state = store[RING_MUTED_KEY] || {};
+    const ids = Object.keys(state);
+    if (ids.length === 0) return;
+    await chrome.storage.session.remove(RING_MUTED_KEY);
+    chrome.alarms.clear(RING_MUTE_WATCHDOG_ALARM);
+    for (const idStr of ids) {
+        try {
+            // Only undo a mute WE applied. If the rep re-muted this tab by
+            // hand mid-ring, mutedInfo.extensionId no longer points at us
+            // (reason flips to 'user') — leave their choice alone.
+            const tab = await chrome.tabs.get(Number(idStr));
+            if (tab.mutedInfo?.muted && tab.mutedInfo?.extensionId === chrome.runtime.id) {
+                await chrome.tabs.update(tab.id, { muted: false });
+            }
+        } catch (_) {}
+    }
+    console.log(`[RingMute] ${reason} — restored ${ids.length} CTM tab(s)`);
+}
+
+// Flipping the toggle OFF takes effect immediately — if a ring is muted right
+// now, restore it instead of making the rep wait for the next call event.
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'sync' && changes.ctm_ring_mute?.newValue === false) {
+        ctmRingUnmute('setting turned off');
+    }
+});
 
 // ── MEET CHIME-IN ──────────────────────────────────────────
 // While auto-muted on a live CTM call, the rep can temporarily reopen the Meet
@@ -1606,6 +1698,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 meetAutoMute();
             } else if (ev === 'ctm:end-activity' || ev === 'ctm:wrapup_start' || ev === 'ctm:failed') {
                 meetAutoUnmute();
+            }
+            // Ring-mute rides the same events but splits differently: the ring
+            // is only audible between connecting (dial out) and start (pickup),
+            // so ctm:start UNmutes CTM here while it keeps Meet muted above.
+            // STALE-EVENT GUARD: CTM flushes queued events 6-12s after a hangup
+            // (see dialer.js), and the bridge runs in every frame of every CTM
+            // tab — a late duplicate ctm:connecting arriving AFTER the call
+            // connected must not mute a live call (tab-mute mid-call = the rep
+            // can't hear the customer). Drop any connecting whose source ts
+            // predates the newest connect/end we've processed. Module state —
+            // lost on SW restart, but then the 90s watchdog is the backstop.
+            if (ev === 'ctm:connecting') {
+                if ((msg.payload.ts || Date.now()) >= _ringLastUnmuteTs) ctmRingMute();
+            } else if (ev === 'ctm:start' || ev === 'ctm:end-activity' || ev === 'ctm:wrapup_start' || ev === 'ctm:failed') {
+                _ringLastUnmuteTs = Math.max(_ringLastUnmuteTs, msg.payload.ts || Date.now());
+                ctmRingUnmute(ev);
             }
         }
         try {

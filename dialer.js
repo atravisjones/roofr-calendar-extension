@@ -217,6 +217,7 @@
     t1Count: $("t1-count"),
     t2Count: $("t2-count"),
     testModeToggle: $("test-mode-toggle"),
+    ringMuteToggle: $("ring-mute-toggle"),
     sessionLimitInput: $("session-limit"),
     sessionLimitDisplay: $("session-limit-display"),
     sessionCount: $("session-count"),
@@ -2047,6 +2048,15 @@
     await fetchLeads();
   });
 
+  // Ring-mute toggle — the actual muting happens in the service worker off
+  // CTM bridge events (so it also covers rescheduled/welcome calls and manual
+  // dials); this just flips the shared setting.
+  els.ringMuteToggle?.addEventListener("change", () => {
+    const on = els.ringMuteToggle.checked;
+    try { chrome.storage.sync.set({ ctm_ring_mute: on }); } catch (_) {}
+    log(`ring-mute ${on ? "ON — outbound ring silenced until pickup" : "OFF — ring audible"}`, "act", "ui");
+  });
+
   els.queue.addEventListener("click", (e) => {
     // Phone-number clicks open CTM filtered to that number, reusing the
     // existing CTM tab if one is open. Cmd/Ctrl/shift/middle-click still
@@ -2500,11 +2510,12 @@
     try {
       const s = await chrome.storage.sync.get([
         "ctm_csr", "ctm_user", "ctm_display_name",
-        "dialer_test_mode", "dialer_session_limit",
+        "dialer_test_mode", "dialer_session_limit", "ctm_ring_mute",
       ]);
       resolveRepName(s);
       testMode = !!s.dialer_test_mode;
       els.testModeToggle.checked = testMode;
+      if (els.ringMuteToggle) els.ringMuteToggle.checked = s.ctm_ring_mute !== false;
       if (testMode) log("TEST MODE active on startup", "warn", "init");
       const storedLimit = parseInt(s.dialer_session_limit) || 25;
       sessionLimit = Math.min(100, Math.max(5, storedLimit));
@@ -2518,6 +2529,10 @@
     // value until they reload the tab.
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== "sync") return;
+      // Keep the footer ring-mute toggle in sync with the options page.
+      if ("ctm_ring_mute" in changes && els.ringMuteToggle) {
+        els.ringMuteToggle.checked = changes.ctm_ring_mute.newValue !== false;
+      }
       const watch = ["ctm_csr", "ctm_display_name", "ctm_user"];
       if (!watch.some(k => k in changes)) return;
       chrome.storage.sync.get(watch, (s) => {

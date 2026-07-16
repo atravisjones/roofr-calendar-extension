@@ -2280,6 +2280,12 @@
       }
       return;
     }
+    if (p.type === "ring-mute") {
+      log(p.action === "muted"
+        ? `🔕 ring muted (${p.tabs} CTM tab${p.tabs === 1 ? "" : "s"})`
+        : `🔔 ring audio restored (${p.reason || "call ended"})`, "info", "ring");
+      return;
+    }
     if (p.type === "ctm-event") {
       // FAST-PATH DROPS — bypass everything (log, dedup, handler) for events
       // we never act on. Old bridge instances (pre-2.0.26) still forward

@@ -31,7 +31,7 @@ const SEED_DEFAULTS = {
     show_job_sorting: false,
     show_people: true,
     show_clipboard: true,  // Fixed: was false, now matches options.js default
-    show_reports: false,   // Hidden by default (onInstalled re-seeds with `if (!current[key])`, so true here re-enabled it on every reload)
+    show_reports: false,   // Hidden by default
     // Interface behavior
     show_dock_note: true,
     default_tab: "scanner",
@@ -97,10 +97,7 @@ const SEED_DEFAULTS = {
     ctm_meet_automute: true,
     ctm_meet_mic_automute: true,
     ctm_meet_chime_pill: true,
-    // ctm_ring_mute is deliberately NOT seeded: onInstalled's `if (!current[key])`
-    // check treats a stored `false` as missing, so seeding `true` here would
-    // re-enable ring-mute on every update for reps who turned it off. All
-    // readers default it to true inline instead.
+    ctm_ring_mute: true,
 
     // =====================
     // JOB SORTING SETTINGS
@@ -314,7 +311,11 @@ chrome.runtime.onInstalled.addListener(async () => {
         const current = await chrome.storage.sync.get(Object.keys(SEED_DEFAULTS));
         const toSet = {};
         for (const key in SEED_DEFAULTS) {
-            if (!current[key]) {
+            // Presence check, NOT truthiness: `!current[key]` treated a stored
+            // `false` as missing, so every default-ON toggle a rep turned OFF
+            // (Meet mute, notifications, …) silently flipped back ON at each
+            // update. Only seed keys that have never been set.
+            if (!(key in current)) {
                 toSet[key] = SEED_DEFAULTS[key];
             }
         }
@@ -1325,6 +1326,17 @@ function _queueRingOp(fn) {
 // guard at the AUTODIALER_FROM_BRIDGE call site compares against this.
 let _ringLastUnmuteTs = 0;
 
+// Surface ring-mute activity in the dialer's own log pane (the SW console
+// isn't visible to reps) — rides the same AD_FROM_CTM broadcast the events use.
+function _ringNotifyDialer(action, tabs, reason) {
+    try {
+        chrome.runtime.sendMessage({
+            type: 'AD_FROM_CTM',
+            payload: { type: 'ring-mute', action, tabs, reason },
+        }).catch(() => {});
+    } catch (_) {}
+}
+
 function ctmRingMute() { return _queueRingOp(_ctmRingMuteNow); }
 function ctmRingUnmute(reason) { return _queueRingOp(() => _ctmRingUnmuteNow(reason)); }
 
@@ -1348,6 +1360,7 @@ async function _ctmRingMuteNow() {
         // softphone silent — force-unmute after 90s (longer than any ring).
         chrome.alarms.create(RING_MUTE_WATCHDOG_ALARM, { when: Date.now() + 90 * 1000 });
         console.log('[RingMute] outbound ringing — muted CTM tab(s):', Object.keys(state));
+        _ringNotifyDialer('muted', Object.keys(state).length);
     }
 }
 
@@ -1370,6 +1383,7 @@ async function _ctmRingUnmuteNow(reason) {
         } catch (_) {}
     }
     console.log(`[RingMute] ${reason} — restored ${ids.length} CTM tab(s)`);
+    _ringNotifyDialer('restored', ids.length, reason);
 }
 
 // Flipping the toggle OFF takes effect immediately — if a ring is muted right

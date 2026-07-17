@@ -3251,6 +3251,18 @@ Available:
                 </svg>
                 Join Meet Room
               </a>
+              <!-- Live-call channel controls — shown only while a CTM call has the Meet auto-muted -->
+              <div id="meet-live-controls" style="display:none;flex-direction:column;gap:6px;padding:6px 10px;">
+                <div id="meet-live-status" style="font-size:11px;font-weight:700;opacity:.75;"></div>
+                <div style="display:flex;gap:6px;">
+                  <button id="meet-live-ears" class="btn ghost" title="Hear the Meet while staying muted to them"
+                    style="flex:1;padding:5px 4px;font-size:11px;"></button>
+                  <button id="meet-live-mic" class="btn ghost" title="Let the Meet hear you"
+                    style="flex:1;padding:5px 4px;font-size:11px;"></button>
+                  <button id="meet-live-chime" class="btn ghost" title="Open or close both directions"
+                    style="flex:1;padding:5px 4px;font-size:11px;"></button>
+                </div>
+              </div>
               <div style="border-top:1px solid var(--border);margin:4px 0;"></div>
               <label class="menu-action" style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;">
                 <span>Mute Meet sound during calls</span>

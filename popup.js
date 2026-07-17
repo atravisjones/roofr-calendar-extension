@@ -5423,8 +5423,51 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (m !== meetMenu) m.classList.remove('show');
             });
             meetMenu.classList.toggle('show');
-            if (meetMenu.classList.contains('show')) populateMeetWhisperList();
+            if (meetMenu.classList.contains('show')) {
+                populateMeetWhisperList();
+                populateMeetLiveControls();
+            }
         });
+
+        // Live-call channel controls: while a CTM call has the Meet auto-muted,
+        // mirror the Meet-tab pill here — 👂 hear the group / 🎤 let them hear
+        // you (each its own toggle) + open/close both. Hidden otherwise.
+        async function populateMeetLiveControls() {
+            const wrap = document.getElementById('meet-live-controls');
+            if (!wrap) return;
+            let st = null;
+            try { st = await chrome.runtime.sendMessage({ type: 'MEET_CHANNEL_GET' }); } catch (_) {}
+            if (!st || !st.active) { wrap.style.display = 'none'; return; }
+            wrap.style.display = 'flex';
+            document.getElementById('meet-live-status').textContent = ({
+                muted: '📞 On a call — Meet muted both ways',
+                ears: '📞 On a call — listening to the Meet',
+                mic: '📞 On a call — the Meet hears you',
+                live: '📞 On a call — LIVE in the Meet',
+                whisper: '📞 On a call — manager whispering to you',
+            })[st.mode] || '📞 On a call';
+            const ears = document.getElementById('meet-live-ears');
+            const mic = document.getElementById('meet-live-mic');
+            const chime = document.getElementById('meet-live-chime');
+            ears.textContent = st.ears ? '👂 On' : '👂 Hear';
+            ears.style.color = st.ears ? '#81c995' : '';
+            mic.textContent = st.mic ? '🎤 On' : '🎤 Talk';
+            mic.style.color = st.mic ? '#f28b82' : '';
+            chime.textContent = (st.ears || st.mic) ? 'Re-mute' : 'Open both';
+            ears.onclick = async () => {
+                try { await chrome.runtime.sendMessage({ type: 'MEET_CHANNEL_SET', ears: !st.ears }); } catch (_) {}
+                populateMeetLiveControls();
+            };
+            mic.onclick = async () => {
+                try { await chrome.runtime.sendMessage({ type: 'MEET_CHANNEL_SET', mic: !st.mic }); } catch (_) {}
+                populateMeetLiveControls();
+            };
+            chime.onclick = async () => {
+                try { await chrome.runtime.sendMessage({ type: 'MEET_CHIME_TOGGLE' }); } catch (_) {}
+                // Chime toggle is fire-and-forget in the SW — give it a beat to apply.
+                setTimeout(populateMeetLiveControls, 400);
+            };
+        }
 
         // Whisper: list reps currently on CTM calls; clicking one asks THEIR
         // extension (via roofr-search /api/meet-whisper) to unmute their Meet

@@ -1225,28 +1225,49 @@ function _meetSetMicMuted(mute) {
     return { found: true, changed: true };
 }
 
-async function meetAutoMute() {
+// All Meet mute ops are serialized through one promise chain (same pattern as
+// _queueRingOp): ctm:connecting and ctm:start arrive ~0.1s apart and BOTH fire
+// meetAutoMute, and a call-end or a rep's channel click can land while a mute
+// is still mid-flight. Unserialized, the concurrent read-modify-writes of
+// MEET_AUTOMUTED_KEY drop each other's ownership flags (Meet left muted after
+// the call) and an in-flight auto-mute can stomp a direction the rep just
+// deliberately opened.
+let _meetOpChain = Promise.resolve();
+function _queueMeetOp(fn) {
+    const p = _meetOpChain.then(fn);
+    _meetOpChain = p.then(() => {}, (e) => console.warn('[MeetMute] op failed:', e?.message));
+    return p;
+}
+// Bumped on every deliberate channel change and call-end restore — lets a slow
+// whisper fetch detect that the world moved while it was in flight.
+let _meetChannelRev = 0;
+
+function meetAutoMute() { return _queueMeetOp(_meetAutoMuteNow); }
+function meetAutoUnmute() { return _queueMeetOp(_meetAutoUnmuteNow); }
+
+async function _meetAutoMuteNow() {
     try {
         const s = await chrome.storage.sync.get({ ctm_meet_automute: true, ctm_meet_mic_automute: true });
         if (s.ctm_meet_automute === false && s.ctm_meet_mic_automute === false) return;
         const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
         if (tabs.length === 0) return;
-        const store = await chrome.storage.session.get([MEET_AUTOMUTED_KEY, MEET_CHIME_KEY, MEET_WHISPER_KEY]);
-        // Rep deliberately opened the Meet channel mid-call (chime-in), or a
-        // manager whispered their ears open — don't fight either if another ctm
-        // event fires while the channel is open. Chime-out and call-end both
-        // clear the flags before re-muting.
-        if (store[MEET_CHIME_KEY] || store[MEET_WHISPER_KEY]) return;
+        const store = await chrome.storage.session.get([MEET_AUTOMUTED_KEY, MEET_OPEN_KEY, MEET_WHISPER_KEY]);
+        // Per-direction: never fight a direction the rep deliberately opened
+        // mid-call (or a manager whispered open) when another ctm event fires
+        // while the channel is open — but closed directions still (re-)mute.
+        // Channel-close and call-end clear the flags before re-muting.
+        const open = store[MEET_OPEN_KEY] || {};
+        const earsOpen = !!open.ears || !!store[MEET_WHISPER_KEY];
         const state = store[MEET_AUTOMUTED_KEY] || {};
         for (const tab of tabs) {
             const entry = state[tab.id] || { audio: false, mic: false };
-            if (s.ctm_meet_automute !== false && !tab.mutedInfo?.muted) {
+            if (s.ctm_meet_automute !== false && !earsOpen && !tab.mutedInfo?.muted) {
                 try {
                     await chrome.tabs.update(tab.id, { muted: true });
                     entry.audio = true;
                 } catch (_) {}
             }
-            if (s.ctm_meet_mic_automute !== false && !entry.mic) {
+            if (s.ctm_meet_mic_automute !== false && !open.mic && !entry.mic) {
                 try {
                     const [r] = await chrome.scripting.executeScript({
                         target: { tabId: tab.id },
@@ -1260,7 +1281,8 @@ async function meetAutoMute() {
         }
         if (Object.keys(state).length > 0) {
             await chrome.storage.session.set({ [MEET_AUTOMUTED_KEY]: state });
-            await meetShowChimePill(Object.keys(state).map(Number), 'muted');
+            const whisper = store[MEET_WHISPER_KEY];
+            await meetShowChimePill(Object.keys(state).map(Number), _meetPillMode(open, whisper), whisper?.from);
             console.log('[MeetMute] call live — muted Meet tab(s):', state);
         }
     } catch (e) {
@@ -1268,13 +1290,14 @@ async function meetAutoMute() {
     }
 }
 
-async function meetAutoUnmute() {
+async function _meetAutoUnmuteNow() {
     try {
+        _meetChannelRev++;
         const store = await chrome.storage.session.get(MEET_AUTOMUTED_KEY);
         const state = store[MEET_AUTOMUTED_KEY] || {};
         const ids = Object.keys(state);
         if (ids.length === 0) return;
-        await chrome.storage.session.remove([MEET_AUTOMUTED_KEY, MEET_CHIME_KEY, MEET_WHISPER_KEY]);
+        await chrome.storage.session.remove([MEET_AUTOMUTED_KEY, MEET_OPEN_KEY, MEET_WHISPER_KEY]);
         for (const idStr of ids) {
             const tabId = Number(idStr);
             if (state[idStr].audio) {
@@ -1394,13 +1417,16 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // SW every 2s while open, keeping it alive for the whole call.
 ctmRingUnmute('sw-init');
 
-// ── MEET CHIME-IN ──────────────────────────────────────────
-// While auto-muted on a live CTM call, the rep can temporarily reopen the Meet
-// channel — mic AND tab audio — to talk with the group, then snap back to
-// muted. Triggered by the Alt+Shift+M command or the pill button injected at
-// the top of the Meet tab. Chime state lives in storage.session; chime-out
-// re-runs meetAutoMute() and call end clears everything via meetAutoUnmute().
-const MEET_CHIME_KEY = 'meet_chime_active';
+// ── MEET CHIME-IN / CHANNEL CONTROLS ───────────────────────
+// While auto-muted on a live CTM call, the rep can reopen the Meet channel —
+// per DIRECTION. ears = the Meet tab's sound (hear the group), mic = Meet's
+// own mic (the group hears you). Controls: 👂/🎤 buttons on the pill injected
+// at the top of the Meet tab, matching buttons in the side-panel Meet menu,
+// and the big chime toggle (pill button / Alt+Shift+M) which opens or closes
+// BOTH at once. Open state lives in storage.session as { mic, ears };
+// closing a direction re-applies its auto-mute (per the rep's sync toggles)
+// and call end clears everything via meetAutoUnmute().
+const MEET_OPEN_KEY = 'meet_channel_open';
 // Manager→rep WHISPER: while a rep is auto-muted on a call, a manager can
 // remotely open the rep's EARS — unmute the Meet tab's sound so the rep hears
 // the group; the rep's mic stays muted (the Meet never hears the customer
@@ -1410,6 +1436,76 @@ const MEET_CHIME_KEY = 'meet_chime_active';
 const MEET_WHISPER_KEY = 'meet_whisper_active';
 // Same internal key the panel uses for roofr-search server-to-server calls.
 const ROOFR_SEARCH_INTERNAL_KEY = 'WSDnmjsudtcCEWvb_TKQKcyWS3TXtcjWqfuLMsnmT96XfqZF';
+
+// Pill display mode from the channel-open state. A whisper counts as open
+// ears, but shows its own mode (who's talking) unless the rep's mic is also
+// open — then it's just 'live'.
+function _meetPillMode(open, whisper) {
+    const mic = !!(open && open.mic);
+    const ears = !!(open && open.ears) || !!whisper;
+    if (mic && ears) return 'live';
+    if (mic) return 'mic';
+    if (whisper) return 'whisper';
+    if (ears) return 'ears';
+    return 'muted';
+}
+
+// Open/close one or both directions of the Meet channel mid-call. Opening is
+// a deliberate rep action and overrides everything (even a hand-muted mic);
+// closing returns that direction to its auto-mute baseline — muted only if
+// the rep's sync toggle for it is enabled, same as call start. No-op unless a
+// live-call auto-mute is in effect.
+function meetChannelSet(change) { return _queueMeetOp(() => _meetChannelSetNow(change)); }
+
+async function _meetChannelSetNow(change) {
+    try {
+        _meetChannelRev++;
+        const store = await chrome.storage.session.get([MEET_AUTOMUTED_KEY, MEET_OPEN_KEY, MEET_WHISPER_KEY]);
+        const state = store[MEET_AUTOMUTED_KEY] || {};
+        const ids = Object.keys(state).map(Number);
+        if (ids.length === 0) return null;
+        const open = store[MEET_OPEN_KEY] || {};
+        if (typeof change.ears === 'boolean') open.ears = change.ears;
+        if (typeof change.mic === 'boolean') open.mic = change.mic;
+        // Explicitly closing ears also dismisses an active manager whisper —
+        // otherwise the whisper flag would hold the tab unmuted anyway.
+        let whisper = store[MEET_WHISPER_KEY] || null;
+        if (change.ears === false && whisper) {
+            await chrome.storage.session.remove(MEET_WHISPER_KEY);
+            whisper = null;
+        }
+        await chrome.storage.session.set({ [MEET_OPEN_KEY]: open });
+        const s = await chrome.storage.sync.get({ ctm_meet_automute: true, ctm_meet_mic_automute: true });
+        const earsOpen = !!open.ears || !!whisper;
+        for (const tabId of ids) {
+            if (typeof change.ears === 'boolean') {
+                if (earsOpen) {
+                    try { await chrome.tabs.update(tabId, { muted: false }); } catch (_) {}
+                } else if (s.ctm_meet_automute !== false) {
+                    try { await chrome.tabs.update(tabId, { muted: true }); } catch (_) {}
+                }
+            }
+            if (typeof change.mic === 'boolean') {
+                if (open.mic || s.ctm_meet_mic_automute !== false) {
+                    try {
+                        await chrome.scripting.executeScript({
+                            target: { tabId },
+                            func: _meetSetMicMuted,
+                            args: [!open.mic],
+                        });
+                    } catch (_) {}
+                }
+            }
+        }
+        const mode = _meetPillMode(open, whisper);
+        await meetShowChimePill(ids, mode, whisper?.from);
+        console.log('[MeetMute] channel set', change, '→', mode);
+        return { active: true, mic: !!open.mic, ears: earsOpen, mode };
+    } catch (e) {
+        console.warn('[MeetMute] channel set failed:', e.message);
+        return null;
+    }
+}
 
 // Runs INSIDE the Meet tab (isolated world, so chrome.runtime messaging works).
 // Self-contained: builds/updates/removes the floating status pill, and drives
@@ -1425,33 +1521,76 @@ function _meetChimePill(mode, fromName) {
         if (pill) pill.remove();
         return;
     }
+    // v2 layout (per-direction 👂/🎤 buttons) — rebuild any pre-upgrade pill
+    // left behind by an extension update mid-call.
+    if (pill && pill.dataset.v !== '2') { pill.remove(); pill = null; }
     if (!pill) {
         pill = document.createElement('div');
         pill.id = ID;
-        pill.title = 'Alt+Shift+M also toggles this';
+        pill.dataset.v = '2';
+        pill.title = 'Alt+Shift+M opens/closes both directions';
         pill.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);' +
-            'z-index:2147483647;display:flex;align-items:center;gap:10px;padding:7px 12px;' +
+            'z-index:2147483647;display:flex;align-items:center;gap:8px;padding:7px 12px;' +
             'border-radius:24px;font:13px/1.2 "Google Sans",Roboto,Arial,sans-serif;color:#fff;' +
             'box-shadow:0 2px 10px rgba(0,0,0,.45);';
         const label = document.createElement('span');
         label.id = ID + 'Label';
-        const btn = document.createElement('button');
-        btn.id = ID + 'Btn';
-        btn.style.cssText = 'border:0;border-radius:16px;padding:5px 12px;cursor:pointer;' +
-            'font:600 12px/1 "Google Sans",Roboto,Arial,sans-serif;background:#8ab4f8;color:#202124;';
+        const mkBtn = (suffix) => {
+            const b = document.createElement('button');
+            b.id = ID + suffix;
+            b.style.cssText = 'border:0;border-radius:16px;padding:5px 10px;cursor:pointer;white-space:nowrap;' +
+                'font:600 12px/1 "Google Sans",Roboto,Arial,sans-serif;background:#8ab4f8;color:#202124;';
+            return b;
+        };
+        // Direction toggles read the CURRENT state off the pill dataset at
+        // click time — the pill re-renders after every state change, so the
+        // next click always targets the opposite of what's shown.
+        const ears = mkBtn('Ears');
+        ears.title = 'Hear the Meet while staying muted to them';
+        ears.addEventListener('click', () => {
+            try { chrome.runtime.sendMessage({ type: 'MEET_CHANNEL_SET', ears: pill.dataset.ears !== '1' }); } catch (_) {}
+        });
+        const mic = mkBtn('Mic');
+        mic.title = 'Let the Meet hear you (your customer call becomes audible to them)';
+        mic.addEventListener('click', () => {
+            try { chrome.runtime.sendMessage({ type: 'MEET_CHANNEL_SET', mic: pill.dataset.mic !== '1' }); } catch (_) {}
+        });
+        const btn = mkBtn('Btn');
         btn.addEventListener('click', () => {
             try { chrome.runtime.sendMessage({ type: 'MEET_CHIME_TOGGLE' }); } catch (_) {}
         });
         pill.appendChild(label);
+        pill.appendChild(ears);
+        pill.appendChild(mic);
         pill.appendChild(btn);
         (document.body || document.documentElement).appendChild(pill);
     }
     const label = document.getElementById(ID + 'Label');
+    const earsBtn = document.getElementById(ID + 'Ears');
+    const micBtn = document.getElementById(ID + 'Mic');
     const btn = document.getElementById(ID + 'Btn');
+    const earsOn = mode === 'live' || mode === 'ears' || mode === 'whisper';
+    const micOn = mode === 'live' || mode === 'mic';
+    pill.dataset.ears = earsOn ? '1' : '0';
+    pill.dataset.mic = micOn ? '1' : '0';
+    earsBtn.textContent = earsOn ? '👂 On' : '👂 Off';
+    earsBtn.style.background = earsOn ? '#81c995' : '#5f6368';
+    earsBtn.style.color = earsOn ? '#202124' : '#e8eaed';
+    micBtn.textContent = micOn ? '🎤 On' : '🎤 Off';
+    micBtn.style.background = micOn ? '#f28b82' : '#5f6368';
+    micBtn.style.color = micOn ? '#202124' : '#e8eaed';
     if (mode === 'live') {
         label.textContent = 'Live in Meet — the group can hear you';
         btn.textContent = 'Re-mute';
         pill.style.background = '#b3261e';
+    } else if (mode === 'mic') {
+        label.textContent = '🎤 The group can hear you — you can\'t hear them';
+        btn.textContent = 'Re-mute';
+        pill.style.background = '#e37400';
+    } else if (mode === 'ears') {
+        label.textContent = '👂 Listening in — the group can\'t hear you';
+        btn.textContent = 'Re-mute';
+        pill.style.background = '#188038';
     } else if (mode === 'whisper') {
         label.textContent = `🔊 ${fromName || 'Manager'} is talking to you — you're still muted`;
         btn.textContent = 'Reply';
@@ -1480,7 +1619,7 @@ function _meetChimePill(mode, fromName) {
     }
 }
 
-async function meetShowChimePill(tabIds, mode) {
+async function meetShowChimePill(tabIds, mode, fromName) {
     try {
         if (mode !== 'remove') {
             const s = await chrome.storage.sync.get({ ctm_meet_chime_pill: true });
@@ -1491,7 +1630,7 @@ async function meetShowChimePill(tabIds, mode) {
                 await chrome.scripting.executeScript({
                     target: { tabId },
                     func: _meetChimePill,
-                    args: [mode],
+                    args: [mode, fromName ?? null],
                 });
             } catch (_) {}
         }
@@ -1500,34 +1639,24 @@ async function meetShowChimePill(tabIds, mode) {
     }
 }
 
-async function meetChimeToggle() {
+// Big toggle (pill button / Alt+Shift+M / panel button): anything open →
+// close BOTH; fully muted (or whisper-only — that's the Reply action) →
+// open BOTH. Read-then-act runs as ONE queued op so a concurrent event can't
+// change the state between the read and the set.
+function meetChimeToggle() { return _queueMeetOp(_meetChimeToggleNow); }
+
+async function _meetChimeToggleNow() {
     try {
-        const store = await chrome.storage.session.get([MEET_AUTOMUTED_KEY, MEET_CHIME_KEY]);
+        const store = await chrome.storage.session.get([MEET_AUTOMUTED_KEY, MEET_OPEN_KEY]);
         const state = store[MEET_AUTOMUTED_KEY] || {};
-        const ids = Object.keys(state).map(Number);
-        if (ids.length === 0) return; // no live-call auto-mute in effect — nothing to chime into
-        if (!store[MEET_CHIME_KEY]) {
-            // Open the channel: unmute BOTH directions on every tab we auto-muted.
-            // Deliberate rep action, so this overrides even a hand-muted mic.
-            for (const tabId of ids) {
-                try { await chrome.tabs.update(tabId, { muted: false }); } catch (_) {}
-                try {
-                    await chrome.scripting.executeScript({
-                        target: { tabId },
-                        func: _meetSetMicMuted,
-                        args: [false],
-                    });
-                } catch (_) {}
-            }
-            await chrome.storage.session.remove(MEET_WHISPER_KEY); // full open supersedes a whisper
-            await chrome.storage.session.set({ [MEET_CHIME_KEY]: true });
-            await meetShowChimePill(ids, 'live');
-            console.log('[MeetMute] chime-in — Meet channel open on', ids.length, 'tab(s)');
-        } else {
-            // Snap back: clear the flags FIRST so meetAutoMute doesn't skip.
-            await chrome.storage.session.remove([MEET_CHIME_KEY, MEET_WHISPER_KEY]);
-            await meetAutoMute(); // re-applies per-toggle mutes + shows the 'muted' pill
+        if (Object.keys(state).length === 0) return; // no live-call auto-mute in effect — nothing to chime into
+        const open = store[MEET_OPEN_KEY] || {};
+        if (open.mic || open.ears) {
+            await _meetChannelSetNow({ mic: false, ears: false });
             console.log('[MeetMute] chime-out — re-muted');
+        } else {
+            await _meetChannelSetNow({ mic: true, ears: true });
+            console.log('[MeetMute] chime-in — Meet channel open');
         }
     } catch (e) {
         console.warn('[MeetMute] chime toggle failed:', e.message);
@@ -1622,6 +1751,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true });
         return false;
     }
+    if (msg?.type === 'MEET_CHANNEL_SET') {
+        // Per-direction control from the pill's 👂/🎤 buttons or the panel's
+        // Meet menu: { ears?: bool, mic?: bool }.
+        (async () => {
+            sendResponse({ ok: true, state: await meetChannelSet({ ears: msg.ears, mic: msg.mic }) });
+        })();
+        return true;
+    }
+    if (msg?.type === 'MEET_CHANNEL_GET') {
+        // Panel asks for the live-call channel state to render its controls.
+        (async () => {
+            try {
+                const store = await chrome.storage.session.get([MEET_AUTOMUTED_KEY, MEET_OPEN_KEY, MEET_WHISPER_KEY]);
+                const state = store[MEET_AUTOMUTED_KEY] || {};
+                const open = store[MEET_OPEN_KEY] || {};
+                const whisper = store[MEET_WHISPER_KEY];
+                sendResponse({
+                    active: Object.keys(state).length > 0,
+                    mic: !!open.mic,
+                    ears: !!open.ears || !!whisper,
+                    mode: _meetPillMode(open, whisper),
+                });
+            } catch (e) {
+                sendResponse({ active: false, error: e.message });
+            }
+        })();
+        return true;
+    }
     if (msg?.type === 'MEET_WHISPER_POLL') {
         // From the pill's 4s timer on a Meet tab during a live call. Checks the
         // server for a pending whisper aimed at this rep; on a hit, opens the
@@ -1630,17 +1787,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // mode either way so the pill self-corrects.
         (async () => {
             try {
-                const store = await chrome.storage.session.get([MEET_AUTOMUTED_KEY, MEET_CHIME_KEY, MEET_WHISPER_KEY]);
+                const store = await chrome.storage.session.get([MEET_AUTOMUTED_KEY, MEET_OPEN_KEY, MEET_WHISPER_KEY]);
                 const state = store[MEET_AUTOMUTED_KEY] || {};
                 if (Object.keys(state).length === 0) { sendResponse({ mode: null }); return; }
-                if (store[MEET_CHIME_KEY]) { sendResponse({ mode: 'live' }); return; }
-                if (store[MEET_WHISPER_KEY]) {
-                    sendResponse({ mode: 'whisper', from: store[MEET_WHISPER_KEY].from });
+                const open = store[MEET_OPEN_KEY] || {};
+                const whisper = store[MEET_WHISPER_KEY];
+                if (open.mic || open.ears || whisper) {
+                    sendResponse({ mode: _meetPillMode(open, whisper), from: whisper?.from });
                     return;
                 }
                 const s = await chrome.storage.sync.get({ ctm_display_name: '', scanner_name: '' });
                 const identity = (s.ctm_display_name || s.scanner_name || '').trim();
                 if (!identity) { sendResponse({ mode: 'muted' }); return; }
+                const revAtFetch = _meetChannelRev;
                 const r = await fetch(
                     `https://roofr-search.vercel.app/api/meet-whisper?target=${encodeURIComponent(identity)}`,
                     { cache: 'no-store', headers: { 'X-Internal-Key': ROOFR_SEARCH_INTERNAL_KEY } });
@@ -1648,12 +1807,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 const w = (j?.success && Array.isArray(j.whispers) && j.whispers[0]) || null;
                 if (!w) { sendResponse({ mode: 'muted' }); return; }
                 const from = w.requested_by || 'Manager';
-                const tabId = sender?.tab?.id;
-                if (tabId != null) {
-                    try { await chrome.tabs.update(tabId, { muted: false }); } catch (_) {}
-                }
-                await chrome.storage.session.set({ [MEET_WHISPER_KEY]: { from, at: Date.now() } });
-                console.log('[MeetMute] whisper from', from, '— opened rep ears on tab', tabId);
+                // Apply as a queued op, re-checking the world after the network
+                // round-trip: the rep may have changed the channel or the call
+                // may have ended while the fetch was in flight — the whisper
+                // must not override either.
+                const applied = await _queueMeetOp(async () => {
+                    if (_meetChannelRev !== revAtFetch) return false;
+                    const st2 = await chrome.storage.session.get(MEET_AUTOMUTED_KEY);
+                    const tabs2 = st2[MEET_AUTOMUTED_KEY] || {};
+                    if (Object.keys(tabs2).length === 0) return false;
+                    // A whisper opens the rep's ears on EVERY auto-muted Meet
+                    // tab — the flag is global, so the effect must be too.
+                    for (const idStr of Object.keys(tabs2)) {
+                        try { await chrome.tabs.update(Number(idStr), { muted: false }); } catch (_) {}
+                    }
+                    await chrome.storage.session.set({ [MEET_WHISPER_KEY]: { from, at: Date.now() } });
+                    return true;
+                });
+                if (!applied) { sendResponse({ mode: 'muted' }); return; }
+                console.log('[MeetMute] whisper from', from, '— opened rep ears');
                 sendResponse({ mode: 'whisper', from });
             } catch (e) {
                 sendResponse({ mode: 'muted', error: e.message });

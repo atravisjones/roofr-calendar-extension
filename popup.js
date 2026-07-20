@@ -251,6 +251,162 @@ document.addEventListener('DOMContentLoaded', async () => {
     const RESEARCH_HISTORY_KEY = 'roofr_research_history';
     let dockResearchHistory = [];
 
+    function checklistCurrentBlock(editable) {
+        const selection = window.getSelection();
+        if (!selection || !selection.rangeCount) return null;
+        let node = selection.getRangeAt(0).startContainer;
+        if (!editable.contains(node)) return null;
+        while (node && node.parentNode !== editable) node = node.parentNode;
+        return node && node.nodeType === Node.ELEMENT_NODE ? node : null;
+    }
+
+    function placeChecklistCaret(block) {
+        const range = document.createRange();
+        range.selectNodeContents(block);
+        range.collapse(true);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+    }
+
+    // Convert one block element into a checkbox item. Returns true if it changed.
+    function convertBlockToCheckbox(block) {
+        if (block && (block.tagName === 'DIV' || block.tagName === 'P') && !block.classList.contains('note-chk')) {
+            block.classList.add('note-chk');
+            block.setAttribute('data-checked', '0');
+            return true;
+        }
+        return false;
+    }
+
+    // Strip the checkbox off a block, leaving a normal line (keeps its text). Returns true if it changed.
+    function removeCheckbox(block) {
+        if (block && block.classList.contains('note-chk')) {
+            block.classList.remove('note-chk');
+            block.removeAttribute('data-checked');
+            return true;
+        }
+        return false;
+    }
+
+    function insertCheckbox(editable) {
+        const selection = window.getSelection();
+        // Read the selection BEFORE focusing — focus() can collapse a multi-line highlight.
+        let range = (selection && selection.rangeCount) ? selection.getRangeAt(0) : null;
+        if (!range || !editable.contains(range.commonAncestorContainer)) {
+            if (document.activeElement !== editable) editable.focus();
+            range = (selection && selection.rangeCount) ? selection.getRangeAt(0) : null;
+        }
+
+        if (range && !range.collapsed) {
+            // Find every top-level line the selection TOUCHES. Using intersectsNode
+            // (not the range endpoints) is robust: a multi-line drag often reports
+            // startContainer === the editable itself, which endpoint-walking can't map
+            // back to a line. Works for 1 line or many.
+            const spanned = Array.from(editable.children).filter(el =>
+                (el.tagName === 'DIV' || el.tagName === 'P') && range.intersectsNode(el));
+            if (spanned.length) {
+                // Toggle: if every touched line is already a checkbox, remove them; else add.
+                const allBoxes = spanned.every(el => el.classList.contains('note-chk'));
+                spanned.forEach(allBoxes ? removeCheckbox : convertBlockToCheckbox);
+                editable.dispatchEvent(new Event('input', { bubbles: true }));
+                return;
+            }
+            // No per-line block elements (bare text / <br>-separated lines): rebuild the
+            // selected text as one checkbox per non-empty line.
+            const lines = selection.toString().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            if (lines.length) {
+                range.deleteContents();
+                const frag = document.createDocumentFragment();
+                let last = null;
+                lines.forEach(line => {
+                    const d = document.createElement('div');
+                    d.className = 'note-chk';
+                    d.setAttribute('data-checked', '0');
+                    d.textContent = line;
+                    frag.appendChild(d);
+                    last = d;
+                });
+                range.insertNode(frag);
+                if (last) placeChecklistCaret(last);
+                editable.dispatchEvent(new Event('input', { bubbles: true }));
+                return;
+            }
+        }
+
+        // Collapsed caret (no selection): convert the current line, else drop in a fresh box.
+        const block = checklistCurrentBlock(editable);
+        if (block && block.classList.contains('note-chk')) {
+            // Hitting the button again on a checkbox line removes it.
+            removeCheckbox(block);
+        } else if (!convertBlockToCheckbox(block)) {
+            // Empty editable / caret not in a plain block: drop in a fresh checkbox.
+            const checkbox = document.createElement('div');
+            checkbox.className = 'note-chk';
+            checkbox.setAttribute('data-checked', '0');
+            checkbox.innerHTML = '<br>';
+            editable.appendChild(checkbox);
+            placeChecklistCaret(checkbox);
+        }
+        editable.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    function clearChecks(editable) {
+        editable.querySelectorAll('.note-chk[data-checked="1"]').forEach(el => el.setAttribute('data-checked', '0'));
+        editable.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    function attachChecklist(editable, save) {
+        if (editable.dataset.checklistAttached) return;
+        editable.dataset.checklistAttached = '1';
+        editable.addEventListener('click', (e) => {
+            if (e.target.classList.contains('note-chk') && e.offsetX <= 20) {
+                e.preventDefault();
+                e.target.setAttribute('data-checked', e.target.getAttribute('data-checked') === '1' ? '0' : '1');
+                save();
+            }
+        });
+        editable.addEventListener('keydown', (e) => {
+            // Backspace at the very start of a checkbox line strips the box (keeps the text)
+            // instead of merging into the line above.
+            if (e.key === 'Backspace') {
+                const sel = window.getSelection();
+                if (sel && sel.isCollapsed && sel.rangeCount) {
+                    const block = checklistCurrentBlock(editable);
+                    if (block && block.classList.contains('note-chk')) {
+                        const caret = sel.getRangeAt(0);
+                        const pre = document.createRange();
+                        pre.selectNodeContents(block);
+                        pre.setEnd(caret.startContainer, caret.startOffset);
+                        if (pre.toString() === '') {
+                            e.preventDefault();
+                            removeCheckbox(block);
+                            save();
+                        }
+                    }
+                }
+                return;
+            }
+            if (e.key !== 'Enter' || e.shiftKey) return;
+            const block = checklistCurrentBlock(editable);
+            if (!block || !block.classList.contains('note-chk')) return;
+            e.preventDefault();
+            if (block.textContent.trim() === '') {
+                block.classList.remove('note-chk');
+                block.removeAttribute('data-checked');
+                placeChecklistCaret(block);
+            } else {
+                const checkbox = document.createElement('div');
+                checkbox.className = 'note-chk';
+                checkbox.setAttribute('data-checked', '0');
+                checkbox.innerHTML = '<br>';
+                block.insertAdjacentElement('afterend', checkbox);
+                placeChecklistCaret(checkbox);
+            }
+            save();
+        });
+    }
+
     function switchDockNotesTab(tab) {
         const showResearch = tab === 'research';
         if (dockResearchTab) dockResearchTab.classList.toggle('active', showResearch);
@@ -4148,6 +4304,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // === DOCK NOTES UNDO / REDO ===
     const dockNoteUndo = document.getElementById('dock-note-undo');
     const dockNoteRedo = document.getElementById('dock-note-redo');
+    const dockNoteCheckboxBtn = document.getElementById('dock-note-checkbox-btn');
+    const dockNoteClearchecksBtn = document.getElementById('dock-note-clearchecks-btn');
 
     if (dockNoteUndo && dockNoteInput) {
         dockNoteUndo.addEventListener('click', () => {
@@ -4160,6 +4318,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             dockNoteInput.focus();
             document.execCommand('redo');
         });
+    }
+    if (dockNoteInput) {
+        attachChecklist(dockNoteInput, () => dockNoteInput.dispatchEvent(new Event('input', { bubbles: true })));
+    }
+    if (dockNoteCheckboxBtn && dockNoteInput) {
+        // mousedown + preventDefault keeps the note's selection (so a multi-line
+        // highlight survives the click); the button never steals focus.
+        dockNoteCheckboxBtn.addEventListener('mousedown', (e) => { e.preventDefault(); insertCheckbox(dockNoteInput); });
+    }
+    if (dockNoteClearchecksBtn && dockNoteInput) {
+        dockNoteClearchecksBtn.addEventListener('click', () => clearChecks(dockNoteInput));
     }
 
     // Ctrl+Shift+Z as alternative redo (browser handles Ctrl+Z/Y natively in contenteditable)
@@ -9245,6 +9414,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             actions.appendChild(copyBtn);
 
+            const checkboxBtn = document.createElement('button');
+            checkboxBtn.textContent = '☐';
+            checkboxBtn.className = 'btn-icon';
+            checkboxBtn.title = 'Checkbox — toggle on/off (highlight lines first)';
+            // mousedown + preventDefault keeps the card's selection so a multi-line
+            // highlight survives the click instead of collapsing to a caret.
+            checkboxBtn.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                insertCheckbox(contentDiv);
+            });
+            actions.appendChild(checkboxBtn);
+
             const dropdown = document.createElement('div');
             dropdown.className = 'dropdown';
 
@@ -9290,6 +9472,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 document.body.appendChild(a); a.click(); document.body.removeChild(a);
             });
             addAction('Duplicate', () => addNewClipboard(item.content, `${item.title} (Copy)`));
+            addAction('Clear checks', () => clearChecks(contentDiv));
 
             optsBtn.addEventListener('click', (e) => { e.stopPropagation(); menu.classList.toggle('show'); });
             dropdown.appendChild(optsBtn);
@@ -9314,6 +9497,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 clipboards[index].content = contentDiv.innerHTML;
                 debouncedSaveClipboards();
             });
+            attachChecklist(contentDiv, () => contentDiv.dispatchEvent(new Event('input', { bubbles: true })));
 
             contentDiv.addEventListener('focus', () => {
                 const rawText = contentDiv.innerText.trim();

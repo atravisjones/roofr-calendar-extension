@@ -1761,6 +1761,32 @@
       color: var(--text-light);
     }
 
+    .dock-note-editable .note-chk,
+    .note-content .note-chk {
+      position: relative;
+      padding-left: 22px;
+      cursor: text;
+    }
+
+    .dock-note-editable .note-chk::before,
+    .note-content .note-chk::before {
+      content: "\2610";
+      position: absolute; left: 0; top: 0;
+      cursor: pointer; user-select: none;
+    }
+
+    .dock-note-editable .note-chk[data-checked="1"]::before,
+    .note-content .note-chk[data-checked="1"]::before {
+      content: "\2611";
+      color: var(--primary);
+    }
+
+    .dock-note-editable .note-chk[data-checked="1"],
+    .note-content .note-chk[data-checked="1"] {
+      text-decoration: line-through;
+      opacity: 0.55;
+    }
+
     /* Sticky-note pastel coloring. A colored note is always light with dark
        text, so it stays readable in both light and dark themes. */
     .note-card.note-colored { background: var(--note-bg); }
@@ -3338,6 +3364,8 @@ Available:
           <div style="display: flex; align-items: center; gap: 4px;">
             <button id="dock-note-undo" class="btn-icon-sm" title="Undo (Ctrl+Z)">↶</button>
             <button id="dock-note-redo" class="btn-icon-sm" title="Redo (Ctrl+Y)">↷</button>
+            <button id="dock-note-checkbox-btn" class="btn-icon-sm" title="Checkbox — toggle on/off (highlight lines to convert several)">☐</button>
+            <button id="dock-note-clearchecks-btn" class="btn-icon-sm" title="Uncheck all" style="width: auto; padding: 0 6px;">Clear ☑</button>
           </div>
           <!-- Popup Window Button -->
           <button id="popout-btn" class="btn ghost" title="Open in Popup Window" style="padding: 4px 8px; font-size: 12px;">

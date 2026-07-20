@@ -659,7 +659,7 @@
     .section {
       display: none;
       animation: fadeIn 0.2s ease-out;
-      padding-bottom: 140px; /* Space for bottom dock (find bar + quick notes) */
+      padding-bottom: 260px; /* Space for bottom dock (find bar + quick notes/research) */
     }
 
     .section.active {
@@ -2016,6 +2016,118 @@
       gap: 8px;
     }
 
+    .dock-notes-tabs {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    /* Match the app's native segmented control (.nav-segment / .nav-tab):
+       a gray pill track with a raised surface pill + primary-blue text when active. */
+    .dock-notes-tab-group {
+      display: flex;
+      background: var(--border);
+      padding: 3px;
+      border-radius: 99px;
+      overflow: hidden;
+    }
+
+    .dock-notes-tab {
+      padding: 3px 12px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      border: none;
+      border-radius: 99px;
+      background: transparent;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+
+    .dock-notes-tab.active {
+      background: var(--surface);
+      color: var(--primary);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    }
+
+    .dock-notes-pane {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .dock-notes-pane[hidden] {
+      display: none;
+    }
+
+    .dock-research-list {
+      height: var(--dock-pane-h, 150px);
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .dock-research-empty {
+      padding: 10px 2px;
+      font-size: 0.75rem;
+      color: var(--textSecondary);
+    }
+
+    .dock-research-card {
+      padding: 6px 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text-main);
+      font-size: 0.75rem;
+    }
+
+    .dock-research-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .dock-research-card-address {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 600;
+    }
+
+    .dock-research-card-actions {
+      display: flex;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .dock-research-action,
+    .dock-research-clear {
+      padding: 2px 6px;
+      font-size: 0.65rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--text-main);
+      cursor: pointer;
+    }
+
+    .dock-research-action:hover,
+    .dock-research-clear:hover {
+      background: var(--bg-hover, rgba(128, 128, 128, 0.18));
+    }
+
+    .dock-research-clear:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
     .dock-notes-row {
       display: flex;
       gap: 8px;
@@ -2041,8 +2153,7 @@
 
     .dock-notes .dock-note-editable {
       width: 100%;
-      min-height: 36px;
-      max-height: 50vh;
+      height: var(--dock-pane-h, 150px);
       padding: 6px 8px;
       font-size: 0.9rem;
       border: 1px solid var(--border);
@@ -3201,6 +3312,19 @@ Available:
 
       <!-- Dock Notes Scratchpad -->
       <div id="dock-notes-container" class="dock-notes">
+        <div class="dock-notes-tabs">
+          <div class="dock-notes-tab-group">
+            <button id="dock-notes-tab" class="dock-notes-tab active" type="button">Notes</button>
+            <button id="dock-research-tab" class="dock-notes-tab" type="button">Research</button>
+          </div>
+          <button id="dock-research-clear" class="dock-research-clear" type="button" hidden>Clear</button>
+        </div>
+        <div id="dock-research-pane" class="dock-notes-pane" hidden>
+          <div id="dock-research-list" class="dock-research-list">
+            <div class="dock-research-empty">Search an address to see property research here.</div>
+          </div>
+        </div>
+        <div id="dock-notes-pane" class="dock-notes-pane">
         <div class="dock-notes-row">
           <div class="dock-notes-wrapper">
             <div id="dock-note-input" class="dock-note-editable" contenteditable="true" data-placeholder="Quick notes...">
@@ -3208,6 +3332,8 @@ Available:
           </div>
           <button id="dock-note-save-btn" class="btn secondary" style="align-self: stretch;">Save to Clipboard</button>
         </div>
+        </div>
+        <!-- Shared toolbar: lives OUTSIDE the panes so it stays visible on both Research and Notes -->
         <div class="dock-notes-toolbar" style="display: flex; align-items: center; justify-content: space-between; gap: 4px;">
           <div style="display: flex; align-items: center; gap: 4px;">
             <button id="dock-note-undo" class="btn-icon-sm" title="Undo (Ctrl+Z)">↶</button>

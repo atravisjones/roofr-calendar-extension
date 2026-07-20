@@ -242,6 +242,106 @@ document.addEventListener('DOMContentLoaded', async () => {
     const dockNoteSizeUp = document.getElementById("dock-note-size-up");
     const dockNoteSizeDisplay = document.getElementById("dock-note-size-display");
     const popoutBtn = document.getElementById("popout-btn");
+    const dockResearchTab = document.getElementById("dock-research-tab");
+    const dockNotesTab = document.getElementById("dock-notes-tab");
+    const dockResearchPane = document.getElementById("dock-research-pane");
+    const dockNotesPane = document.getElementById("dock-notes-pane");
+    const dockResearchList = document.getElementById("dock-research-list");
+    const dockResearchClearBtn = document.getElementById("dock-research-clear");
+    const RESEARCH_HISTORY_KEY = 'roofr_research_history';
+    let dockResearchHistory = [];
+
+    function switchDockNotesTab(tab) {
+        const showResearch = tab === 'research';
+        if (dockResearchTab) dockResearchTab.classList.toggle('active', showResearch);
+        if (dockNotesTab) dockNotesTab.classList.toggle('active', !showResearch);
+        if (dockResearchPane) dockResearchPane.hidden = !showResearch;
+        if (dockNotesPane) dockNotesPane.hidden = showResearch;
+        if (dockResearchClearBtn) dockResearchClearBtn.hidden = !showResearch;
+    }
+
+    function renderDockResearch() {
+        if (!dockResearchList) return;
+        dockResearchList.innerHTML = '';
+        if (dockResearchClearBtn) dockResearchClearBtn.disabled = dockResearchHistory.length === 0;
+        if (dockResearchHistory.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'dock-research-empty';
+            empty.textContent = 'Search an address to see property research here.';
+            dockResearchList.appendChild(empty);
+            return;
+        }
+
+        dockResearchHistory.forEach((item, index) => {
+            const card = document.createElement('div');
+            card.className = 'dock-research-card';
+
+            const header = document.createElement('div');
+            header.className = 'dock-research-card-header';
+            const address = document.createElement('div');
+            address.className = 'dock-research-card-address';
+            address.textContent = item.address;
+            address.title = item.address;
+            const actions = document.createElement('div');
+            actions.className = 'dock-research-card-actions';
+            actions.innerHTML = `<button class="dock-research-action" type="button" data-research-action="notes" data-research-index="${index}">→ Notes</button><button class="dock-research-action" type="button" data-research-action="remove" data-research-index="${index}" title="Remove research">×</button>`;
+            header.append(address, actions);
+
+            const content = document.createElement('div');
+            content.className = 'dock-research-card-content';
+            content.innerHTML = item.html;
+            card.append(header, content);
+            dockResearchList.appendChild(card);
+        });
+    }
+
+    const dockResearchReady = new Promise((resolve) => {
+        chrome.storage.local.get(RESEARCH_HISTORY_KEY, (result) => {
+            const saved = result[RESEARCH_HISTORY_KEY];
+            if (Array.isArray(saved)) {
+                dockResearchHistory = saved.filter(item => item && typeof item.address === 'string' && typeof item.html === 'string').slice(0, 3);
+            }
+            renderDockResearch();
+            resolve();
+        });
+    });
+
+    async function addDockResearch(address, html) {
+        await dockResearchReady;
+        dockResearchHistory.unshift({ address, html });
+        dockResearchHistory = dockResearchHistory.slice(0, 3);
+        chrome.storage.local.set({ [RESEARCH_HISTORY_KEY]: dockResearchHistory });
+        renderDockResearch();
+        switchDockNotesTab('research');
+    }
+
+    if (dockResearchTab) dockResearchTab.addEventListener('click', () => switchDockNotesTab('research'));
+    if (dockNotesTab) dockNotesTab.addEventListener('click', () => switchDockNotesTab('notes'));
+    if (dockResearchClearBtn) dockResearchClearBtn.addEventListener('click', async () => {
+        await dockResearchReady;
+        dockResearchHistory = [];
+        chrome.storage.local.remove(RESEARCH_HISTORY_KEY);
+        renderDockResearch();
+    });
+    if (dockResearchList) dockResearchList.addEventListener('click', async (e) => {
+        const button = e.target.closest('[data-research-action]');
+        if (!button) return;
+        await dockResearchReady;
+        const index = Number(button.dataset.researchIndex);
+        const item = dockResearchHistory[index];
+        if (!item) return;
+        if (button.dataset.researchAction === 'notes') {
+            const existingContent = dockNoteInput.innerHTML.trim();
+            dockNoteInput.innerHTML = existingContent && existingContent !== '<br>' ? item.html + existingContent : item.html;
+            dockNoteInput.dispatchEvent(new Event('input', { bubbles: true }));
+            switchDockNotesTab('notes');
+        } else if (button.dataset.researchAction === 'remove') {
+            dockResearchHistory.splice(index, 1);
+            chrome.storage.local.set({ [RESEARCH_HISTORY_KEY]: dockResearchHistory });
+            renderDockResearch();
+        }
+    });
+    switchDockNotesTab('notes');
 
     const repsList = document.getElementById("repsList");
     const csrsList = document.getElementById("csrsList");
@@ -4444,37 +4544,56 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // === DOCK RESIZE LOGIC ===
-    if (dockResizeHandle && dockNoteInput) {
-        let isDragging = false;
-        let startY;
-        let startHeight;
-
-        dockResizeHandle.addEventListener("mousedown", (e) => {
-            isDragging = true;
-            startY = e.clientY;
-            startHeight = parseInt(window.getComputedStyle(dockNoteInput).height, 10);
-            document.body.style.userSelect = "none";
-            dockResizeHandle.style.cursor = "ns-resize";
+    // The handle sets ONE shared height (CSS var --dock-pane-h) applied to BOTH the
+    // Notes box and the Research list, so the footer never changes height when you
+    // tab between them and the handle resizes whichever pane is showing. Persisted.
+    const dockNotesContainer = document.getElementById("dock-notes-container");
+    const DOCK_PANE_HEIGHT_KEY = 'roofr_dock_pane_height';
+    if (dockNotesContainer) {
+        let dockPaneHeight = 150;
+        const applyDockPaneHeight = (h) => {
+            dockPaneHeight = h;
+            dockNotesContainer.style.setProperty('--dock-pane-h', `${h}px`);
+        };
+        chrome.storage.local.get(DOCK_PANE_HEIGHT_KEY, (r) => {
+            const saved = parseInt(r[DOCK_PANE_HEIGHT_KEY], 10);
+            if (!isNaN(saved)) applyDockPaneHeight(saved);
         });
 
-        document.addEventListener("mousemove", (e) => {
-            if (!isDragging) return;
-            const delta = startY - e.clientY;
-            let newHeight = startHeight + delta;
-            const minHeight = 36;
-            const maxHeight = window.innerHeight * 0.8;
-            if (newHeight < minHeight) newHeight = minHeight;
-            if (newHeight > maxHeight) newHeight = maxHeight;
-            dockNoteInput.style.height = `${newHeight}px`;
-        });
+        if (dockResizeHandle) {
+            let isDragging = false;
+            let startY;
+            let startHeight;
 
-        document.addEventListener("mouseup", () => {
-            if (isDragging) {
-                isDragging = false;
-                document.body.style.userSelect = "";
-                dockResizeHandle.style.cursor = "";
-            }
-        });
+            dockResizeHandle.addEventListener("mousedown", (e) => {
+                isDragging = true;
+                startY = e.clientY;
+                startHeight = dockPaneHeight;
+                document.body.style.userSelect = "none";
+                dockResizeHandle.style.cursor = "ns-resize";
+                e.preventDefault();
+            });
+
+            document.addEventListener("mousemove", (e) => {
+                if (!isDragging) return;
+                const delta = startY - e.clientY;
+                let newHeight = startHeight + delta;
+                const minHeight = 60;
+                const maxHeight = window.innerHeight * 0.8;
+                if (newHeight < minHeight) newHeight = minHeight;
+                if (newHeight > maxHeight) newHeight = maxHeight;
+                applyDockPaneHeight(newHeight);
+            });
+
+            document.addEventListener("mouseup", () => {
+                if (isDragging) {
+                    isDragging = false;
+                    document.body.style.userSelect = "";
+                    dockResizeHandle.style.cursor = "";
+                    chrome.storage.local.set({ [DOCK_PANE_HEIGHT_KEY]: dockPaneHeight });
+                }
+            });
+        }
     }
 
 
@@ -6706,7 +6825,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             }
                         }
 
-                        // Add APN info to Notes section (prepend to existing notes)
+                        // Add APN info to the Research dock
                         if (apnResult && apnResult.success) {
                             const dockNoteInput = document.getElementById("dock-note-input");
                             if (dockNoteInput) {
@@ -6858,48 +6977,27 @@ document.addEventListener('DOMContentLoaded', async () => {
                                     addLog('Nearby jobs lookup failed: ' + njErr.message);
                                 }
 
-                                propertyInfo += `<div>---</div>`;
-
-                                // Get existing notes content
-                                const existingContent = dockNoteInput.innerHTML.trim();
-
-                                // Prepend new info to existing notes
-                                if (existingContent && existingContent !== '<br>') {
-                                    dockNoteInput.innerHTML = propertyInfo + existingContent;
-                                } else {
-                                    dockNoteInput.innerHTML = propertyInfo;
-                                }
-
-                                // Trigger input event to save to storage
-                                dockNoteInput.dispatchEvent(new Event('input', { bubbles: true }));
-                                addLog('Added property info to Notes');
+                                addDockResearch(verifiedAddress, propertyInfo);
+                                addLog('Added property research');
                             }
                         }
 
                         // Find or create Google Earth tab in target window (reuse existing if found)
                         if (settings.search_google_earth !== false) {
-                        // Only trust coordinates from a REAL county parcel — that centroid sits on the
-                        // actual rooftop for a normal lot. For mobile/RV parks, tribal land, new builds,
-                        // or any address with no individual county parcel, the geocoder (LocationIQ/Census)
-                        // only knows the park CENTER, not the specific space — that's the wrong-GPS problem.
-                        // In that case let Google Earth search the address text and use Google's own
-                        // geocoder, which places the unit/space far better than the centroid ever could.
-                        // Same rule when the parcel match was AMBIGUOUS (multiple parcels survived the
-                        // narrowing) — features[0] is then a coin flip and its centroid can be a
-                        // different street entirely, so the address text is the safer pin.
-                        const _gpsOk = apnResult && apnResult.success && !apnResult.ambiguous && apnResult.propertyData;
-                        const _gpsLat = _gpsOk ? apnResult.propertyData.lat : null;
-                        const _gpsLng = _gpsOk ? apnResult.propertyData.lng : null;
-                        // For the address-search fallback, Google Earth pins a unit address FAR more
-                        // accurately from the bare "street #unit" than from the full string with
-                        // city/state/zip (the ZIP makes it land mid-street). So when there's a unit/lot,
-                        // search only the first segment; otherwise keep the full address for disambiguation.
+                        // Always search Google Earth by ADDRESS TEXT (Travis pref 2026-07-20).
+                        // Even when a real county parcel gives us rooftop coordinates, the address
+                        // search reads better and lets Google's own geocoder place the pin. This also
+                        // dodges the wrong-GPS problem for mobile/RV parks, tribal land, and new builds
+                        // (geocoder only knows the park CENTER), and ambiguous multi-parcel matches
+                        // where features[0]'s centroid can be a different street entirely.
+                        // Google Earth pins a unit address FAR more accurately from the bare
+                        // "street #unit" than from the full string with city/state/zip (the ZIP makes
+                        // it land mid-street). So when there's a unit/lot, search only the first
+                        // segment; otherwise keep the full address for disambiguation.
                         const _firstSeg = verifiedAddress.split(',')[0].trim();
                         const _hasUnit = /(#\s*[A-Za-z0-9-]+|\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot|trlr|trailer|rm|room)\s*#?\s*[A-Za-z0-9-]+)\s*$/i.test(_firstSeg);
                         const _earthQuery = _hasUnit ? _firstSeg : verifiedAddress;
-                        const googleEarthUrl = (_gpsLat != null && _gpsLng != null && !isNaN(_gpsLat) && !isNaN(_gpsLng))
-                            ? `https://earth.google.com/web/search/${_gpsLat},${_gpsLng}`
-                            : `https://earth.google.com/web/search/${encodeURIComponent(_earthQuery)}`;
+                        const googleEarthUrl = `https://earth.google.com/web/search/${encodeURIComponent(_earthQuery)}`;
                         const earthQueryOpts = { url: "*://earth.google.com/*" };
                         if (window.__targetWindowId) earthQueryOpts.windowId = window.__targetWindowId;
                         const existingEarthTabs = await chrome.tabs.query(earthQueryOpts);

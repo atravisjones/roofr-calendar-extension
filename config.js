@@ -628,10 +628,12 @@ export const CONFIG = {
 
   passesRegion(e, regionKey) {
     if (regionKey === "ALL") return true;
-    // COMM is a capacity-only pool: there is no event-classification rule for
-    // commercial jobs yet (geo classification would mislabel them PHX/NORTH/SOUTH),
-    // so the Comm view shows sheet capacity without any events.
-    if (regionKey === "COMM") return false;
+    // Commercial-tagged jobs (jobs.tags via the server feed) belong to the COMM
+    // pool: they show under Comm and are hidden from the geographic regions so
+    // they never look like residential bookings. DOM-scraped events have no tag
+    // data (isCommercial undefined) and keep classifying geographically.
+    if (regionKey === "COMM") return !!e?.isCommercial;
+    if (e?.isCommercial) return false;
     const region = this.getRegionForEvent(e);
     // Neither coords nor a known city → "uncategorized": still shows in all filters (unchanged).
     if (!region) return true;
@@ -680,8 +682,14 @@ export const CONFIG = {
     const blocks = this.blockWindowForDate(d);
     const perBlockBooked = {};
     for (const blk of blocks) perBlockBooked[blk.key] = 0;
-    
-    for (const ev of eventsForDay) {
+
+    // Commercial-tagged events consume COMM capacity only; every other region's
+    // booked math ignores them (ALL included — its capacity is PHX+NORTH+SOUTH).
+    const countedEvents = region === 'COMM'
+      ? eventsForDay.filter(ev => ev?.isCommercial)
+      : eventsForDay.filter(ev => !ev?.isCommercial);
+
+    for (const ev of countedEvents) {
       const occupiedKeys = new Set();
       for (const blk of blocks) {
         if (this.overlapMinutes({ start: ev.start, end: ev.end }, blk) >= 15) {

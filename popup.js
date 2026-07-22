@@ -2367,6 +2367,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             jobId: row?.job_id,
             lat: row?.latitude,   // from jobs join — drives GPS region classification
             lng: row?.longitude,
+            isCommercial: !!row?.is_commercial, // jobs.tags contains "Commercial" — books against COMM, not PHX/N/S
             attendees,
             isAllDay: false
         };
@@ -6144,7 +6145,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 continue;
             }
 
+            // Commercial jobs belong to the separate commercial rep pool — they
+            // neither stack with nor cluster residential bookings.
             const cityEvents = dailyEvents.filter(e => {
+                if (e?.isCommercial) return false;
                 const c = CONFIG.getCityFromEvent(e);
                 return c && c.toUpperCase() === cityStr;
             });
@@ -6155,7 +6159,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // makes Monday attractive for every other NORTH address.) ALL never
             // clusters — it isn't a geographic region.
             const regionCount = (currentRegion && currentRegion !== 'ALL' && currentRegion !== 'COMM')
-                ? dailyEvents.filter(e => regionOfEvent(e) === currentRegion).length
+                ? dailyEvents.filter(e => !e?.isCommercial && regionOfEvent(e) === currentRegion).length
                 : 0;
 
             const blocks = CONFIG.blockWindowForDate(new Date(dateStr + "T00:00"));

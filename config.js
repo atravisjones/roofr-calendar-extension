@@ -587,6 +587,22 @@ export const CONFIG = {
     return end > start ? (end - start) / 60000 : 0;
   },
 
+  // Which block(s) an event occupies: MAJORITY overlap (Travis, 2026-07-22).
+  // Appointments booked under the old 4-slot windows can straddle two storm
+  // blocks (8-11am = 2h in 8-10 + 1h in 10-12) — they should only consume the
+  // block(s) holding most of their time. Exact ties count in every tied block
+  // (2h + 2h books both). Still requires >=15 min to count at all.
+  occupiedBlockKeys(ev, blocks) {
+    let max = 0;
+    const per = blocks.map(blk => {
+      const m = this.overlapMinutes({ start: ev.start, end: ev.end }, blk);
+      if (m > max) max = m;
+      return m;
+    });
+    if (max < 15) return [];
+    return blocks.filter((_, i) => per[i] === max).map(blk => blk.key);
+  },
+
   findCityInString(text) {
     const T = String(text).toUpperCase();
     for (const regionKey of ['PHX', 'NORTH', 'SOUTH']) {
@@ -705,12 +721,7 @@ export const CONFIG = {
       : eventsForDay.filter(ev => !this.isCommercialEvent(ev));
 
     for (const ev of countedEvents) {
-      const occupiedKeys = new Set();
-      for (const blk of blocks) {
-        if (this.overlapMinutes({ start: ev.start, end: ev.end }, blk) >= 15) {
-          occupiedKeys.add(blk.key);
-        }
-      }
+      const occupiedKeys = new Set(this.occupiedBlockKeys(ev, blocks));
 
       const city = this.getCityFromEvent(ev);
       if ((region === 'PHX' || region === 'ALL') && city && this.UP_NORTH_TRAVEL_CITIES.has(city) && occupiedKeys.size) {
@@ -757,11 +768,9 @@ export const CONFIG = {
             for (const blk of blocks) rec.perBlock[blk.key] = 0;
             perCity.set(city, rec);
         }
-        for (const blk of blocks) {
-            if (this.overlapMinutes({ start: ev.start, end: ev.end }, blk) >= 15) {
-                rec.perBlock[blk.key]++;
-                rec.total++;
-            }
+        for (const key of this.occupiedBlockKeys(ev, blocks)) {
+            rec.perBlock[key]++;
+            rec.total++;
         }
     }
     return perCity;
@@ -1110,11 +1119,9 @@ export const CONFIG = {
     const startDate = new Date(event.start);
     details.day = startDate.toLocaleDateString('en-US', { weekday: 'short' });
     const blocks = this.blockWindowForDate(startDate);
-    for (const block of blocks) {
-        if (this.overlapMinutes(event, block) >= 15) {
-            details.time = block.label;
-            break;
-        }
+    const occupied = this.occupiedBlockKeys(event, blocks);
+    if (occupied.length) {
+        details.time = blocks.find(b => b.key === occupied[0]).label;
     }
 
     return details;

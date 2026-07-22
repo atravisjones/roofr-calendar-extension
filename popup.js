@@ -3496,7 +3496,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // Find cities
-            const evsInBlock = eventsForDay.filter(ev => CONFIG.overlapMinutes({ start: ev.start, end: ev.end }, blk) >= 15);
+            const evsInBlock = eventsForDay.filter(ev => CONFIG.occupiedBlockKeys(ev, blocks).includes(blk.key));
             const uniqueCities = [...new Set(evsInBlock.map(ev => CONFIG.getCityFromEvent(ev) || "Uncategorized"))].filter(c => c !== "Uncategorized").sort();
 
             const cityItems = uniqueCities.map(c => {
@@ -6173,11 +6173,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const usedBlocks = new Set();
             cityEvents.forEach(ev => {
-                blocks.forEach(b => {
-                    if (CONFIG.overlapMinutes({ start: ev.start, end: ev.end }, b) >= 15) {
-                        usedBlocks.add(b.key);
-                    }
-                });
+                CONFIG.occupiedBlockKeys(ev, blocks).forEach(k => usedBlocks.add(k));
             });
 
             const validOptions = [];

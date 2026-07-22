@@ -10369,7 +10369,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let reportsV2Running = false;
     let reportsV2JobReports = {};   // jobId -> { status, pinFlag, ... } from the report check
     let reportsV2LiveOutcomes = {}; // eventId -> outcome/state chip during an assign run
-    let reportsV2OrderState = null; // { jobs, index, stopped, skipRequested } while the order chauffeur runs
+    let reportsV2OrderState = null; // { jobs, cursor, stopped, lanes } while the order chauffeur runs
 
     function reportsV2Escape(value) {
         return String(value ?? '')
@@ -10959,6 +10959,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // the Roofr tab to each needing job's "Confirm roof location" step and STOPS —
     // pin verification and the purchase click stay with the human, always.
     const REPORTS_V2_PIN_FLAG = /\b(lot|unit|space|spc|apt|trlr)\b|#\s*\d/i;
+    const REPORTS_V2_ORDER_LANES = 3;
 
     function reportsV2UniqueJobs() {
         const seen = new Map();
@@ -11003,47 +11004,71 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    function reportsV2RenderOrderPanel(message) {
+    function reportsV2NextOrderJob() {
+        const run = reportsV2OrderState;
+        if (!run || run.stopped) return null;
+        return run.cursor < run.jobs.length ? run.jobs[run.cursor++] : null;
+    }
+
+    function reportsV2RenderOrderPanel() {
         if (!reportsV2OrderPanel) return;
         const run = reportsV2OrderState;
         if (!run) {
             reportsV2OrderPanel.style.display = 'none';
             return;
         }
-        const current = run.jobs[run.index];
-        const info = current ? reportsV2JobReports[String(current.jobId)] : null;
-        const pin = info?.pinFlag
-            ? '<div style="margin-top: 4px; font-size: 0.72rem; font-weight: 700; color: var(--danger);">⚠ Lot/unit-style address — double-check the pin!</div>'
-            : '';
+        const statusLabels = {
+            opening: 'opening…',
+            ready: '✅ ready — verify pin & order',
+            manual: 'order manually',
+            ordered: 'ordered ✓',
+            done: 'done',
+            closed: 'tab closed',
+            idle: 'idle'
+        };
+        const lanes = run.lanes.map((lane, i) => {
+            const info = lane.jobId ? reportsV2JobReports[String(lane.jobId)] : null;
+            const pin = info?.pinFlag
+                ? '<div style="margin-top: 3px; font-size: 0.68rem; font-weight: 700; color: var(--danger);">⚠ lot/unit — double-check pin</div>'
+                : '';
+            const canSkip = lane.jobId && !['done', 'closed', 'ordered'].includes(lane.status);
+            return `<div style="padding: 6px 0; border-top: 1px solid var(--border);">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: 0.76rem; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${reportsV2Escape(lane.event?.title || lane.jobId || '—')}</div>
+                        <div style="font-size: 0.7rem; color: var(--text-muted);">${reportsV2Escape(statusLabels[lane.status] || lane.status)}</div>
+                        ${pin}
+                    </div>
+                    <button id="reports-v2-lane-skip-${i}" class="btn secondary" style="font-size: 0.72rem; padding: 5px 7px;" ${canSkip ? '' : 'disabled'}>Skip</button>
+                </div>
+            </div>`;
+        }).join('');
         reportsV2OrderPanel.style.display = 'block';
         reportsV2OrderPanel.innerHTML = `
-            <div style="font-size: 0.7rem; font-weight: 800; color: var(--primary); margin-bottom: 2px;">ORDERING REPORTS · ${run.index + 1} of ${run.jobs.length}</div>
-            <div style="font-size: 0.8rem; font-weight: 650; overflow-wrap: anywhere;">${reportsV2Escape(current?.event?.title || current?.jobId || '')}</div>
-            ${pin}
-            <div style="margin-top: 4px; font-size: 0.74rem; color: var(--text-muted);">${reportsV2Escape(message || '')}</div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px;">
-                <button id="reports-v2-order-skip" class="btn secondary" style="font-size: 0.78rem; padding: 6px;">Skip job</button>
-                <button id="reports-v2-order-stop" class="btn secondary" style="font-size: 0.78rem; padding: 6px; color: var(--danger);">Stop run</button>
-            </div>`;
-        document.getElementById('reports-v2-order-skip')?.addEventListener('click', () => {
-            if (reportsV2OrderState) reportsV2OrderState.skipRequested = true;
+            <div style="font-size: 0.7rem; font-weight: 800; color: var(--primary); margin-bottom: 2px;">ORDERING REPORTS · ${reportsV2OrderQueueJobs().length} left</div>
+            ${lanes}
+            <button id="reports-v2-order-stop" class="btn secondary" style="width: 100%; margin-top: 6px; font-size: 0.78rem; padding: 6px; color: var(--danger);">Stop run</button>`;
+        run.lanes.forEach((_, i) => {
+            document.getElementById(`reports-v2-lane-skip-${i}`)?.addEventListener('click', () => {
+                if (reportsV2OrderState?.lanes[i]) reportsV2OrderState.lanes[i].skipRequested = true;
+            });
         });
         document.getElementById('reports-v2-order-stop')?.addEventListener('click', () => {
             if (reportsV2OrderState) reportsV2OrderState.stopped = true;
         });
     }
 
-    async function reportsV2WaitForOrder(jobId, tabId) {
+    async function reportsV2WaitForOrderLane(jobId, tabId, laneIndex) {
         while (true) {
             const run = reportsV2OrderState;
-            if (!run || run.stopped || run.skipRequested) return false;
+            if (!run || run.stopped || run.lanes[laneIndex]?.skipRequested) return false;
             try {
                 const job = await reportsV2ApiAdapter.getJob(jobId, tabId);
                 if ((job?.measurementQueues || []).length || (job?.reports || []).length) return true;
             } catch (error) {
                 // Mid-navigation errors are fine — keep polling. A closed tab is not.
                 if (/No tab with id/i.test(error?.message || '')) {
-                    if (reportsV2OrderState) reportsV2OrderState.stopped = true;
+                    if (reportsV2OrderState?.lanes[laneIndex]) reportsV2OrderState.lanes[laneIndex].status = 'closed';
                     return false;
                 }
             }
@@ -11051,55 +11076,98 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    async function reportsV2RunOrderLane(laneIndex) {
+        while (true) {
+            const run = reportsV2OrderState;
+            if (!run || run.stopped) return;
+            const lane = run.lanes[laneIndex];
+            const job = reportsV2NextOrderJob();
+            if (!job) {
+                lane.status = 'done';
+                lane.jobId = null;
+                reportsV2RenderOrderPanel();
+                return;
+            }
+            lane.jobId = job.jobId;
+            lane.event = job.event;
+            lane.skipRequested = false;
+            lane.status = 'opening';
+            reportsV2RenderOrderPanel();
+            try {
+                await chrome.tabs.update(lane.tabId, { url: `https://app.roofr.com/dashboard/team/239329/jobs/list-view?selectedJobId=${job.jobId}` });
+            } catch (error) {
+                if (/No tab with id/i.test(error?.message || '')) {
+                    lane.status = 'closed';
+                    reportsV2RenderOrderPanel();
+                    return;
+                }
+            }
+            await new Promise(resolve => setTimeout(resolve, 2500));
+            const prepMsg = {
+                type: 'PREP_REPORT_ORDER',
+                address: reportsV2JobReports[String(job.jobId)]?.address || '',
+                jobTitle: job.event?.title || ''
+            };
+            let prep;
+            try {
+                prep = await reportsV2Send(prepMsg, lane.tabId);
+            } catch (error) {
+                prep = { ok: false, error: error.message };
+            }
+            if (!prep?.ok && !reportsV2OrderState?.stopped && !lane.skipRequested) {
+                // The SPA or content script may still have been booting — one retry.
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                try {
+                    prep = await reportsV2Send(prepMsg, lane.tabId);
+                } catch (error) {
+                    prep = { ok: false, error: error.message };
+                }
+            }
+            lane.status = prep?.ok ? 'ready' : 'manual';
+            reportsV2RenderOrderPanel();
+            const ordered = await reportsV2WaitForOrderLane(job.jobId, lane.tabId, laneIndex);
+            if (reportsV2OrderState?.stopped) return;
+            if (lane.status === 'closed') {
+                reportsV2RenderOrderPanel();
+                return;
+            }
+            if (ordered) {
+                reportsV2JobReports[job.jobId] = { ...(reportsV2JobReports[job.jobId] || {}), status: 'ordered' };
+                lane.status = 'ordered';
+            }
+            reportsV2RefreshReportChips(job.jobId);
+            reportsV2RenderSummary();
+            reportsV2RenderOrderPanel();
+        }
+    }
+
     async function reportsV2StartOrderRun() {
         if (reportsV2OrderState) return;
         const jobs = reportsV2OrderQueueJobs();
         if (!jobs.length) return;
-        reportsV2OrderState = { jobs, index: 0, stopped: false, skipRequested: false, tabId: null };
+        const laneCount = Math.min(REPORTS_V2_ORDER_LANES, jobs.length);
+        reportsV2OrderState = { jobs, cursor: 0, stopped: false, lanes: [] };
         reportsV2UpdateActionButtons();
         try {
-            const tab = await reportsV2GetRoofrTab();
-            reportsV2OrderState.tabId = tab.id;
-            for (let i = 0; i < jobs.length; i++) {
-                if (!reportsV2OrderState || reportsV2OrderState.stopped) break;
-                reportsV2OrderState.index = i;
-                reportsV2OrderState.skipRequested = false;
-                const { jobId } = jobs[i];
-                reportsV2RenderOrderPanel('Opening the job and getting to the pin map…');
-                await chrome.tabs.update(tab.id, { url: `https://app.roofr.com/dashboard/team/239329/jobs/list-view?selectedJobId=${jobId}` });
-                try { await chrome.windows.update(tab.windowId, { focused: true }); } catch (_) {}
-                await new Promise(resolve => setTimeout(resolve, 2500));
-                let prep;
-                try {
-                    prep = await reportsV2Send({ type: 'PREP_REPORT_ORDER' }, tab.id);
-                } catch (error) {
-                    prep = { ok: false, error: error.message };
-                }
-                if (!prep?.ok && !reportsV2OrderState?.stopped) {
-                    // The SPA or content script may still have been booting — one retry.
-                    await new Promise(resolve => setTimeout(resolve, 3000));
-                    try {
-                        prep = await reportsV2Send({ type: 'PREP_REPORT_ORDER' }, tab.id);
-                    } catch (error) {
-                        prep = { ok: false, error: error.message };
-                    }
-                }
-                if (prep?.ok) {
-                    reportsV2RenderOrderPanel('Verify the pin, then order the report — I\'ll advance when the order shows up.');
-                } else {
-                    reportsV2RenderOrderPanel(`Couldn't auto-open the report flow (${prep?.error || 'unknown'}). Order it manually and I'll detect it — or Skip.`);
-                }
-                const ordered = await reportsV2WaitForOrder(jobId, tab.id);
-                if (reportsV2OrderState?.stopped) break;
-                if (ordered) {
-                    reportsV2JobReports[jobId] = { ...(reportsV2JobReports[jobId] || {}), status: 'ordered' };
-                }
-                reportsV2RefreshReportChips(jobId);
-                reportsV2RenderSummary();
+            const base = await reportsV2GetRoofrTab();
+            reportsV2OrderState.lanes.push({ tabId: base.id, created: false, jobId: null, event: null, status: 'idle', skipRequested: false });
+            for (let i = 1; i < laneCount; i++) {
+                const tab = await chrome.tabs.create({ windowId: base.windowId, url: 'https://app.roofr.com/dashboard/team/239329/jobs/list-view', active: false });
+                reportsV2OrderState.lanes.push({ tabId: tab.id, created: true, jobId: null, event: null, status: 'idle', skipRequested: false });
             }
+            try {
+                await chrome.tabs.update(base.id, { active: true });
+                await chrome.windows.update(base.windowId, { focused: true });
+            } catch (_) {}
+            await Promise.all(reportsV2OrderState.lanes.map((_, i) => reportsV2RunOrderLane(i)));
         } catch (error) {
             reportsV2SetStatus(`Order run stopped: ${error.message}`, 'error');
         } finally {
+            for (const lane of reportsV2OrderState?.lanes || []) {
+                if (lane.created) {
+                    try { await chrome.tabs.remove(lane.tabId); } catch (_) {}
+                }
+            }
             const allHandled = reportsV2OrderQueueJobs().length === 0;
             reportsV2OrderState = null;
             reportsV2RenderOrderPanel();

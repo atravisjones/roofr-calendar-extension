@@ -145,12 +145,22 @@ export const CONFIG = {
     },
     PIMA: {
       name: "Pima County",
-      queryUrl: "https://gisdata.pima.gov/arcgis1/rest/services/GISOpenData/LandRecords/MapServer/12/query",
-      addressField: "ADDRESS_OL",
+      // Repointed 2026-07-20 to the City of Tucson "PropertyHousing / PAREGION" layer
+      // (county-wide). The old gisdata.pima.gov LandRecords layer had NO owner, NO
+      // coordinates, and NO year built — only FCV. This layer returns owner (ADDRESSEE),
+      // LON/LAT (for the Google Earth pin + nearby-jobs + region classification), FCV,
+      // and year built. Roof material is NOT available (Pima has no assessor API like
+      // Maricopa's), and absentee is skipped here — Pima's SITE_ADDRESS is street-only,
+      // so the mail-city-vs-address check would false-positive.
+      queryUrl: "https://mapdata.tucsonaz.gov/public/rest/services/PublicMaps/PropertyHousing/MapServer/17/query",
+      addressField: "SITE_ADDRESS",
       apnField: "PARCEL",
-      ownerField: null, // Owner info not available in this layer
+      ownerField: "ADDRESSEE",
+      latField: "LAT",
+      lngField: "LON",
       detailUrl: "https://gis.pima.gov/maps/detail.cfm?parcel=",
       propertyFields: {
+        yearBuilt: "YearBuilt",
         propertyValue: "FCV",
       },
       cities: new Set(["TUCSON","SOUTH TUCSON","MARANA","ORO VALLEY","SAHUARITA","GREEN VALLEY","VAIL","SADDLEBROOKE","RED ROCK","ORACLE"])

@@ -6760,10 +6760,38 @@ if (window.__isRoofrJobPage && !window.__roofrJobAutomationLoaded) {
   window.__roofrSelectAllSecondaryStructures = selectAllSecondaryStructures;
   window.__roofrWaitForJobPageLoad = waitForJobPageLoad;
 
+  // A slim top banner with the job's address + a Google Maps link, so the human can
+  // cross-check where the address actually is against the Roofr satellite pin before
+  // ordering. Re-created (replaced) on every prep so it always matches the current job.
+  function showAddressVerifyBanner(address, jobTitle) {
+    const ID = '__roofr_addr_verify_banner';
+    document.getElementById(ID)?.remove();
+    const query = (address && address.trim()) || (jobTitle && jobTitle.trim()) || '';
+    if (!query) return;
+    const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+    const bar = document.createElement('div');
+    bar.id = ID;
+    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#1a73e8;color:#fff;font:600 13px system-ui,-apple-system,sans-serif;padding:8px 14px;display:flex;align-items:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,.25);';
+    const label = document.createElement('span');
+    label.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    label.textContent = '📍 ' + query;
+    const link = document.createElement('a');
+    link.href = mapsUrl; link.target = '_blank'; link.rel = 'noopener';
+    link.textContent = 'Verify in Google Maps ↗';
+    link.style.cssText = 'background:#fff;color:#1a73e8;padding:4px 10px;border-radius:6px;text-decoration:none;font-weight:700;white-space:nowrap;flex-shrink:0;';
+    const close = document.createElement('button');
+    close.type = 'button'; close.textContent = '✕';
+    close.style.cssText = 'background:transparent;border:none;color:#fff;font-size:15px;line-height:1;cursor:pointer;padding:0 2px;flex-shrink:0;';
+    close.addEventListener('click', () => bar.remove());
+    bar.append(label, link, close);
+    document.body.appendChild(bar);
+  }
+
   // Chauffeur prep for the Reports order run: get the freshly-navigated job page
   // to the "Confirm roof location" step, then STOP — pin verification and the
   // actual purchase stay with the human.
-  window.__roofrPrepReportOrder = async function prepReportOrder() {
+  window.__roofrPrepReportOrder = async function prepReportOrder(address, jobTitle) {
+    showAddressVerifyBanner(address, jobTitle);
     const steps = [];
     const load = await waitForJobPageLoad();
     steps.push({ step: 'waitForJobPageLoad', ...load });
@@ -6831,7 +6859,7 @@ if (window.__isRoofrJobPage && !window.__roofrJobAutomationLoaded) {
 
     if (msg.type === "PREP_REPORT_ORDER") {
       if (typeof window.__roofrPrepReportOrder === 'function') {
-        window.__roofrPrepReportOrder().then(result => {
+        window.__roofrPrepReportOrder(msg.address, msg.jobTitle).then(result => {
           sendResponse(result);
         }).catch(err => {
           sendResponse({ ok: false, error: err.message || String(err) });

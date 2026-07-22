@@ -626,14 +626,29 @@ export const CONFIG = {
     return this.findCityInString([ev?.title, ev?.address, ev?.notes].join(' '))?.region || null;
   },
 
+  // Jobs already seen with the server's is_commercial flag, keyed by job id AND
+  // normalized title. DOM-scraped events carry no tag data, so without this the
+  // Comm view flip-flopped every time a DOM scan replaced the server events
+  // (booked -> available -> booked as sources alternated).
+  _commercialKeys: new Set(),
+  rememberCommercialEvent(ev) {
+    if (ev?.jobId != null) this._commercialKeys.add(`j:${ev.jobId}`);
+    if (ev?.title) this._commercialKeys.add(`t:${String(ev.title).trim().toUpperCase()}`);
+  },
+  isCommercialEvent(ev) {
+    if (ev?.isCommercial) return true;
+    if (/\[\s*commercial\s*\]/i.test(ev?.title || "")) return true; // job names carry "[Commercial]"
+    if (ev?.jobId != null && this._commercialKeys.has(`j:${ev.jobId}`)) return true;
+    return !!(ev?.title && this._commercialKeys.has(`t:${String(ev.title).trim().toUpperCase()}`));
+  },
+
   passesRegion(e, regionKey) {
     if (regionKey === "ALL") return true;
     // Commercial-tagged jobs (jobs.tags via the server feed) belong to the COMM
     // pool: they show under Comm and are hidden from the geographic regions so
-    // they never look like residential bookings. DOM-scraped events have no tag
-    // data (isCommercial undefined) and keep classifying geographically.
-    if (regionKey === "COMM") return !!e?.isCommercial;
-    if (e?.isCommercial) return false;
+    // they never look like residential bookings.
+    if (regionKey === "COMM") return this.isCommercialEvent(e);
+    if (this.isCommercialEvent(e)) return false;
     const region = this.getRegionForEvent(e);
     // Neither coords nor a known city → "uncategorized": still shows in all filters (unchanged).
     if (!region) return true;
@@ -686,8 +701,8 @@ export const CONFIG = {
     // Commercial-tagged events consume COMM capacity only; every other region's
     // booked math ignores them (ALL included — its capacity is PHX+NORTH+SOUTH).
     const countedEvents = region === 'COMM'
-      ? eventsForDay.filter(ev => ev?.isCommercial)
-      : eventsForDay.filter(ev => !ev?.isCommercial);
+      ? eventsForDay.filter(ev => this.isCommercialEvent(ev))
+      : eventsForDay.filter(ev => !this.isCommercialEvent(ev));
 
     for (const ev of countedEvents) {
       const occupiedKeys = new Set();

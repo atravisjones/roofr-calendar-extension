@@ -2408,6 +2408,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             state.allEvents = json.events
                 .map(mapCalendarEventRowToScanEvent)
                 .filter(ev => ev.start && ev.end && ev.title);
+            // Teach CONFIG which jobs are commercial so DOM-scanned copies of the
+            // same events (no tag data) classify identically — otherwise the Comm
+            // view flip-flops whenever a scan replaces the server events.
+            state.allEvents.forEach(ev => { if (ev.isCommercial) CONFIG.rememberCommercialEvent(ev); });
             state.parsedJobs = state.allEvents.map(ev => CONFIG.parseJobDetails(ev));
 
             // Past days (yesterday) prefer the LIVE on-screen calendar over the
@@ -6148,7 +6152,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Commercial jobs belong to the separate commercial rep pool — they
             // neither stack with nor cluster residential bookings.
             const cityEvents = dailyEvents.filter(e => {
-                if (e?.isCommercial) return false;
+                if (CONFIG.isCommercialEvent(e)) return false;
                 const c = CONFIG.getCityFromEvent(e);
                 return c && c.toUpperCase() === cityStr;
             });
@@ -6159,7 +6163,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // makes Monday attractive for every other NORTH address.) ALL never
             // clusters — it isn't a geographic region.
             const regionCount = (currentRegion && currentRegion !== 'ALL' && currentRegion !== 'COMM')
-                ? dailyEvents.filter(e => !e?.isCommercial && regionOfEvent(e) === currentRegion).length
+                ? dailyEvents.filter(e => !CONFIG.isCommercialEvent(e) && regionOfEvent(e) === currentRegion).length
                 : 0;
 
             const blocks = CONFIG.blockWindowForDate(new Date(dateStr + "T00:00"));

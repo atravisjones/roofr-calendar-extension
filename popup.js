@@ -650,7 +650,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         currentRegion: "PHX",
         allEvents: [],
         parsedJobs: [],
-        availability: { PHX: null, SOUTH: null, NORTH: null, ALL: null },
+        availability: { PHX: null, SOUTH: null, NORTH: null, COMM: null, ALL: null },
         availabilityByWeek: {}, // Per-week availability keyed by week's Sunday ISO (visible range can span weeks)
         weekDays: [], // This will now store the exact visible days
         addressInput: "",
@@ -2175,6 +2175,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             state.ignoredEvents = state.ignoredEvents || {}; // Ensure initialized
             state.recentAddresses = state.recentAddresses || []; // Ensure initialized
             state.weekDataCache = state.weekDataCache || {}; // Ensure initialized
+            // Restore parsed storm-week block definitions so a reopened panel
+            // renders 5-block weeks correctly before the first capacities fetch.
+            if (state.weekBlockDefs) Object.assign(CONFIG.WEEK_BLOCK_DEFS, state.weekBlockDefs);
             addLog('Shared state loaded.');
         } else {
             addLog('No shared state found.');
@@ -2419,8 +2422,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             distinctSundays.forEach((s, i) => {
                 if (availabilityResults[i]) state.availabilityByWeek[s] = availabilityResults[i];
             });
-            state.availability = state.availabilityByWeek[distinctSundays[0]] || { PHX: null, SOUTH: null, NORTH: null, ALL: null };
-            state.dayCutoffs = [];
+            state.availability = state.availabilityByWeek[distinctSundays[0]] || { PHX: null, SOUTH: null, NORTH: null, COMM: null, ALL: null };
+            // Cutoff checkboxes for the primary week — the server path used to drop
+            // these entirely (only the DOM-scan path ever fetched them).
+            try {
+                const cutoffMon = new Date(`${distinctSundays[0]}T12:00:00Z`);
+                cutoffMon.setUTCDate(cutoffMon.getUTCDate() + 1);
+                state.dayCutoffs = await fetchDayCutoffs(await discoverWeeklyTabNameForDate(cutoffMon));
+            } catch { state.dayCutoffs = []; }
 
             addLog(`Server availability loaded. Extracted ${state.allEvents.length} events.`);
             serverAvailabilityReady = true;
@@ -2640,38 +2649,57 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    function parseTotalsRange(values) {
+    // Parse ALL right-side capacity tables from one wide grid (I2:R45).
+    // Text-driven: sections are located by their banner text and each table's
+    // "Appointment…" header, slot rows run until the "Total" row. This survives
+    // moved rows (the 2026-07 COMMERCIAL section shifted everything below PHX)
+    // and variable slot counts (regular tabs have 4 blocks, storm tabs 5).
+    // Returns { PHX, SOUTH, NORTH, COMM, __labels } — region maps are
+    // { B1:[Mon..Sun], … } or null; __labels = slot labels in sheet order.
+    function parseCapacityTables(values) {
         if (!Array.isArray(values) || !values.length) return null;
-        let headerRow = values.findIndex(r => String(r?.[0] || "").trim().toUpperCase() === "APPOINTMENT BLOCKS");
-        if (headerRow < 0) return null;
-        const map = { B1: [], B2: [], B3: [], B4: [] };
-        const keys = ["B1", "B2", "B3", "B4"];
-        for (let i = 0; i < 4; i++) {
-            const row = values[headerRow + 1 + i] || [];
-            for (let c = 1; c <= 7; c++) {
-                const raw = row[c] ?? ""; const n = parseInt(String(raw).replace(/[^0-9-]/g, ""), 10);
-                map[keys[i]].push(Number.isFinite(n) ? n : 0);
+        const SECTION_OF = [["PHOENIX", "PHX"], ["TUCSON", "SOUTH"], ["NORTHERN", "NORTH"], ["COMMERCIAL", "COMM"]];
+        const out = { PHX: null, SOUTH: null, NORTH: null, COMM: null, __labels: null };
+        let section = null;
+        for (let r = 0; r < values.length; r++) {
+            const first = String(values[r]?.[0] || "").trim().toUpperCase();
+            if (!first) continue;
+            const hit = SECTION_OF.find(([needle]) => first.includes(needle));
+            if (hit) { section = hit[1]; continue; }
+            if (!first.startsWith("APPOINTMENT") || !section) continue;
+            const map = {}, labels = [];
+            for (let i = r + 1; i < values.length; i++) {
+                const row = values[i] || [];
+                const label = String(row[0] || "").trim();
+                if (!label || label.toUpperCase().startsWith("TOTAL")) { r = i; break; }
+                const key = `B${labels.length + 1}`;
+                labels.push(label);
+                map[key] = [];
+                for (let c = 1; c <= 7; c++) {
+                    const n = parseInt(String(row[c] ?? "").replace(/[^0-9-]/g, ""), 10);
+                    map[key].push(Number.isFinite(n) ? n : 0);
+                }
             }
+            if (labels.length) {
+                out[section] = map;
+                if (!out.__labels || section === "PHX") out.__labels = labels;
+            }
+            section = null;
         }
-        return map;
+        return (out.PHX || out.SOUTH || out.NORTH) ? out : null;
     }
     async function fetchCapacitiesForTab(tabName) {
         if (!tabName) return null;
-        const { apiKey } = CONFIG;
         const sheetId = settings.NEXT_SHEET_ID;
-        const ranges = { phxRange: settings.AVAIL_RANGE_PHX, southRange: settings.AVAIL_RANGE_SOUTH, northRange: settings.AVAIL_RANGE_NORTH };
         const qTab = `'${tabName.replace(/'/g, "''")}'`;
-        let url = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(sheetId)}&op=batchGet`;
-        Object.values(ranges).forEach(r => { if (r) url += `&ranges=${encodeURIComponent(`${qTab}!${r}`)}`; });
+        const url = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(sheetId)}&range=${encodeURIComponent(`${qTab}!I2:R45`)}`;
         try {
             const res = await fetch(url, { cache: "no-store" });
             if (!res.ok) throw new Error(`API error: ${res.statusText}`);
             const data = await res.json();
-            return {
-                PHX: parseTotalsRange(data.valueRanges?.[0]?.values),
-                SOUTH: parseTotalsRange(data.valueRanges?.[1]?.values),
-                NORTH: parseTotalsRange(data.valueRanges?.[2]?.values),
-            };
+            const parsed = parseCapacityTables(data.values);
+            if (!parsed) addLog(`No capacity tables recognized on tab "${tabName}"`, 'WARN');
+            return parsed;
         } catch (e) {
             addLog(`Failed to fetch from tab "${tabName}": ${e.message}`, 'ERROR');
             return null;
@@ -2685,9 +2713,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const qTab = `'${tabName.replace(/'/g, "''")}'`;
 
-        // Row 250 contains the "Next Days Cutoff" checkboxes (B250:H250 for Mon-Sun)
+        // The "Next Days Cutoff" checkbox row is NOT at a fixed row — roster/section
+        // growth moves it (row 271 on 4-slot tabs, 310 on storm tabs, and it'll move
+        // again). Fetch a band and find the row whose col-A label contains "cutoff".
         // Using UNFORMATTED_VALUE to get boolean true/false for checkboxes
-        const range = `${qTab}!B250:H250`;
+        const range = `${qTab}!A180:H340`;
         const url = `https://az-roofers-tech-scheduler.vercel.app/api/sheets?spreadsheetId=${encodeURIComponent(sheetId)}&range=${encodeURIComponent(range)}&valueRenderOption=UNFORMATTED_VALUE`;
 
         try {
@@ -2707,13 +2737,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return [false, false, false, false, false, false, false];
             }
             const data = await res.json();
-            const values = data.values?.[0] || [];
+            const cutoffRow = (data.values || []).find(r => String(r?.[0] || "").toLowerCase().includes("cutoff"));
+            if (!cutoffRow) {
+                addLog(`No "Next Days Cutoff" row found on "${tabName}" - using defaults`, 'WARN');
+                return [false, false, false, false, false, false, false];
+            }
 
-            // Convert to array of booleans (Mon-Sun)
-            // Note: Sheet columns B-H map to array indices 0-6, but values array is 0-indexed from column B
+            // Convert to array of booleans (Mon-Sun); checkboxes live in cols B-H = indices 1-7
             const cutoffs = [];
             for (let i = 0; i < 7; i++) {
-                cutoffs[i] = values[i] === true; // Checkbox checked = cutoff enabled
+                cutoffs[i] = cutoffRow[i + 1] === true; // Checkbox checked = cutoff enabled
             }
 
             addLog(`Fetched day cutoffs: ${cutoffs.map((c, i) => c ? ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][i] : null).filter(Boolean).join(', ') || 'None'}`);
@@ -2891,18 +2924,25 @@ document.addEventListener('DOMContentLoaded', async () => {
             fetchCapacitiesForTab(primaryTab),
             fetchCapacitiesForTab(secondaryTab)
         ]);
-        const avail = { PHX: null, SOUTH: null, NORTH: null, ALL: null };
+        const avail = { PHX: null, SOUTH: null, NORTH: null, COMM: null, ALL: null };
         if (!primaryData && !secondaryData) return avail;
-        for (const region of ['PHX', 'NORTH', 'SOUTH']) {
+        // Storm tabs carry 5 blocks — teach CONFIG this week's block windows.
+        if (primaryData?.__labels) CONFIG.registerWeekBlocks(CONFIG.weekMondayKey(monDate), primaryData.__labels);
+        if (secondaryData?.__labels) CONFIG.registerWeekBlocks(CONFIG.weekMondayKey(sunDate), secondaryData.__labels);
+        state.weekBlockDefs = { ...CONFIG.WEEK_BLOCK_DEFS };
+        for (const region of ['PHX', 'NORTH', 'SOUTH', 'COMM']) {
             const pData = primaryData?.[region], sData = secondaryData?.[region];
             if (!pData && !sData) { avail[region] = null; continue; }
-            const m = { B1: [], B2: [], B3: [], B4: [] };
-            for (const key of ['B1', 'B2', 'B3', 'B4']) {
+            const m = {};
+            const keys = [...new Set([...Object.keys(pData || {}), ...Object.keys(sData || {})])].filter(k => /^B\d+$/.test(k));
+            for (const key of keys) {
+                m[key] = [];
                 for (let i = 0; i < 6; i++) m[key][i] = pData?.[key]?.[i] ?? 0;
                 m[key][6] = sData?.[key]?.[6] ?? 0;
             }
             avail[region] = m;
         }
+        // ALL stays residential (PHX+NORTH+SOUTH); COMM is its own capacity pool.
         avail.ALL = CONFIG.sumMaps(CONFIG.sumMaps(avail.PHX, avail.NORTH), avail.SOUTH);
         return avail;
     }
@@ -2934,21 +2974,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         state.dayCutoffs = dayCutoffs;
 
         if (!primaryData && !secondaryData) {
-            state.availability = { PHX: null, SOUTH: null, NORTH: null, ALL: null };
+            state.availability = { PHX: null, SOUTH: null, NORTH: null, COMM: null, ALL: null };
             applyRegionFilter();
             alert("Could not find a valid weekly tab in Google Sheets for the selected week.");
             return;
         }
-        const regions = ['PHX', 'NORTH', 'SOUTH'];
+        // Storm tabs carry 5 blocks — teach CONFIG this week's block windows.
+        if (primaryData?.__labels) CONFIG.registerWeekBlocks(CONFIG.weekMondayKey(monDate), primaryData.__labels);
+        if (secondaryData?.__labels) CONFIG.registerWeekBlocks(CONFIG.weekMondayKey(sunDate), secondaryData.__labels);
+        state.weekBlockDefs = { ...CONFIG.WEEK_BLOCK_DEFS };
+        const regions = ['PHX', 'NORTH', 'SOUTH', 'COMM'];
         for (const region of regions) {
             const pData = primaryData?.[region], sData = secondaryData?.[region];
             if (!pData && !sData) { state.availability[region] = null; continue; }
-            const newAvail = { B1: [], B2: [], B3: [], B4: [] };
-            const keys = ['B1', 'B2', 'B3', 'B4'];
+            const newAvail = {};
+            const keys = [...new Set([...Object.keys(pData || {}), ...Object.keys(sData || {})])].filter(k => /^B\d+$/.test(k));
             for (const key of keys) {
                 // Availability array is Monday-first: [Mon, Tue, Wed, Thu, Fri, Sat, Sun]
                 // Mon-Sat (indexes 0-5) come from primaryTab (current week starting Monday)
                 // Sunday (index 6) comes from secondaryTab (previous week's Sunday)
+                newAvail[key] = [];
                 for (let i = 0; i < 6; i++) {
                     newAvail[key][i] = pData?.[key]?.[i] ?? 0;  // Mon-Sat from current week's tab
                 }
@@ -2956,6 +3001,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             state.availability[region] = newAvail;
         }
+        // ALL stays residential (PHX+NORTH+SOUTH); COMM is its own capacity pool.
         state.availability.ALL = CONFIG.sumMaps(CONFIG.sumMaps(state.availability.PHX, state.availability.NORTH), state.availability.SOUTH);
         addLog("Successfully combined data from sheets.");
     }
@@ -6068,8 +6114,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     function findBestSlotStacking(targetCity, weekDays, allEvents, availability, currentRegion) {
         const candidates = [];
         const tomorrowISO = addDaysISO(phoenixTodayISO(), 1);
-        const keyToIndex = { "B1": 0, "B2": 1, "B3": 2, "B4": 3 };
         const cityStr = targetCity.toUpperCase();
+
+        // Region of an event for clustering: manual override wins, then GPS/city.
+        const regionOfEvent = (e) => state.regionOverrides[`${e.title}|${e.start}`] || CONFIG.getRegionForEvent(e);
 
         console.log('findBestSlotStacking debug:', { tomorrowISO, weekDays, currentRegion });
 
@@ -6101,9 +6149,20 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return c && c.toUpperCase() === cityStr;
             });
             const stackSize = cityEvents.length;
-            if (stackSize >= 4) continue;
+
+            // Region clustering: how many appointments does this day already have
+            // in the searched address's region? (e.g. a Flagstaff appt on Monday
+            // makes Monday attractive for every other NORTH address.) ALL never
+            // clusters — it isn't a geographic region.
+            const regionCount = (currentRegion && currentRegion !== 'ALL' && currentRegion !== 'COMM')
+                ? dailyEvents.filter(e => regionOfEvent(e) === currentRegion).length
+                : 0;
 
             const blocks = CONFIG.blockWindowForDate(new Date(dateStr + "T00:00"));
+            const keyToIndex = {};
+            blocks.forEach((b, i) => { keyToIndex[b.key] = i; });
+            if (stackSize >= blocks.length) continue;
+
             const usedBlocks = new Set();
             cityEvents.forEach(ev => {
                 blocks.forEach(b => {
@@ -6158,16 +6217,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                     } else {
                         reason = `There are ${stackSize} ${cityStr} jobs scheduled after this time slot.`;
                     }
+                } else if (regionCount > 0) {
+                    reason = `${regionCount} ${currentRegion} appointment${regionCount > 1 ? 's' : ''} already scheduled this day.`;
                 } else {
                     reason = `Start a new stack: High availability in this slot.`;
                 }
 
-                candidates.push({ dateStr, blockKey: best.key, stackSize, reason, remaining: best.remaining });
+                candidates.push({ dateStr, blockKey: best.key, stackSize, regionCount, reason, remaining: best.remaining });
             }
         }
 
+        // Same-city stacks beat same-region days (a city stack IS the tightest
+        // cluster); region-mates break ties so trips batch together; then earliest.
         candidates.sort((a, b) => {
             if (b.stackSize !== a.stackSize) return b.stackSize - a.stackSize;
+            if ((b.regionCount || 0) !== (a.regionCount || 0)) return (b.regionCount || 0) - (a.regionCount || 0);
             return new Date(a.dateStr) - new Date(b.dateStr);
         });
 
@@ -6192,12 +6256,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // For each date, pick the BEST candidate
         // Priority: stackSize (higher is better) > remaining capacity (higher is better) > earlier block
-        const keyOrder = { "B1": 0, "B2": 1, "B3": 2, "B4": 3 };
+        // Block keys are ordinal (B1..Bn — storm weeks have B5), so sort by their number.
+        const keyOrder = (k) => parseInt(String(k || "").slice(1), 10) || 0;
         for (const [dateStr, candidates] of Object.entries(byDate)) {
             candidates.sort((a, b) => {
                 if (b.stackSize !== a.stackSize) return b.stackSize - a.stackSize;
                 if ((b.remaining || 0) !== (a.remaining || 0)) return (b.remaining || 0) - (a.remaining || 0);
-                return (keyOrder[a.blockKey] || 0) - (keyOrder[b.blockKey] || 0);
+                return keyOrder(a.blockKey) - keyOrder(b.blockKey);
             });
             bestPerDay[dateStr] = candidates[0];
         }
@@ -6276,9 +6341,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (smartRecs && smartRecs.length > 0) {
             // Convert API recommendations to our candidate format
             candidates = smartRecs.map(rec => {
-                // Map API time slot to block key
-                const slotToBlock = { 'ts-1': 'B1', 'ts-2': 'B2', 'ts-3': 'B3', 'ts-4': 'B4' };
-                const blockKey = slotToBlock[rec.timeSlotId] || 'B1';
+                // Map API time slot to block key (ts-N -> BN; storm weeks add ts-5/B5)
+                const tsNum = parseInt(String(rec.timeSlotId || "").replace(/^ts-/, ""), 10);
+                const blockKey = Number.isFinite(tsNum) && tsNum >= 1 ? `B${tsNum}` : 'B1';
 
                 // Build reason text with rep name and skills
                 let reason = '';
@@ -8924,10 +8989,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             const sheetId = settings.NEXT_SHEET_ID;
             if (!apiKey || !sheetId) return [];
 
-            // Map block key to slot offset (1-4)
-            const slotOffsets = { 'B1': 1, 'B2': 2, 'B3': 3, 'B4': 4 };
-            const slotOffset = slotOffsets[blockKey];
-            if (!slotOffset) return [];
+            // Map block key to slot offset (BN -> N; storm weeks have B5)
+            const slotOffset = parseInt(String(blockKey || "").slice(1), 10);
+            if (!Number.isFinite(slotOffset) || slotOffset < 1) return [];
 
             // Find the tab for the target date's week
             const tabName = await discoverWeeklyTabNameForDate(targetDate);

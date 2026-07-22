@@ -504,8 +504,58 @@ export const CONFIG = {
   // true then.
   SCHEDULE_CUTOVER_2: new Date(2026, 6, 14), // 6 = July
 
+  // --- Per-week block definitions (storm weeks) ---
+  // The SRA sheet normally has 4 appointment blocks per day; storm-template weeks
+  // have 5 (8-10 / 10-12 / 1-3 / 3-5 / 5-7). The popup registers each parsed tab's
+  // slot labels here, keyed by that sheet-week's MONDAY (YYYY-MM-DD). Only weeks
+  // whose slot count differs from 4 are registered: regular 4-slot weeks keep the
+  // hand-tuned widened windows in the date-cutover tiers below (sheet labels still
+  // say "8am - 10am" while the real booking window is 8-11), so sheet labels must
+  // NOT override them.
+  WEEK_BLOCK_DEFS: {},
+
+  // "8am - 10am" / "10am - 12pm" / "12:30pm - 3pm" -> {sh,sm,eh,em} or null.
+  parseSlotLabel(label) {
+    const m = String(label || "").match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
+    if (!m) return null;
+    const to24 = (h, ap) => (h % 12) + (ap.toLowerCase() === "pm" ? 12 : 0);
+    return {
+      sh: to24(parseInt(m[1], 10), m[3]), sm: parseInt(m[2] || "0", 10),
+      eh: to24(parseInt(m[4], 10), m[6]), em: parseInt(m[5] || "0", 10),
+    };
+  },
+
+  // Monday (YYYY-MM-DD) of the sheet week (Mon-Sun) containing this local date.
+  weekMondayKey(date) {
+    const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const diff = d.getDay() === 0 ? -6 : 1 - d.getDay();
+    d.setDate(d.getDate() + diff);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  },
+
+  // Called by the popup after parsing a weekly tab. labels = slot labels in sheet
+  // order (col I). Registers only non-4-slot layouts; see WEEK_BLOCK_DEFS note.
+  registerWeekBlocks(mondayKey, labels) {
+    if (!mondayKey || !Array.isArray(labels)) return;
+    if (labels.length === 4) { delete this.WEEK_BLOCK_DEFS[mondayKey]; return; }
+    const defs = [];
+    for (let i = 0; i < labels.length; i++) {
+      const w = this.parseSlotLabel(labels[i]);
+      if (!w) return; // any unparsable label -> keep cutover fallback for safety
+      defs.push({ key: `B${i + 1}`, label: String(labels[i]).replace(/\s+/g, ""), ...w });
+    }
+    this.WEEK_BLOCK_DEFS[mondayKey] = defs;
+  },
+
   blockWindowForDate(date) {
     const y = date.getFullYear(), m = date.getMonth(), d = date.getDate();
+    const weekDefs = this.WEEK_BLOCK_DEFS[this.weekMondayKey(date)];
+    if (weekDefs) {
+      return weekDefs.map(def => ({
+        key: def.key, label: def.label,
+        start: new Date(y, m, d, def.sh, def.sm), end: new Date(y, m, d, def.eh, def.em),
+      }));
+    }
     if (date >= this.SCHEDULE_CUTOVER_2) {
       return [
         { key:"B1", label:"8am-11am",  start:new Date(y,m,d,8,0),  end:new Date(y,m,d,11,0) },
@@ -578,6 +628,10 @@ export const CONFIG = {
 
   passesRegion(e, regionKey) {
     if (regionKey === "ALL") return true;
+    // COMM is a capacity-only pool: there is no event-classification rule for
+    // commercial jobs yet (geo classification would mislabel them PHX/NORTH/SOUTH),
+    // so the Comm view shows sheet capacity without any events.
+    if (regionKey === "COMM") return false;
     const region = this.getRegionForEvent(e);
     // Neither coords nor a known city → "uncategorized": still shows in all filters (unchanged).
     if (!region) return true;
@@ -602,9 +656,9 @@ export const CONFIG = {
   sumMaps(a, b) {
     if (!a) return b;
     if (!b) return a;
-    const out = { B1: [], B2: [], B3: [], B4: [] };
-    const blockKeys = ["B1", "B2", "B3", "B4"];
-    for (const k of blockKeys) {
+    const out = {};
+    const blockKeys = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(k => /^B\d+$/.test(k));
+    for (const k of blockKeys) { out[k] = [];
         for (let i = 0; i < 7; i++) {
             out[k][i] = (a[k]?.[i] || 0) + (b[k]?.[i] || 0);
         }
@@ -622,9 +676,10 @@ export const CONFIG = {
   },
   
   computeDailyTotals(dateStr, eventsForDay, availability, region) {
-    const perBlockBooked = { B1: 0, B2: 0, B3: 0, B4: 0 };
     const d = new Date(`${dateStr}T00:00:00`);
     const blocks = this.blockWindowForDate(d);
+    const perBlockBooked = {};
+    for (const blk of blocks) perBlockBooked[blk.key] = 0;
     
     for (const ev of eventsForDay) {
       const occupiedKeys = new Set();
@@ -648,8 +703,8 @@ export const CONFIG = {
     let booked = 0;
     let dayOver = 0;
     let netAvailable = 0;
-    const perBlockRemaining = { B1: null, B2: null, B3: null, B4: null };
-    const blockKeys = ["B1", "B2", "B3", "B4"];
+    const perBlockRemaining = {};
+    const blockKeys = blocks.map(blk => blk.key);
 
     for (const k of blockKeys) {
       const bookedK = perBlockBooked[k];
@@ -675,7 +730,8 @@ export const CONFIG = {
         const city = this.getCityFromEvent(ev) || "UNCATEGORIZED";
         let rec = perCity.get(city);
         if (!rec) {
-            rec = { total: 0, perBlock: { B1: 0, B2: 0, B3: 0, B4: 0 } };
+            rec = { total: 0, perBlock: {} };
+            for (const blk of blocks) rec.perBlock[blk.key] = 0;
             perCity.set(city, rec);
         }
         for (const blk of blocks) {

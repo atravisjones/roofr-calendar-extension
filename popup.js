@@ -646,6 +646,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     const CITIES_RANGE = 'A82:C200'; // PHX in A, North in B, South in C starting at row 82
     const NORTH_ROUTING_RANGE = 'A40:C45';
 
+    // Stale-cache armor: if the panel cached an older config.js (the known
+    // reload-without-reopen gotcha), fall back to the legacy >=15-min-any-block
+    // rule instead of throwing and killing the render/load path.
+    const occupiedKeysFor = (ev, blocks) => CONFIG.occupiedBlockKeys
+        ? CONFIG.occupiedBlockKeys(ev, blocks)
+        : blocks.filter(b => CONFIG.overlapMinutes({ start: ev.start, end: ev.end }, b) >= 15).map(b => b.key);
+
     let state = {
         currentRegion: "PHX",
         allEvents: [],
@@ -2177,7 +2184,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             state.weekDataCache = state.weekDataCache || {}; // Ensure initialized
             // Restore parsed storm-week block definitions so a reopened panel
             // renders 5-block weeks correctly before the first capacities fetch.
-            if (state.weekBlockDefs) Object.assign(CONFIG.WEEK_BLOCK_DEFS, state.weekBlockDefs);
+            // (Guarded: a stale cached config.js has no WEEK_BLOCK_DEFS and must
+            // not break init.)
+            if (state.weekBlockDefs && CONFIG.WEEK_BLOCK_DEFS) Object.assign(CONFIG.WEEK_BLOCK_DEFS, state.weekBlockDefs);
             addLog('Shared state loaded.');
         } else {
             addLog('No shared state found.');
@@ -2411,7 +2420,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Teach CONFIG which jobs are commercial so DOM-scanned copies of the
             // same events (no tag data) classify identically — otherwise the Comm
             // view flip-flops whenever a scan replaces the server events.
-            state.allEvents.forEach(ev => { if (ev.isCommercial) CONFIG.rememberCommercialEvent(ev); });
+            // Optional call: a stale cached config.js (reload-without-reopen gotcha)
+            // must NOT throw here — that would kill the whole server load and shrink
+            // the week view to the DOM-visible days.
+            state.allEvents.forEach(ev => { if (ev.isCommercial) CONFIG.rememberCommercialEvent?.(ev); });
             state.parsedJobs = state.allEvents.map(ev => CONFIG.parseJobDetails(ev));
 
             // Past days (yesterday) prefer the LIVE on-screen calendar over the
@@ -2932,9 +2944,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         const avail = { PHX: null, SOUTH: null, NORTH: null, COMM: null, ALL: null };
         if (!primaryData && !secondaryData) return avail;
         // Storm tabs carry 5 blocks — teach CONFIG this week's block windows.
-        if (primaryData?.__labels) CONFIG.registerWeekBlocks(CONFIG.weekMondayKey(monDate), primaryData.__labels);
-        if (secondaryData?.__labels) CONFIG.registerWeekBlocks(CONFIG.weekMondayKey(sunDate), secondaryData.__labels);
-        state.weekBlockDefs = { ...CONFIG.WEEK_BLOCK_DEFS };
+        // (CONFIG.registerWeekBlocks guarded: stale cached config.js must not throw.)
+        if (CONFIG.registerWeekBlocks) {
+            if (primaryData?.__labels) CONFIG.registerWeekBlocks(CONFIG.weekMondayKey(monDate), primaryData.__labels);
+            if (secondaryData?.__labels) CONFIG.registerWeekBlocks(CONFIG.weekMondayKey(sunDate), secondaryData.__labels);
+            state.weekBlockDefs = { ...CONFIG.WEEK_BLOCK_DEFS };
+        }
         for (const region of ['PHX', 'NORTH', 'SOUTH', 'COMM']) {
             const pData = primaryData?.[region], sData = secondaryData?.[region];
             if (!pData && !sData) { avail[region] = null; continue; }
@@ -2985,9 +3000,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
         // Storm tabs carry 5 blocks — teach CONFIG this week's block windows.
-        if (primaryData?.__labels) CONFIG.registerWeekBlocks(CONFIG.weekMondayKey(monDate), primaryData.__labels);
-        if (secondaryData?.__labels) CONFIG.registerWeekBlocks(CONFIG.weekMondayKey(sunDate), secondaryData.__labels);
-        state.weekBlockDefs = { ...CONFIG.WEEK_BLOCK_DEFS };
+        // (CONFIG.registerWeekBlocks guarded: stale cached config.js must not throw.)
+        if (CONFIG.registerWeekBlocks) {
+            if (primaryData?.__labels) CONFIG.registerWeekBlocks(CONFIG.weekMondayKey(monDate), primaryData.__labels);
+            if (secondaryData?.__labels) CONFIG.registerWeekBlocks(CONFIG.weekMondayKey(sunDate), secondaryData.__labels);
+            state.weekBlockDefs = { ...CONFIG.WEEK_BLOCK_DEFS };
+        }
         const regions = ['PHX', 'NORTH', 'SOUTH', 'COMM'];
         for (const region of regions) {
             const pData = primaryData?.[region], sData = secondaryData?.[region];
@@ -3496,7 +3514,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // Find cities
-            const evsInBlock = eventsForDay.filter(ev => CONFIG.occupiedBlockKeys(ev, blocks).includes(blk.key));
+            const evsInBlock = eventsForDay.filter(ev => occupiedKeysFor(ev, blocks).includes(blk.key));
             const uniqueCities = [...new Set(evsInBlock.map(ev => CONFIG.getCityFromEvent(ev) || "Uncategorized"))].filter(c => c !== "Uncategorized").sort();
 
             const cityItems = uniqueCities.map(c => {
@@ -6152,7 +6170,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Commercial jobs belong to the separate commercial rep pool — they
             // neither stack with nor cluster residential bookings.
             const cityEvents = dailyEvents.filter(e => {
-                if (CONFIG.isCommercialEvent(e)) return false;
+                if (CONFIG.isCommercialEvent?.(e)) return false;
                 const c = CONFIG.getCityFromEvent(e);
                 return c && c.toUpperCase() === cityStr;
             });
@@ -6163,7 +6181,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // makes Monday attractive for every other NORTH address.) ALL never
             // clusters — it isn't a geographic region.
             const regionCount = (currentRegion && currentRegion !== 'ALL' && currentRegion !== 'COMM')
-                ? dailyEvents.filter(e => !CONFIG.isCommercialEvent(e) && regionOfEvent(e) === currentRegion).length
+                ? dailyEvents.filter(e => !CONFIG.isCommercialEvent?.(e) && regionOfEvent(e) === currentRegion).length
                 : 0;
 
             const blocks = CONFIG.blockWindowForDate(new Date(dateStr + "T00:00"));
@@ -6173,7 +6191,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const usedBlocks = new Set();
             cityEvents.forEach(ev => {
-                CONFIG.occupiedBlockKeys(ev, blocks).forEach(k => usedBlocks.add(k));
+                occupiedKeysFor(ev, blocks).forEach(k => usedBlocks.add(k));
             });
 
             const validOptions = [];

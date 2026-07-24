@@ -3171,10 +3171,12 @@
     return m ? new Date(+m[3], +m[1] - 1, +m[2]) : null;
   }
   // A row is "due" if it's still callable, under the attempt cap, and its next
-  // call date has arrived (or it was never contacted).
+  // call date has arrived (or it was never contacted). "Deposits On Hold" is
+  // stamped by the sync cron while the Roofr job sits in that stage — parked,
+  // not callable (the API blocks begin-call on it too).
   function wcIsDue(row) {
     const st = (row.status || "").trim().toLowerCase();
-    if (["complete", "production call"].includes(st)) return false;  // terminal — don't call
+    if (["complete", "production call", "deposits on hold"].includes(st)) return false;  // terminal/parked — don't call
     if ((parseInt(row.attemptCount) || 0) >= WC_MAX_ATTEMPTS) return false;
     const nc = wcParseMDY(row.nextCall);
     if (!nc) return true;                 // never contacted → due now

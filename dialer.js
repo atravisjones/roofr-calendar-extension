@@ -110,6 +110,11 @@
   let _lsaBusyAtDial = false;
   let _lsaSkippedIds = new Set();
   let _lsaLtTabId = null;         // the single reused LeadTruffle conversation tab
+  // LSA filters persist per browser profile. Invalid/restored-old values always
+  // fall back to the useful callable/all-company view.
+  const LSA_FILTERS_KEY = "lsaLeadFilters";
+  let _lsaCompanyFilter = "all";
+  let _lsaStatusFilter = "callable";
 
   // ── Needs Rescheduled state (fully ISOLATED from the leads/missed dialer) ──
   // This flow never sets `currentLead`, never calls advanceToNext/onCallEnded/
@@ -2005,12 +2010,14 @@
     if (rschedMain) rschedMain.style.display = isResched ? "" : "none";
     if (lsaMain) lsaMain.style.display = isLsa ? "" : "none";
     if (welcomeMain) welcomeMain.style.display = isWelcome ? "" : "none";
-    // Filter panels: leads / missed / rescheduled / welcome each show only their own.
+    // Filter panels: leads / missed / rescheduled / LSA / welcome each show only their own.
     const mfPanel = document.getElementById("missed-filter-panel");
     const rschedPanel = document.getElementById("rescheduled-filter-panel");
+    const lsaPanel = document.getElementById("lsa-filter-panel");
     const welcomePanel = document.getElementById("welcome-filter-panel");
     if (mfPanel) mfPanel.style.display = tab === "missed" ? "" : "none";
     if (rschedPanel) rschedPanel.style.display = isResched ? "" : "none";
+    if (lsaPanel) lsaPanel.style.display = isLsa ? "" : "none";
     if (welcomePanel) welcomePanel.style.display = isWelcome ? "" : "none";
     if (els.filterPanel) els.filterPanel.style.display = tab === "leads" ? "" : "none";
     log(`switched to ${{ leads: "Leads", missed: "Missed Calls", rescheduled: "Rescheduled", lsa: "LSA Leads", welcome: "Welcome Calls" }[tab] || tab} tab`, "info", "ui");
@@ -2074,6 +2081,7 @@
     btn.addEventListener("click", () => setMissedFilter(btn.dataset.mf)));
   rschedBindButtons();
   lsaBindButtons();
+  lsaRestoreFilters();
   wcBindButtons();
   // Prime the Missed Calls badge once on load (independent of the active tab).
   (async () => {
@@ -2886,11 +2894,108 @@
     return company || "";
   }
 
+  function lsaHasPhone(row) {
+    return String(row?.phone10 || "").replace(/\D/g, "").length === 10;
+  }
+
+  function lsaStatusBucket(row) {
+    const status = String(row?.lead_status || "").trim().toUpperCase();
+    if (!lsaHasPhone(row)) return "no-phone";
+    if (!status) return "new";
+    if (status.startsWith("NURTURING")) return "nurturing";
+    if (status.startsWith("BOOKED")) return "booked";
+    if (status.startsWith("LOST")) return "lost";
+    if (status === "WON") return "won";
+    return "callable";
+  }
+
+  function lsaMatchesStatus(row, status = _lsaStatusFilter) {
+    if (status === "all") return true;
+    const bucket = lsaStatusBucket(row);
+    if (status === "callable") {
+      const raw = String(row?.lead_status || "").trim().toUpperCase();
+      return lsaHasPhone(row) && !raw.startsWith("BOOKED") && !raw.startsWith("LOST") && raw !== "WON";
+    }
+    return bucket === status;
+  }
+
+  function lsaMatchesCompany(row, company = _lsaCompanyFilter) {
+    return company === "all" || String(row?.company || "").trim() === company;
+  }
+
+  function lsaPrettifyStatus(status) {
+    return String(status || "").trim().toLowerCase().replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  function lsaPersistFilters() {
+    try { chrome.storage.local.set({ [LSA_FILTERS_KEY]: { company: _lsaCompanyFilter, status: _lsaStatusFilter } }); } catch (_) {}
+  }
+
+  function lsaPopulateFilterSelects() {
+    const companySelect = document.getElementById("lsa-company-select");
+    const statusSelect = document.getElementById("lsa-status-select");
+    const companies = ["Arizona Roofers", "Arizona Roof Pros"];
+    const statuses = [
+      ["callable", "Callable"], ["new", "New (uncontacted)"], ["nurturing", "Nurturing"],
+      ["booked", "Booked"], ["lost", "Lost/Unqualified"], ["won", "Won"],
+      ["no-phone", "No phone"], ["all", "All"],
+    ];
+    const companyScoped = _lsaAll.filter(row => lsaMatchesStatus(row));
+    const statusScoped = _lsaAll.filter(row => lsaMatchesCompany(row));
+    if (companySelect) {
+      companySelect.innerHTML = "";
+      const add = (value, label, count) => { const o = document.createElement("option"); o.value = value; o.textContent = `${label} (${count})`; o.selected = value === _lsaCompanyFilter; companySelect.appendChild(o); };
+      add("all", "All", companyScoped.length);
+      for (const company of companies) add(company, company, companyScoped.filter(row => lsaMatchesCompany(row, company)).length);
+      companySelect.disabled = _lsaPhase !== "idle";
+    }
+    if (statusSelect) {
+      statusSelect.innerHTML = "";
+      for (const [value, label] of statuses) {
+        const o = document.createElement("option"); o.value = value;
+        o.textContent = `${label} (${statusScoped.filter(row => lsaMatchesStatus(row, value)).length})`;
+        o.selected = value === _lsaStatusFilter; statusSelect.appendChild(o);
+      }
+      statusSelect.disabled = _lsaPhase !== "idle";
+    }
+  }
+
+  function lsaSetCompanyFilter(company) {
+    if (!["all", "Arizona Roofers", "Arizona Roof Pros"].includes(company)) company = "all";
+    if (_lsaPhase !== "idle") { lsaPopulateFilterSelects(); return; }
+    _lsaCompanyFilter = company;
+    lsaPersistFilters();
+    renderLsaQueue();
+  }
+
+  function lsaSetStatusFilter(status) {
+    if (!["callable", "new", "nurturing", "booked", "lost", "won", "no-phone", "all"].includes(status)) status = "callable";
+    if (_lsaPhase !== "idle") { lsaPopulateFilterSelects(); return; }
+    _lsaStatusFilter = status;
+    lsaPersistFilters();
+    renderLsaQueue();
+  }
+
+  async function lsaRestoreFilters() {
+    try {
+      const saved = (await chrome.storage.local.get([LSA_FILTERS_KEY]))?.[LSA_FILTERS_KEY] || {};
+      _lsaCompanyFilter = ["all", "Arizona Roofers", "Arizona Roof Pros"].includes(saved.company) ? saved.company : "all";
+      _lsaStatusFilter = ["callable", "new", "nurturing", "booked", "lost", "won", "no-phone", "all"].includes(saved.status) ? saved.status : "callable";
+    } catch (_) {
+      _lsaCompanyFilter = "all";
+      _lsaStatusFilter = "callable";
+    }
+    lsaPopulateFilterSelects();
+    if (currentTab === "lsa") renderLsaQueue();
+  }
+
   function lsaVisibleRows() {
     return _lsaAll.filter(row =>
       !row.called &&
       !row.called_at &&
-      !row.already_called
+      !row.already_called &&
+      lsaMatchesCompany(row) &&
+      lsaMatchesStatus(row)
     );
   }
 
@@ -2908,6 +3013,7 @@
 
     const rows = lsaVisibleRows();
     _lsaQueue = rows.slice();
+    lsaPopulateFilterSelects();
     updateLsaBadge(rows.length);
     if (header) header.textContent = `LSA Leads (${rows.length})`;
 
@@ -2933,7 +3039,8 @@
 
       const phone = document.createElement("div");
       phone.className = "rsched-phone";
-      phone.textContent = lead.phone || "—";
+      phone.textContent = lsaHasPhone(lead) ? (lead.phone || lead.phone10) : "no #";
+      if (!lsaHasPhone(lead)) phone.className = "lsa-lock-chip";
 
       const meta = document.createElement("div");
       meta.className = "rsched-meta";
@@ -3114,10 +3221,16 @@
     };
 
     set("lsa-lead-name", lead.name || "(no name)");
-    set("lsa-lead-phone", lead.phone || "—");
+    set("lsa-lead-phone", lsaHasPhone(lead) ? (lead.phone || lead.phone10) : "No phone number");
     set("lsa-company", lead.company || "Unknown company");
     set("lsa-job-description", lead.job_description || "No customer description provided.");
     set("lsa-summary", lead.summary || "");
+    const status = document.getElementById("lsa-status");
+    if (status) {
+      const raw = String(lead.lead_status || "").trim();
+      status.textContent = lsaPrettifyStatus(raw);
+      status.style.display = raw ? "" : "none";
+    }
 
     const meta = document.getElementById("lsa-lead-meta");
     if (meta) {
@@ -3149,7 +3262,8 @@
     };
 
     show("lsa-review-card", nextPhase !== "idle");
-    show("lsa-stage1", nextPhase === "reviewing");
+    show("lsa-stage1", nextPhase === "reviewing" && _lsaLead && lsaHasPhone(_lsaLead));
+    show("lsa-no-phone-actions", nextPhase === "reviewing" && _lsaLead && !lsaHasPhone(_lsaLead));
     show("lsa-dialing", nextPhase === "calling");
     show("lsa-stage2", nextPhase === "stage2");
 
@@ -3161,6 +3275,7 @@
         stage2: "Outcome",
       }[nextPhase] || "Reviewing";
     }
+    lsaPopulateFilterSelects();
   }
 
   function lsaStartCallTimer() {
@@ -3256,7 +3371,7 @@
       return;
     }
 
-    const e164 = toE164(lead.phone || "");
+    const e164 = toE164(lead.phone || lead.phone10 || "");
     if (!e164) {
       log(`lsa: bad/empty phone: ${lead.phone || "(none)"}`, "err", "lsa");
       return;
@@ -3429,6 +3544,8 @@
 
     const noteEl = document.getElementById("lsa-note");
     if (noteEl) noteEl.value = "";
+    const noPhoneNoteEl = document.getElementById("lsa-no-phone-note");
+    if (noPhoneNoteEl) noPhoneNoteEl.value = "";
 
     _lsaLead = null;
     _lsaPhase = "idle";
@@ -3444,6 +3561,15 @@
     } else {
       log("lsa: queue complete — no more available leads", "ok", "lsa");
     }
+  }
+
+  async function lsaHandleNoPhoneDisposition(disposition) {
+    if (!_lsaLead || _lsaPhase !== "reviewing" || lsaHasPhone(_lsaLead)) return;
+    const stage2Note = document.getElementById("lsa-note");
+    if (stage2Note) stage2Note.value = document.getElementById("lsa-no-phone-note")?.value || "";
+    _lsaPhase = "stage2";
+    lsaShowPhase("stage2");
+    await lsaHandleStage2(disposition);
   }
 
   async function lsaReset({ release = false } = {}) {
@@ -3496,6 +3622,12 @@
     on("lsa-btn-noanswer", () => lsaHandleStage2("No Answer"));
     on("lsa-btn-unqualified", () => lsaHandleStage2("Unqualified"));
     on("lsa-btn-other", () => lsaHandleStage2("Other"));
+    on("lsa-btn-no-phone-skip", lsaHandleSkip);
+    on("lsa-btn-no-phone-booked", () => lsaHandleNoPhoneDisposition("Booked"));
+    on("lsa-btn-no-phone-unqualified", () => lsaHandleNoPhoneDisposition("Unqualified"));
+    on("lsa-btn-no-phone-other", () => lsaHandleNoPhoneDisposition("Other"));
+    document.getElementById("lsa-company-select")?.addEventListener("change", e => lsaSetCompanyFilter(e.target.value));
+    document.getElementById("lsa-status-select")?.addEventListener("change", e => lsaSetStatusFilter(e.target.value));
 
     on("lsa-hangup-btn", () => {
       log("lsa: hangup clicked", "act", "lsa");

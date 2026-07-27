@@ -462,6 +462,7 @@
     /* ── LSA Leads tab ── */
     .lsa-row-main { flex: 1; min-width: 0; }
     .lsa-company-badge,
+    .lsa-status-badge,
     .lsa-lock-chip {
       display: inline-block;
       border: 1px solid var(--border);
@@ -476,6 +477,10 @@
       background: var(--accent-light);
       color: var(--accent-hi);
       border-color: var(--accent);
+    }
+    .lsa-status-badge {
+      background: var(--surface-hi);
+      color: var(--muted);
     }
     .lsa-lock-chip {
       margin-left: auto;
@@ -646,6 +651,16 @@
           </label>
         </div>
       </div>
+      <div class="filter-panel" id="lsa-filter-panel" style="display:none;">
+        <div class="filter-toggle" style="cursor:default;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <label class="rsched-filter-label">Company
+            <select id="lsa-company-select" class="rsched-select"></select>
+          </label>
+          <label class="rsched-filter-label">Status
+            <select id="lsa-status-select" class="rsched-select"></select>
+          </label>
+        </div>
+      </div>
       <div class="filter-panel" id="welcome-filter-panel" style="display:none;">
         <div class="filter-toggle" style="cursor:default;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
           <label class="rsched-filter-label">Show
@@ -729,6 +744,7 @@
           <div class="rsched-card-top">
             <span class="rsched-phase-badge" id="lsa-phase-badge">Reviewing</span>
             <span class="lsa-company-badge" id="lsa-company"></span>
+            <span class="lsa-status-badge" id="lsa-status" style="display:none;"></span>
             <button id="lsa-close-btn" title="Close this card and release the lead" style="margin-left:auto;font-size:10px;padding:2px 7px;border-radius:4px;box-shadow:none;">✕ Close</button>
           </div>
 
@@ -742,6 +758,15 @@
           <div id="lsa-stage1" class="rescheduled-stage-row" style="display:none;">
             <button id="lsa-btn-call" class="primary">☎ Call</button>
             <button id="lsa-btn-skip" class="danger">Skip</button>
+          </div>
+          <div id="lsa-no-phone-actions" style="display:none;margin-top:8px;">
+            <div class="rescheduled-stage-row">
+              <button id="lsa-btn-no-phone-skip" class="danger">Skip</button>
+              <button id="lsa-btn-no-phone-booked" class="primary">Booked</button>
+              <button id="lsa-btn-no-phone-unqualified">Unqualified</button>
+              <button id="lsa-btn-no-phone-other">Other</button>
+            </div>
+            <textarea id="lsa-no-phone-note" class="rescheduled-note" placeholder="Note for Other (optional)…"></textarea>
           </div>
 
           <div id="lsa-dialing" style="display:none;margin-top:8px;">

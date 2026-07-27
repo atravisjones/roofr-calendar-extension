@@ -27,6 +27,9 @@
   // disposition) via /api/welcome-calls — keyed by jobId, capped at 4 attempts.
   const WELCOME_URL = `${API_BASE}/api/welcome-calls`;
   const RSCHED_CALLS_URL = `${API_BASE}/api/roofr-rsched-calls`;
+  const LSA_CALLS_URL = `${API_BASE}/api/roofr-lsa-calls`;
+  const LEADTRUFFLE_OUTCOME_URL = `${API_BASE}/api/leadtruffle-outcome`;
+  const LSA_HEARTBEAT_MS = 60000;
   const WC_MAX_ATTEMPTS = 4;
   const WC_RENEW_MS = 90000;             // lock heartbeat during a long welcome call
   const DEBUG_LOG_URL = `${API_BASE}/api/dialer-debug-log`;
@@ -86,7 +89,26 @@
   let phase = "idle";     // 'idle' | 'fetching' | 'dialing' | 'ringing' | 'connected' | 'wrapup'
   let currentLead = null;
   let queue = [];
-  let currentTab = "leads";   // 'leads' (form leads / Google Sheet) | 'missed' (CTM missed calls) | 'rescheduled' (Roofr Needs-Rescheduled jobs)
+  let currentTab = "leads";   // 'leads' | 'missed' | 'rescheduled' | 'lsa' | 'welcome'
+
+  // ── LSA Leads state (fully isolated from every other dialer flow) ──
+  let _lsaAll = [];
+  let _lsaQueue = [];
+  let _lsaIdx = -1;
+  let _lsaLead = null;
+  let _lsaPhase = "idle";       // 'idle' | 'reviewing' | 'calling' | 'stage2'
+  let _lsaClaimed = false;
+  let _lsaClaiming = false;
+  let _lsaHeartbeatId = null;
+  let _lsaCallTimerId = null;
+  let _lsaCallStartMs = 0;
+  let _lsaConnectedAtMs = 0;
+  let _lsaTalkTimeSec = 0;
+  let _lsaRingTimeoutId = null;
+  let _lsaDialActive = false;
+  let _lsaDialAt = 0;
+  let _lsaBusyAtDial = false;
+  let _lsaSkippedIds = new Set();
 
   // ── Needs Rescheduled state (fully ISOLATED from the leads/missed dialer) ──
   // This flow never sets `currentLead`, never calls advanceToNext/onCallEnded/
@@ -471,6 +493,7 @@
   }
 
   function renderQueue() {
+    if (currentTab === "lsa") { renderLsaQueue(); return; }
     if (currentTab === "welcome") { renderWelcomeQueue(); return; }
     if (currentTab === "rescheduled") { renderRescheduledQueue(); return; }
     els.queue.innerHTML = "";
@@ -1014,6 +1037,29 @@
     if (_inflightFetch) return _inflightFetch;
     _lastFetchAt = now;
     _inflightFetch = (async () => {
+      // ── LSA Leads tab: claim-at-review queue from LeadTruffle ──
+      if (currentTab === "lsa") {
+        log("fetching LSA leads…", "info", "lsa");
+        const data = await lsaWrite({ action: "feed", rep: repName || "Unknown" });
+        if (data.error) {
+          log(`fetch LSA leads failed: ${data.error}`, "err", "lsa");
+          return;
+        }
+        const rows = Array.isArray(data.rows)
+          ? data.rows
+          : Array.isArray(data.leads)
+            ? data.leads
+            : [];
+        _lsaAll = rows.filter(row =>
+          !row.called &&
+          !row.called_at &&
+          !row.already_called
+        );
+        log(`LSA leads loaded: ${_lsaAll.length}`, "ok", "lsa");
+        if (_lsaPhase === "idle") renderLsaQueue();
+        else updateLsaBadge(_lsaAll.length);
+        return;
+      }
       // ── Needs Rescheduled tab: pull Roofr jobs in "Needs Rescheduled" ──
       if (currentTab === "rescheduled") {
         log("fetching rescheduled jobs…", "info", "queue");
@@ -1871,6 +1917,7 @@
   }
 
   els.startBtn.onclick = async () => {
+    if (currentTab === "lsa") { lsaStartQueue(); return; }
     if (currentTab === "welcome") { wcStartQueue(); return; }
     if (currentTab === "rescheduled") { rschedStartQueue(); return; }
     if (mode === "running") return;
@@ -1924,17 +1971,26 @@
     if (tab === currentTab) return;
     // Never swap the queue out from under an active call (leads/missed OR a
     // rescheduled call in progress).
-    if (mode === "running" || ["dialing", "ringing", "connected", "wrapup"].includes(phase) || _rschedPhase === "calling" || _wcPhase === "calling") {
+    if (
+      mode === "running" ||
+      ["dialing", "ringing", "connected", "wrapup"].includes(phase) ||
+      _rschedPhase === "calling" ||
+      _lsaPhase === "calling" ||
+      _wcPhase === "calling"
+    ) {
       log("can't switch tabs mid-call — stop the dialer first", "warn", "state");
       return;
     }
     // Leaving the rescheduled tab: tear down any open review card/timer.
     if (currentTab === "rescheduled" && tab !== "rescheduled") rschedReset();
+    // Leaving LSA closes the in-panel card and releases its review claim.
+    if (currentTab === "lsa" && tab !== "lsa") lsaReset({ release: true });
     // Leaving the welcome tab: release any held lock + tear down the card.
     if (currentTab === "welcome" && tab !== "welcome") wcReset();
     currentTab = tab;
     queue = [];
     const isResched = tab === "rescheduled";
+    const isLsa = tab === "lsa";
     const isWelcome = tab === "welcome";
     document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
     if (els.queueHeader) els.queueHeader.textContent = tab === "missed" ? "Missed Calls" : "Queue";
@@ -1942,9 +1998,11 @@
     // Standard queue view vs the rescheduled panel.
     const stdView = document.getElementById("standard-queue-view");
     const rschedMain = document.getElementById("rescheduled-main");
+    const lsaMain = document.getElementById("lsa-main");
     const welcomeMain = document.getElementById("welcome-main");
-    if (stdView) stdView.style.display = (isResched || isWelcome) ? "none" : "";
+    if (stdView) stdView.style.display = (isResched || isLsa || isWelcome) ? "none" : "";
     if (rschedMain) rschedMain.style.display = isResched ? "" : "none";
+    if (lsaMain) lsaMain.style.display = isLsa ? "" : "none";
     if (welcomeMain) welcomeMain.style.display = isWelcome ? "" : "none";
     // Filter panels: leads / missed / rescheduled / welcome each show only their own.
     const mfPanel = document.getElementById("missed-filter-panel");
@@ -1954,17 +2012,67 @@
     if (rschedPanel) rschedPanel.style.display = isResched ? "" : "none";
     if (welcomePanel) welcomePanel.style.display = isWelcome ? "" : "none";
     if (els.filterPanel) els.filterPanel.style.display = tab === "leads" ? "" : "none";
-    log(`switched to ${{ leads: "Leads", missed: "Missed Calls", rescheduled: "Rescheduled", welcome: "Welcome Calls" }[tab] || tab} tab`, "info", "ui");
+    log(`switched to ${{ leads: "Leads", missed: "Missed Calls", rescheduled: "Rescheduled", lsa: "LSA Leads", welcome: "Welcome Calls" }[tab] || tab} tab`, "info", "ui");
     renderQueue();
     fetchLeads({ force: true });
   }
   document.getElementById("tab-leads")?.addEventListener("click", () => switchTab("leads"));
   document.getElementById("tab-missed")?.addEventListener("click", () => switchTab("missed"));
   document.getElementById("tab-rescheduled")?.addEventListener("click", () => switchTab("rescheduled"));
+  document.getElementById("tab-lsa")?.addEventListener("click", () => switchTab("lsa"));
   document.getElementById("tab-welcome")?.addEventListener("click", () => switchTab("welcome"));
+
+  // Queue selector only mirrors the existing tab controls; their click handlers
+  // remain the single path for switching queues and enforcing call-state guards.
+  const queueSelector = document.getElementById("queue-selector");
+  const queueMenu = document.getElementById("queue-menu");
+  const queueSelectorLabel = document.getElementById("queue-selector-label");
+  const queueSelectorBadge = document.getElementById("queue-selector-badge");
+  const syncQueueSelector = () => {
+    const activeTab = document.querySelector(".tab-btn.active");
+    if (!activeTab) return;
+    if (queueSelectorLabel) {
+      queueSelectorLabel.textContent = Array.from(activeTab.childNodes)
+        .filter(node => node.nodeType === Node.TEXT_NODE)
+        .map(node => node.textContent)
+        .join("").trim();
+    }
+    const badge = activeTab.querySelector(".tab-badge");
+    if (queueSelectorBadge) {
+      const visible = badge && badge.style.display !== "none" && badge.textContent.trim();
+      queueSelectorBadge.textContent = visible ? badge.textContent.trim() : "";
+      queueSelectorBadge.style.display = visible ? "" : "none";
+    }
+  };
+  const setQueueMenuOpen = open => {
+    if (!queueMenu || !queueSelector) return;
+    queueMenu.hidden = !open;
+    queueSelector.setAttribute("aria-expanded", String(open));
+    if (open) syncQueueSelector();
+  };
+  queueSelector?.addEventListener("click", event => {
+    event.stopPropagation();
+    setQueueMenuOpen(queueMenu?.hidden);
+  });
+  queueMenu?.addEventListener("click", event => {
+    if (!event.target.closest(".tab-btn")) return;
+    // Runs after the existing per-tab listener, so it reflects a successful
+    // switch; a rejected guarded switch simply leaves the current tab mirrored.
+    syncQueueSelector();
+    setQueueMenuOpen(false);
+  });
+  document.addEventListener("click", event => {
+    if (!document.getElementById("tab-bar")?.contains(event.target)) setQueueMenuOpen(false);
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") setQueueMenuOpen(false);
+  });
+  setInterval(syncQueueSelector, 30000);
+  syncQueueSelector();
   document.querySelectorAll(".mfilter").forEach(btn =>
     btn.addEventListener("click", () => setMissedFilter(btn.dataset.mf)));
   rschedBindButtons();
+  lsaBindButtons();
   wcBindButtons();
   // Prime the Missed Calls badge once on load (independent of the active tab).
   (async () => {
@@ -1982,6 +2090,22 @@
       if (data.success && Array.isArray(data.jobs)) updateRescheduledBadge(data.jobs.length);
     } catch (_) {}
   })();
+  // Prime the LSA badge once on load.
+  (async () => {
+    const data = await lsaWrite({ action: "feed", rep: repName || "Unknown" });
+    if (data.error) return;
+    const rows = Array.isArray(data.rows)
+      ? data.rows
+      : Array.isArray(data.leads)
+        ? data.leads
+        : [];
+    updateLsaBadge(rows.filter(row =>
+      !row.called &&
+      !row.called_at &&
+      !row.already_called
+    ).length);
+  })();
+
   // Prime the Welcome Calls badge once on load (counts only due/overdue rows).
   (async () => {
     try {
@@ -2347,7 +2471,10 @@
         // they're ready to dial again. (The busy-hold in advanceToNext
         // remains as a backstop for races.)
         const ownCall = phase === "dialing" || phase === "ringing" || phase === "connected";
-        const sideFlowCall = _rschedPhase === "calling" || _wcPhase === "calling";
+        const sideFlowCall =
+          _rschedPhase === "calling" ||
+          _lsaPhase === "calling" ||
+          _wcPhase === "calling";
         if (mode === "running" && !ownCall && !sideFlowCall) {
           mode = "idle";
           clearTimeout(_busyDeferTimer);
@@ -2362,6 +2489,9 @@
           _busyChangedAt = Date.now();
         }
       }
+      // LSA has its own timestamp guard and phase machine. Route it before the
+      // main dialer's wrap-up/stale-event guards, which are based on currentLead.
+      lsaHandleCtmEvent(p.event, p.ts);
       // WRAP-UP LOCKOUT — while the rep is dispositioning, ignore ALL state-
       // changing CTM events. CTM flushes a queue of late events after a hangup
       // (sometimes 6-12s worth). Without this gate, those events tied up the
@@ -2682,6 +2812,686 @@
         log(`initial bridge ping failed: ${resp.error || "unknown"}`, "err", "bridge");
       }
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // LSA LEADS — claim at review time, in-panel card, isolated CTM router.
+  // Never writes currentLead/mode/phase and never opens a Roofr job tab.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  async function lsaWrite(payload) {
+    try {
+      const r = await fetch(LSA_CALLS_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Dialer-Client": "roofr-extension",
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) return { error: data.error || `HTTP ${r.status}` };
+      return data;
+    } catch (e) {
+      return { error: e.message };
+    }
+  }
+
+  function updateLsaBadge(n) {
+    const b = document.getElementById("lsa-badge");
+    if (!b) return;
+    if (n > 0) {
+      b.textContent = n;
+      b.style.display = "";
+    } else {
+      b.textContent = "";
+      b.style.display = "none";
+    }
+  }
+
+  function lsaLeadId(lead) {
+    return String(lead?.lead_id ?? lead?.id ?? "");
+  }
+
+  function lsaAge(leadTs) {
+    if (!leadTs) return "";
+    const ts = new Date(leadTs).getTime();
+    if (!Number.isFinite(ts)) return "";
+    const sec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    if (sec < 60) return `${sec}s ago`;
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    return `${Math.floor(hr / 24)}d ago`;
+  }
+
+  function lsaFmtDuration(sec) {
+    const safe = Math.max(0, Math.floor(sec || 0));
+    return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, "0")}`;
+  }
+
+  function lsaCompanyLookupLabel(company) {
+    const normalized = String(company || "").trim().toLowerCase();
+    if (normalized === "arizona roofers") return "Arizona Roofers LSA";
+    if (
+      normalized === "arizona roof pros" ||
+      normalized === "arizona roof pro" ||
+      normalized === "az roof pros" ||
+      normalized === "az roof pro"
+    ) {
+      return "AZ Roof Pro LSA";
+    }
+    return company || "";
+  }
+
+  function lsaVisibleRows() {
+    return _lsaAll.filter(row =>
+      !row.called &&
+      !row.called_at &&
+      !row.already_called
+    );
+  }
+
+  function lsaAvailableRows() {
+    return lsaVisibleRows().filter(row =>
+      !(row.locked_by && row.locked_by !== repName) &&
+      !_lsaSkippedIds.has(lsaLeadId(row))
+    );
+  }
+
+  function renderLsaQueue() {
+    const container = document.getElementById("lsa-queue");
+    const header = document.getElementById("lsa-queue-header");
+    if (!container) return;
+
+    const rows = lsaVisibleRows();
+    _lsaQueue = rows.slice();
+    updateLsaBadge(rows.length);
+    if (header) header.textContent = `LSA Leads (${rows.length})`;
+
+    if (!rows.length) {
+      container.innerHTML = `<li style="color:var(--muted);font-style:italic;font-size:12px;padding:8px 2px;">No uncalled LSA leads.</li>`;
+      return;
+    }
+
+    container.innerHTML = "";
+    for (const lead of rows) {
+      const id = lsaLeadId(lead);
+      const lockedOther = !!lead.locked_by && lead.locked_by !== repName;
+      const li = document.createElement("li");
+      li.className = `rsched-row lsa-row${lockedOther ? " locked" : ""}`;
+      li.dataset.leadId = id;
+
+      const main = document.createElement("div");
+      main.className = "lsa-row-main";
+
+      const name = document.createElement("div");
+      name.className = "rsched-name";
+      name.textContent = lead.name || "(no name)";
+
+      const phone = document.createElement("div");
+      phone.className = "rsched-phone";
+      phone.textContent = lead.phone || "—";
+
+      const meta = document.createElement("div");
+      meta.className = "rsched-meta";
+      meta.textContent = [
+        lead.company || "Unknown company",
+        lead.service_type || null,
+        lead.urgency || null,
+        lead.city || null,
+        lsaAge(lead.lead_ts) || null,
+      ].filter(Boolean).join(" · ");
+
+      main.append(name, phone, meta);
+      li.appendChild(main);
+
+      if (lockedOther) {
+        const lock = document.createElement("span");
+        lock.className = "lsa-lock-chip";
+        lock.textContent = `🔒 ${lead.locked_by}`;
+        li.appendChild(lock);
+      }
+
+      li.addEventListener("click", async () => {
+        if (_lsaClaiming) return;
+        const idx = _lsaQueue.findIndex(row => lsaLeadId(row) === id);
+        if (idx < 0) return;
+        _lsaIdx = idx;
+        await lsaOpenCard(_lsaQueue[idx]);
+      });
+
+      container.appendChild(li);
+    }
+  }
+
+  function lsaClaimBlockedReason(result) {
+    if (
+      result.reason === "called" ||
+      result.reason === "already_called" ||
+      result.already_called
+    ) {
+      return `already called${result.by ? ` by ${result.by}` : ""}`;
+    }
+    const owner = result.by || result.locked_by;
+    return owner ? `locked by ${owner}` : (result.reason || "claim denied");
+  }
+
+  function lsaStartHeartbeat() {
+    lsaStopHeartbeat();
+    _lsaHeartbeatId = setInterval(() => {
+      const id = lsaLeadId(_lsaLead);
+      if (!id || _lsaPhase === "idle") {
+        lsaStopHeartbeat();
+        return;
+      }
+      lsaWrite({
+        action: "heartbeat",
+        lead_id: id,
+        rep: repName || "Unknown",
+      }).then(result => {
+        if (result.claimed === false) {
+          log(`lsa: heartbeat rejected — ${lsaClaimBlockedReason(result)}`, "warn", "lsa");
+        } else if (result.error) {
+          log(`lsa: heartbeat unavailable (${result.error})`, "warn", "lsa");
+        }
+      });
+    }, LSA_HEARTBEAT_MS);
+  }
+
+  function lsaStopHeartbeat() {
+    if (_lsaHeartbeatId) {
+      clearInterval(_lsaHeartbeatId);
+      _lsaHeartbeatId = null;
+    }
+  }
+
+  async function lsaReleaseCurrent() {
+    const lead = _lsaLead;
+    const id = lsaLeadId(lead);
+    lsaStopHeartbeat();
+    _lsaClaimed = false;
+    if (!id) return;
+    const result = await lsaWrite({
+      action: "release",
+      lead_id: id,
+      rep: repName || "Unknown",
+    });
+    if (result.error) {
+      log(`lsa: release failed for ${lead?.name || id}: ${result.error}`, "warn", "lsa");
+    }
+  }
+
+  async function lsaOpenCard(lead) {
+    if (!lead || _lsaClaiming) return false;
+    if (
+      mode === "running" ||
+      ["dialing", "ringing", "connected", "wrapup"].includes(phase) ||
+      _rschedPhase === "calling" ||
+      _wcPhase === "calling"
+    ) {
+      log("lsa: stop the other dialer flow before opening a lead", "warn", "lsa");
+      return false;
+    }
+    if (_lsaPhase === "calling") {
+      log("lsa: finish the active call before opening another lead", "warn", "lsa");
+      return false;
+    }
+
+    if (_lsaLead && lsaLeadId(_lsaLead) !== lsaLeadId(lead)) {
+      await lsaReleaseCurrent();
+    }
+
+    _lsaClaiming = true;
+    const result = await lsaWrite({
+      action: "claim",
+      lead_id: lsaLeadId(lead),
+      rep: repName || "Unknown",
+    });
+    _lsaClaiming = false;
+
+    if (result.claimed === false) {
+      const why = lsaClaimBlockedReason(result);
+      log(`lsa: ${lead.name || lsaLeadId(lead)} — ${why}; card not opened`, "warn", "lsa");
+
+      if (
+        result.reason === "called" ||
+        result.reason === "already_called" ||
+        result.already_called
+      ) {
+        const id = lsaLeadId(lead);
+        _lsaAll = _lsaAll.filter(row => lsaLeadId(row) !== id);
+        renderLsaQueue();
+      } else {
+        lead.locked_by = result.by || result.locked_by || lead.locked_by;
+        renderLsaQueue();
+      }
+      return false;
+    }
+
+    // Fail open only for network/HTTP errors. An explicit claimed:false above
+    // always blocks. The heartbeat will retry while the review card is open.
+    if (result.error) {
+      log(`lsa: claim service unavailable (${result.error}) — opening fail-open`, "warn", "lsa");
+      _lsaClaimed = false;
+    } else {
+      _lsaClaimed = result.claimed === true;
+    }
+
+    _lsaLead = lead;
+    _lsaPhase = "reviewing";
+    _lsaTalkTimeSec = 0;
+    _lsaConnectedAtMs = 0;
+    lsaRenderCard();
+    lsaShowPhase("reviewing");
+    lsaStartHeartbeat();
+
+    document.querySelectorAll(".lsa-row").forEach(row => {
+      row.classList.toggle("active", row.dataset.leadId === lsaLeadId(lead));
+    });
+    log(`lsa: claimed for review — ${lead.name || lsaLeadId(lead)} (${lead.phone || "no phone"})`, "act", "lsa");
+    return true;
+  }
+
+  function lsaRenderCard() {
+    const lead = _lsaLead;
+    if (!lead) return;
+
+    const set = (id, value) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value || "—";
+    };
+
+    set("lsa-lead-name", lead.name || "(no name)");
+    set("lsa-lead-phone", lead.phone || "—");
+    set("lsa-company", lead.company || "Unknown company");
+    set("lsa-job-description", lead.job_description || "No customer description provided.");
+    set("lsa-summary", lead.summary || "");
+
+    const meta = document.getElementById("lsa-lead-meta");
+    if (meta) {
+      meta.textContent = [
+        lead.service_type ? `Service: ${lead.service_type}` : null,
+        lead.urgency ? `Urgency: ${lead.urgency}` : null,
+        lead.city ? `City: ${lead.city}` : null,
+        lsaAge(lead.lead_ts) || null,
+      ].filter(Boolean).join(" · ");
+    }
+
+    const link = document.getElementById("lsa-conversation-link");
+    if (link) {
+      let safeUrl = "";
+      try {
+        const parsed = new URL(lead.conversation_url || "");
+        if (parsed.protocol === "https:" || parsed.protocol === "http:") safeUrl = parsed.href;
+      } catch (_) {}
+      link.href = safeUrl || "#";
+      link.style.display = safeUrl ? "" : "none";
+    }
+  }
+
+  function lsaShowPhase(nextPhase) {
+    _lsaPhase = nextPhase;
+    const show = (id, visible) => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = visible ? "" : "none";
+    };
+
+    show("lsa-review-card", nextPhase !== "idle");
+    show("lsa-stage1", nextPhase === "reviewing");
+    show("lsa-dialing", nextPhase === "calling");
+    show("lsa-stage2", nextPhase === "stage2");
+
+    const badge = document.getElementById("lsa-phase-badge");
+    if (badge) {
+      badge.textContent = {
+        reviewing: "Reviewing",
+        calling: "Calling",
+        stage2: "Outcome",
+      }[nextPhase] || "Reviewing";
+    }
+  }
+
+  function lsaStartCallTimer() {
+    lsaStopCallTimer();
+    _lsaCallStartMs = Date.now();
+    const el = document.getElementById("lsa-call-timer");
+    if (el) {
+      el.style.color = "";
+      el.textContent = "0:00";
+    }
+    _lsaCallTimerId = setInterval(() => {
+      if (el) {
+        el.textContent = lsaFmtDuration((Date.now() - _lsaCallStartMs) / 1000);
+      }
+    }, 1000);
+  }
+
+  function lsaStopCallTimer() {
+    if (_lsaCallTimerId) {
+      clearInterval(_lsaCallTimerId);
+      _lsaCallTimerId = null;
+    }
+    const el = document.getElementById("lsa-call-timer");
+    if (el) el.textContent = "";
+  }
+
+  async function lsaStartQueue() {
+    if (_lsaClaiming || _lsaPhase === "calling") return;
+    _lsaSkippedIds = new Set();
+    const candidates = lsaAvailableRows();
+    if (!candidates.length) {
+      log("lsa: no available uncalled leads to start", "warn", "lsa");
+      return;
+    }
+
+    for (const candidate of candidates) {
+      _lsaIdx = _lsaQueue.findIndex(row =>
+        lsaLeadId(row) === lsaLeadId(candidate)
+      );
+      if (await lsaOpenCard(candidate)) return;
+    }
+
+    log("lsa: every visible lead is locked or already called", "warn", "lsa");
+  }
+
+  async function lsaAdvance() {
+    const previousId = lsaLeadId(_lsaLead);
+    await lsaReleaseCurrent();
+    _lsaLead = null;
+    _lsaPhase = "idle";
+    lsaShowPhase("idle");
+    renderLsaQueue();
+
+    const next = lsaAvailableRows().find(row =>
+      lsaLeadId(row) !== previousId
+    );
+    if (!next) {
+      log("lsa: no more available leads in this pass", "ok", "lsa");
+      return;
+    }
+
+    _lsaIdx = _lsaQueue.findIndex(row =>
+      lsaLeadId(row) === lsaLeadId(next)
+    );
+    await lsaOpenCard(next);
+  }
+
+  async function lsaHandleSkip() {
+    const lead = _lsaLead;
+    if (!lead) return;
+    _lsaSkippedIds.add(lsaLeadId(lead));
+    log(`lsa: skipped ${lead.name || lsaLeadId(lead)} — claim released`, "info", "lsa");
+    await lsaAdvance();
+  }
+
+  async function lsaHandleClose() {
+    const lead = _lsaLead;
+    if (!lead) return;
+    log(`lsa: closed ${lead.name || lsaLeadId(lead)} — claim released`, "info", "lsa");
+    await lsaReset({ release: true });
+  }
+
+  async function lsaHandleCall() {
+    const lead = _lsaLead;
+    if (!lead || _lsaPhase !== "reviewing") return;
+    if (
+      mode === "running" ||
+      ["dialing", "ringing", "connected", "wrapup"].includes(phase) ||
+      _rschedPhase === "calling" ||
+      _wcPhase === "calling"
+    ) {
+      log("lsa: another dialer flow is active", "warn", "lsa");
+      return;
+    }
+
+    const e164 = toE164(lead.phone || "");
+    if (!e164) {
+      log(`lsa: bad/empty phone: ${lead.phone || "(none)"}`, "err", "lsa");
+      return;
+    }
+
+    const ready = await ensureCtmTab();
+    if (!ready) {
+      log("lsa: CTM tab not ready — can't dial", "err", "lsa");
+      return;
+    }
+
+    _lsaPhase = "calling";
+    _lsaDialActive = true;
+    _lsaDialAt = Date.now();
+    _lsaConnectedAtMs = 0;
+    _lsaTalkTimeSec = 0;
+    _lsaBusyAtDial = softphoneBusy;
+    lsaShowPhase("calling");
+    lsaStartCallTimer();
+    log(`lsa: ▶ DIALING ${lead.name || lsaLeadId(lead)} ${e164}`, "act", "lsa");
+
+    clearTimeout(_lsaRingTimeoutId);
+    _lsaRingTimeoutId = setTimeout(() => {
+      if (_lsaPhase !== "calling") return;
+      log("lsa: ring timeout — ending, go to outcome", "warn", "lsa");
+      if (_lsaBusyAtDial) {
+        log("lsa: skipping hangup — softphone had a live call at dial time", "warn", "lsa");
+      } else {
+        sendToCtm({ type: "hangup" }).catch(() => {});
+      }
+      lsaOnCallEnded();
+    }, RING_TIMEOUT_MS);
+
+    const sources = window.DialerSources || {};
+    let outbound = null;
+    let mainLine = null;
+    try {
+      outbound = sources.lookupOutbound?.(
+        lsaCompanyLookupLabel(lead.company)
+      );
+      mainLine = sources.lookupOutbound?.("Arizona Roofers Main Line");
+    } catch (_) {}
+
+    const chosenOutbound = outbound || mainLine || {
+      number: AUTO_RETRY_NUMBER,
+      name: "Arizona Roofers Main Line",
+    };
+
+    if (outbound) {
+      log(`lsa: company "${lead.company || "(blank)"}" → outbound ${outbound.name} ${outbound.number}`, "info", "lsa");
+    } else {
+      log(`lsa: no company caller-ID match for "${lead.company || "(blank)"}" — using Main Line`, "warn", "lsa");
+    }
+
+    const response = await sendToCtm({
+      type: "dial",
+      number: e164,
+      fromNumber: chosenOutbound.number,
+      fromName: chosenOutbound.name,
+    });
+
+    if (!response || !response.ok) {
+      log(`lsa: dial failed: ${response?.error || "unknown"} — go to outcome`, "err", "lsa");
+      clearTimeout(_lsaRingTimeoutId);
+      lsaStopCallTimer();
+      _lsaDialActive = false;
+      _lsaPhase = "stage2";
+      lsaShowPhase("stage2");
+    }
+  }
+
+  function lsaOnCallEnded() {
+    clearTimeout(_lsaRingTimeoutId);
+    if (_lsaConnectedAtMs) {
+      _lsaTalkTimeSec = Math.max(
+        _lsaTalkTimeSec,
+        Math.floor((Date.now() - _lsaConnectedAtMs) / 1000)
+      );
+    }
+    lsaStopCallTimer();
+    _lsaDialActive = false;
+    if (_lsaPhase !== "calling") return;
+    _lsaPhase = "stage2";
+    lsaShowPhase("stage2");
+    log(`lsa: call ended → outcome for ${_lsaLead?.name || lsaLeadId(_lsaLead)}`, "info", "lsa");
+  }
+
+  function lsaHandleCtmEvent(eventName, eventTs) {
+    if (!_lsaDialActive) return;
+
+    const endEvent =
+      eventName === "ctm:end-activity" ||
+      eventName === "ctm:wrapup_start" ||
+      eventName === "ctm:failed";
+
+    if (endEvent && _lsaDialAt && eventTs && eventTs < _lsaDialAt) {
+      return;
+    }
+
+    if (
+      eventName === "ctm:answered" ||
+      eventName === "ctm:end-activity" ||
+      eventName === "ctm:wrapup_start" ||
+      eventName === "ctm:failed"
+    ) {
+      ringMuteSignal(false);
+    }
+
+    if (eventName === "ctm:start") {
+      clearTimeout(_lsaRingTimeoutId);
+      log("lsa: call connected", "ok", "lsa");
+      const el = document.getElementById("lsa-call-timer");
+      if (el) el.style.color = "var(--success)";
+    } else if (eventName === "ctm:answered") {
+      if (!_lsaConnectedAtMs) _lsaConnectedAtMs = Date.now();
+    } else if (endEvent) {
+      lsaOnCallEnded();
+    }
+  }
+
+  async function lsaHandleStage2(disposition) {
+    const lead = _lsaLead;
+    if (!lead || _lsaPhase !== "stage2") return;
+
+    const note = (document.getElementById("lsa-note")?.value || "").trim();
+    const talkTime = Math.max(0, Math.floor(_lsaTalkTimeSec || 0));
+    const leadId = lsaLeadId(lead);
+    const rep = repName || "Unknown";
+
+    log(
+      `lsa ✓ ${lead.name || leadId} [${lead.company || "?"}]: ${disposition}${note ? ` (${note})` : ""} · talk ${lsaFmtDuration(talkTime)}`,
+      "ok",
+      "lsa"
+    );
+
+    // Server log is independent of the panel's normal sheet-disposition flow.
+    lsaWrite({
+      action: "log",
+      lead_id: leadId,
+      rep,
+      disposition,
+      note,
+    }).then(result => {
+      if (result.error) {
+        log(`lsa: outcome log failed for ${lead.name || leadId}: ${result.error}`, "err", "lsa");
+      }
+    });
+
+    // LeadTruffle notification is intentionally fire-and-forget.
+    fetch(LEADTRUFFLE_OUTCOME_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Dialer-Client": "roofr-extension",
+      },
+      body: JSON.stringify({
+        phone: lead.phone || "",
+        csr: rep,
+        outcome: disposition,
+        note,
+        talkTime,
+      }),
+    }).catch(e => {
+      log(`lsa: LeadTruffle outcome post failed: ${e.message}`, "warn", "lsa");
+    });
+
+    _lsaClaimed = false;
+    lsaStopHeartbeat();
+    _lsaAll = _lsaAll.filter(row => lsaLeadId(row) !== leadId);
+
+    const noteEl = document.getElementById("lsa-note");
+    if (noteEl) noteEl.value = "";
+
+    _lsaLead = null;
+    _lsaPhase = "idle";
+    lsaShowPhase("idle");
+    renderLsaQueue();
+
+    const next = lsaAvailableRows()[0];
+    if (next) {
+      _lsaIdx = _lsaQueue.findIndex(row =>
+        lsaLeadId(row) === lsaLeadId(next)
+      );
+      await lsaOpenCard(next);
+    } else {
+      log("lsa: queue complete — no more available leads", "ok", "lsa");
+    }
+  }
+
+  async function lsaReset({ release = false } = {}) {
+    clearTimeout(_lsaRingTimeoutId);
+    lsaStopCallTimer();
+    _lsaDialActive = false;
+    _lsaDialAt = 0;
+
+    if (release) await lsaReleaseCurrent();
+    else lsaStopHeartbeat();
+
+    _lsaClaiming = false;
+    _lsaClaimed = false;
+    _lsaPhase = "idle";
+    _lsaLead = null;
+    lsaShowPhase("idle");
+
+    document.querySelectorAll(".lsa-row").forEach(row => {
+      row.classList.remove("active");
+    });
+  }
+
+  function lsaBindButtons() {
+    const on = (id, fn) =>
+      document.getElementById(id)?.addEventListener("click", fn);
+
+    on("lsa-start-btn", lsaStartQueue);
+    on("lsa-refresh-btn", async () => {
+      const button = document.getElementById("lsa-refresh-btn");
+      if (button) {
+        button.disabled = true;
+        button.textContent = "↻ …";
+      }
+      try {
+        await fetchLeads({ force: true });
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.textContent = "↻ Refresh";
+        }
+      }
+    });
+
+    on("lsa-close-btn", lsaHandleClose);
+    on("lsa-btn-call", lsaHandleCall);
+    on("lsa-btn-skip", lsaHandleSkip);
+    on("lsa-btn-booked", () => lsaHandleStage2("Booked"));
+    on("lsa-btn-contacted", () => lsaHandleStage2("Contacted"));
+    on("lsa-btn-leftvm", () => lsaHandleStage2("Left VM"));
+    on("lsa-btn-noanswer", () => lsaHandleStage2("No Answer"));
+    on("lsa-btn-unqualified", () => lsaHandleStage2("Unqualified"));
+    on("lsa-btn-other", () => lsaHandleStage2("Other"));
+
+    on("lsa-hangup-btn", () => {
+      log("lsa: hangup clicked", "act", "lsa");
+      sendToCtm({ type: "hangup" }).catch(() => {});
+      lsaOnCallEnded();
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════════════

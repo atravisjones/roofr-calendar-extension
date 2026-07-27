@@ -283,20 +283,35 @@
       display: flex; align-items: center; gap: 8px;
     }
 
-    /* Leads / Missed Calls tabs */
+    /* Queue selector */
     .tab-bar {
-      display: flex; gap: 6px; margin-bottom: 12px;
-      border-bottom: 1px solid var(--border);
+      position: relative; margin-bottom: 12px;
+    }
+    .queue-selector {
+      width: 100%; min-height: 30px; padding: 5px 8px; font-size: 12px; font-weight: 600;
+      display: flex; align-items: center; gap: 6px; text-align: left;
+      background: var(--surface); color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; cursor: pointer; box-shadow: none;
+    }
+    .queue-selector:hover { background: var(--surface-hi); }
+    .queue-selector-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .queue-selector .tab-badge { margin-left: auto; }
+    .queue-selector-chevron { margin-left: 2px; color: var(--muted); font-size: 11px; }
+    .queue-menu {
+      position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; right: 0;
+      padding: 4px; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
     }
     .tab-btn {
-      flex: 1; padding: 8px 10px; font-size: 13px; font-weight: 600;
-      background: transparent; color: var(--muted); border: none;
-      border-bottom: 2px solid transparent; cursor: pointer; box-shadow: none;
-      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-      transition: color 120ms, border-color 120ms;
+      width: 100%; padding: 7px 8px; font-size: 12px; font-weight: 600;
+      background: transparent; color: var(--muted); border: none; border-radius: 4px;
+      cursor: pointer; box-shadow: none; display: flex; align-items: center;
+      justify-content: flex-start; gap: 6px; text-align: left;
+      transition: color 120ms, background 120ms;
     }
-    .tab-btn:hover { color: var(--text); }
-    .tab-btn.active { color: var(--accent-hi); border-bottom-color: var(--accent-hi); }
+    .tab-btn:hover { color: var(--text); background: var(--surface-hi); }
+    .tab-btn.active { color: var(--accent-hi); background: var(--accent-light); }
+    .queue-menu .tab-badge { margin-left: auto; }
     .tab-badge {
       background: var(--danger); color: #fff; font-size: 11px; font-weight: 700;
       min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
@@ -336,8 +351,7 @@
       background: var(--bg); padding: 8px 14px;
       border-bottom: 1px solid var(--border);
     }
-    .top-rail .tab-bar { margin-bottom: 6px; border-bottom: none; }
-    .top-rail .tab-btn { padding: 5px 8px; font-size: 12px; }
+    .top-rail .tab-bar { margin-bottom: 6px; }
     /* Leads + Missed filters share the SAME collapsible "Filters ▾" dropdown
        (.filter-panel) and the same chip styling, so they look identical. */
     #clear-filters-btn { font-size: 10px; padding: 3px 9px; border-radius: 12px; }
@@ -445,6 +459,64 @@
     .src-pill.src-gaf  { background: var(--surface-hi); color: var(--muted); border-color: var(--border); }
     .src-pill.src-unk  { background: var(--surface-hi); color: var(--light); border-color: var(--border); }
 
+    /* ── LSA Leads tab ── */
+    .lsa-row-main { flex: 1; min-width: 0; }
+    .lsa-company-badge,
+    .lsa-lock-chip {
+      display: inline-block;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1px 6px;
+      font-size: 9px;
+      font-weight: 700;
+      line-height: 1.4;
+      white-space: nowrap;
+    }
+    .lsa-company-badge {
+      background: var(--accent-light);
+      color: var(--accent-hi);
+      border-color: var(--accent);
+    }
+    .lsa-lock-chip {
+      margin-left: auto;
+      background: var(--warn-bg);
+      color: #92400e;
+      border-color: var(--warn);
+    }
+    .lsa-row.locked {
+      cursor: not-allowed;
+      opacity: .72;
+    }
+    .lsa-description {
+      margin-top: 10px;
+      padding: 10px;
+      border-left: 3px solid var(--accent-hi);
+      border-radius: 4px;
+      background: var(--surface-hi);
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .lsa-summary {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .lsa-conversation-link {
+      display: inline-block;
+      margin-top: 9px;
+      color: var(--accent-hi);
+      font-size: 11px;
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .lsa-conversation-link:hover { text-decoration: underline; }
+
     /* ── Needs Rescheduled tab ── */
     .rsched-filter-label {
       display: inline-flex; align-items: center; gap: 5px;
@@ -508,10 +580,18 @@
 
     <div class="top-rail" id="top-rail">
       <div class="tab-bar" id="tab-bar">
-        <button class="tab-btn active" id="tab-leads" data-tab="leads">📋 Leads</button>
-        <button class="tab-btn" id="tab-missed" data-tab="missed">📞 Missed Calls<span class="tab-badge" id="missed-badge" style="display:none;"></span></button>
-        <button class="tab-btn" id="tab-rescheduled" data-tab="rescheduled">🗓 Rescheduled<span class="tab-badge" id="rescheduled-badge" style="display:none;"></span></button>
-        <button class="tab-btn" id="tab-welcome" data-tab="welcome">✅ Welcome<span class="tab-badge" id="welcome-badge" style="display:none;"></span></button>
+        <button class="queue-selector" id="queue-selector" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="queue-menu">
+          <span class="queue-selector-label" id="queue-selector-label">📋 Leads</span>
+          <span class="tab-badge" id="queue-selector-badge" style="display:none;"></span>
+          <span class="queue-selector-chevron" aria-hidden="true">▾</span>
+        </button>
+        <div class="queue-menu" id="queue-menu" hidden>
+          <button class="tab-btn active" id="tab-leads" data-tab="leads">📋 Leads</button>
+          <button class="tab-btn" id="tab-missed" data-tab="missed">📞 Missed Calls<span class="tab-badge" id="missed-badge" style="display:none;"></span></button>
+          <button class="tab-btn" id="tab-rescheduled" data-tab="rescheduled">🗓 Rescheduled<span class="tab-badge" id="rescheduled-badge" style="display:none;"></span></button>
+          <button class="tab-btn" id="tab-lsa" data-tab="lsa">⚡ LSA Leads<span class="tab-badge" id="lsa-badge" style="display:none;"></span></button>
+          <button class="tab-btn" id="tab-welcome" data-tab="welcome">✅ Welcome<span class="tab-badge" id="welcome-badge" style="display:none;"></span></button>
+        </div>
       </div>
       <div class="filter-panel" id="filter-panel">
         <div class="filter-toggle" id="filter-toggle">Filters <span class="arrow">▾</span> <span id="filter-summary" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--light);margin-left:4px;"></span></div>
@@ -634,6 +714,56 @@
         </div>
 
         <ul id="rsched-queue" style="list-style:none;margin:0;padding:0;"></ul>
+      </div>
+
+      <div id="lsa-main" style="display:none;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin:14px 0 6px 0;">
+          <h2 id="lsa-queue-header" style="margin:0;">LSA Leads</h2>
+          <div style="display:flex;gap:6px;">
+            <button id="lsa-start-btn" class="primary" title="Claim and review the first available LSA lead" style="font-size:11px;padding:3px 12px;border-radius:4px;">▶ Start</button>
+            <button id="lsa-refresh-btn" title="Reload LSA leads" style="font-size:11px;padding:3px 8px;border-radius:4px;box-shadow:none;">↻ Refresh</button>
+          </div>
+        </div>
+
+        <div id="lsa-review-card" class="rsched-card" style="display:none;">
+          <div class="rsched-card-top">
+            <span class="rsched-phase-badge" id="lsa-phase-badge">Reviewing</span>
+            <span class="lsa-company-badge" id="lsa-company"></span>
+            <button id="lsa-close-btn" title="Close this card and release the lead" style="margin-left:auto;font-size:10px;padding:2px 7px;border-radius:4px;box-shadow:none;">✕ Close</button>
+          </div>
+
+          <div class="rsched-name" id="lsa-lead-name"></div>
+          <div class="rsched-phone" id="lsa-lead-phone"></div>
+          <div class="rsched-meta" id="lsa-lead-meta"></div>
+          <div class="lsa-description" id="lsa-job-description"></div>
+          <div class="lsa-summary" id="lsa-summary"></div>
+          <a id="lsa-conversation-link" class="lsa-conversation-link" href="#" target="_blank" rel="noopener noreferrer" style="display:none;">↗ Open in LeadTruffle</a>
+
+          <div id="lsa-stage1" class="rescheduled-stage-row" style="display:none;">
+            <button id="lsa-btn-call" class="primary">☎ Call</button>
+            <button id="lsa-btn-skip" class="danger">Skip</button>
+          </div>
+
+          <div id="lsa-dialing" style="display:none;margin-top:8px;">
+            <span class="rsched-phase-badge" style="background:var(--warn-bg);color:#92400e;">📞 Calling… <span id="lsa-call-timer"></span></span>
+            <button id="lsa-hangup-btn" class="danger" style="width:100%;margin-top:6px;">☎ Hang up → outcome</button>
+          </div>
+
+          <div id="lsa-stage2" style="display:none;margin-top:8px;">
+            <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">Disposition</div>
+            <div class="rescheduled-stage-row">
+              <button id="lsa-btn-booked" class="primary">Booked</button>
+              <button id="lsa-btn-contacted">Contacted</button>
+              <button id="lsa-btn-leftvm">Left VM</button>
+              <button id="lsa-btn-noanswer">No Answer</button>
+              <button id="lsa-btn-unqualified">Unqualified</button>
+              <button id="lsa-btn-other">Other</button>
+            </div>
+            <textarea id="lsa-note" class="rescheduled-note" placeholder="Optional note…"></textarea>
+          </div>
+        </div>
+
+        <ul id="lsa-queue" style="list-style:none;margin:0;padding:0;"></ul>
       </div>
 
       <div id="welcome-main" style="display:none;">

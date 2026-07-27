@@ -100,6 +100,11 @@
   let _lsaPhase = "idle";       // 'idle' | 'reviewing' | 'calling' | 'stage2'
   let _lsaClaimed = false;
   let _lsaClaiming = false;
+  // Leads attempted (non-terminal) this session — suppresses re-dialing the
+  // same lead again in one sitting while the 7-call count accrues across
+  // sessions. Leads auto-Lost at 7 (fired once each).
+  const _lsaAttemptedThisSession = new Set();
+  const _lsaAutoLost = new Set();
   let _lsaHeartbeatId = null;
   let _lsaCallTimerId = null;
   let _lsaCallStartMs = 0;
@@ -1057,11 +1062,13 @@
           : Array.isArray(data.leads)
             ? data.leads
             : [];
-        _lsaAll = rows.filter(row =>
-          !row.called &&
-          !row.called_at &&
-          !row.already_called
-        );
+        let loaded = rows.filter(row => !_lsaAttemptedThisSession.has(lsaLeadId(row)));
+        // Auto-Lost backstop: a lead that reached the 7-call cadence without a
+        // terminal disposition gets auto-disposed as Unqualified (note + LT
+        // writeback). Fire once per lead per session; then drop from the queue.
+        const exhausted = loaded.filter(row => (row.call_count || 0) >= 7 && !_lsaAutoLost.has(lsaLeadId(row)));
+        for (const row of exhausted) { _lsaAutoLost.add(lsaLeadId(row)); lsaAutoLose(row); }
+        _lsaAll = loaded.filter(row => (row.call_count || 0) < 7);
         log(`LSA leads loaded: ${_lsaAll.length}`, "ok", "lsa");
         if (_lsaPhase === "idle") renderLsaQueue();
         else updateLsaBadge(_lsaAll.length);
@@ -3133,14 +3140,28 @@
       name.className = "rsched-name";
       name.textContent = lsaDisplayName(lead) || "(no name)";
 
-      const phone = document.createElement("div");
-      phone.className = "rsched-phone";
-      phone.textContent = lsaHasPhone(lead)
-        ? (lsaUsesGooglePhone(lead)
+      // Phone → clickable CTM call-history link when we have a dialable number
+      // (LeadTruffle's or Google's real one). Click stops the row's claim so it
+      // only opens CTM.
+      const phone = document.createElement(lsaHasPhone(lead) ? "a" : "div");
+      if (lsaHasPhone(lead)) {
+        const digits = lsaDialDigits(lead);
+        phone.className = "rsched-phone phone-link";
+        phone.href = `https://app.calltrackingmetrics.com/calls/desk#filter=${digits}`;
+        phone.title = "Open CTM call history for this number";
+        phone.textContent = lsaUsesGooglePhone(lead)
           ? `${lead.google_phone || lead.google_phone10} · Google`
-          : (lead.phone || lead.phone10))
-        : "no #";
-      if (!lsaHasPhone(lead)) phone.className = "lsa-lock-chip";
+          : (lead.phone || lead.phone10);
+        phone.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return; // let default new-tab
+          e.preventDefault();
+          lsaOpenCtm(digits);
+        });
+      } else {
+        phone.className = "lsa-lock-chip";
+        phone.textContent = "no #";
+      }
 
       const meta = document.createElement("div");
       meta.className = "rsched-meta";
@@ -3153,6 +3174,18 @@
       ].filter(Boolean).join(" · ");
 
       main.append(name, phone, meta);
+
+      // Call cadence: how many times called / 7, and who last called + when.
+      const cc = lead.call_count || 0;
+      if (cc > 0) {
+        const calls = document.createElement("div");
+        calls.className = "rsched-meta";
+        calls.style.marginTop = "1px";
+        if (cc >= 6) calls.style.color = "var(--warning, #c47f17)";
+        calls.textContent = `📞 ${cc}/7 call${cc === 1 ? "" : "s"} · last ${lead.last_call_by || "?"} ${lsaAge(lead.last_call_at)}`;
+        main.appendChild(calls);
+      }
+
       li.appendChild(main);
 
       if (lockedOther) {
@@ -3321,11 +3354,39 @@
     };
 
     set("lsa-lead-name", lsaDisplayName(lead) || "(no name)");
-    set("lsa-lead-phone", lsaHasPhone(lead)
-      ? (lsaUsesGooglePhone(lead)
-        ? `${lead.google_phone || lead.google_phone10} (real # via Google LSA)`
-        : (lead.phone || lead.phone10))
-      : "No phone number");
+    // Phone in the card is also a clickable CTM call-history link.
+    const phoneEl = document.getElementById("lsa-lead-phone");
+    if (phoneEl) {
+      if (lsaHasPhone(lead)) {
+        const digits = lsaDialDigits(lead);
+        phoneEl.textContent = lsaUsesGooglePhone(lead)
+          ? `${lead.google_phone || lead.google_phone10} (real # via Google LSA)`
+          : (lead.phone || lead.phone10);
+        phoneEl.style.cursor = "pointer";
+        phoneEl.style.textDecoration = "underline";
+        phoneEl.title = "Open CTM call history for this number";
+        phoneEl.onclick = () => lsaOpenCtm(digits);
+      } else {
+        phoneEl.textContent = "No phone number";
+        phoneEl.style.cursor = "";
+        phoneEl.style.textDecoration = "";
+        phoneEl.title = "";
+        phoneEl.onclick = null;
+      }
+    }
+    // Call cadence line: N/7 calls · last by <rep> <ago>.
+    const callsEl = document.getElementById("lsa-lead-calls");
+    if (callsEl) {
+      const cc = lead.call_count || 0;
+      if (cc > 0) {
+        callsEl.textContent = `📞 ${cc}/7 call${cc === 1 ? "" : "s"} · last by ${lead.last_call_by || "?"} ${lsaAge(lead.last_call_at)}`;
+        callsEl.style.color = cc >= 6 ? "var(--warning, #c47f17)" : "";
+        callsEl.style.display = "";
+      } else {
+        callsEl.textContent = "";
+        callsEl.style.display = "none";
+      }
+    }
     set("lsa-company", lead.company || "Unknown company");
     set("lsa-job-description", lead.job_description || "No customer description provided.");
     set("lsa-summary", lead.summary || "");
@@ -3596,6 +3657,45 @@
     }
   }
 
+  // Open CTM's call desk filtered to a number, reusing an open CTM tab so the
+  // rep can see this customer's full call history. Mirrors the leads/missed
+  // queue phone-link behavior.
+  function lsaOpenCtm(digits) {
+    const d = String(digits || "").replace(/\D/g, "").slice(-10);
+    if (!d) return;
+    const url = `https://app.calltrackingmetrics.com/calls/desk#filter=${d}`;
+    try {
+      chrome.tabs.query({ url: "https://app.calltrackingmetrics.com/*" }, (tabs) => {
+        if (chrome.runtime.lastError) { window.open(url, "_blank"); return; }
+        if (tabs && tabs.length > 0) {
+          chrome.tabs.update(tabs[0].id, { active: true, url });
+          chrome.windows.update(tabs[0].windowId, { focused: true });
+        } else {
+          chrome.tabs.create({ url });
+        }
+      });
+    } catch (_) { window.open(url, "_blank"); }
+  }
+
+  // Auto-Lost at 7 attempts: log a terminal Unqualified + LeadTruffle note +
+  // best-effort custom pipeline status. Same writeback path a manual
+  // Unqualified uses (the trpc status sets cleanly when a conversation tab is
+  // open; otherwise the note + terminal log still land).
+  function lsaAutoLose(lead) {
+    const leadId = lsaLeadId(lead);
+    const rep = repName || "Unknown";
+    const n = lead.call_count || 7;
+    const note = `auto-disposed after ${n} call attempts — no contact`;
+    log(`lsa: auto-Lost after ${n} calls — ${lsaDisplayName(lead) || leadId}`, "warn", "lsa");
+    lsaWrite({ action: "log", lead_id: leadId, rep, disposition: "Unqualified", note }).catch(() => {});
+    fetch(LEADTRUFFLE_OUTCOME_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" },
+      body: JSON.stringify({ phone: lead.phone || "", lead_id: String(leadId || ""), csr: rep, outcome: "Unqualified", note, talkTime: 0 }),
+    }).catch(() => {});
+    void lsaUpdateLeadTruffleStatus(leadId, "Unqualified", lead.company);
+  }
+
   async function lsaHandleStage2(disposition) {
     const lead = _lsaLead;
     if (!lead || _lsaPhase !== "stage2") return;
@@ -3645,6 +3745,12 @@
 
     if (disposition === "Booked" || disposition === "Unqualified") {
       void lsaUpdateLeadTruffleStatus(leadId, disposition, lead.company);
+    }
+
+    // Non-terminal outcomes (No Answer, …) re-queue toward the 7-call cadence;
+    // suppress re-dialing this same lead again in the current session.
+    if (disposition !== "Booked" && disposition !== "Unqualified") {
+      _lsaAttemptedThisSession.add(leadId);
     }
 
     _lsaClaimed = false;

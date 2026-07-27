@@ -3105,6 +3105,7 @@
 
   function lsaAvailableRows() {
     return lsaVisibleRows().filter(row =>
+      !row.roofr_duplicate &&  // already an active Roofr job — flagged, never auto-dialed
       !(row.locked_by && row.locked_by !== repName) &&
       !_lsaSkippedIds.has(lsaLeadId(row))
     );
@@ -3190,6 +3191,32 @@
         calls.textContent = "📞 0/7 · ×2 double-tap on first call";
       }
       main.appendChild(calls);
+
+      // Duplicate protection: this phone already has an ACTIVE Roofr job. It's
+      // excluded from auto-dial (lsaAvailableRows) — surface the job link so the
+      // rep opens/dispositions it instead of cold-calling an existing customer.
+      if (lead.roofr_duplicate) {
+        const dup = document.createElement("div");
+        dup.className = "rsched-meta lsa-dup";
+        dup.style.marginTop = "1px";
+        dup.style.color = "var(--danger, #c0392b)";
+        dup.style.fontWeight = "600";
+        const jid = lead.roofr_job_id;
+        const stage = lead.roofr_stage ? ` · ${lead.roofr_stage}` : "";
+        if (jid) {
+          const a = document.createElement("a");
+          a.href = `https://app.roofr.com/jobs/details/${encodeURIComponent(jid)}`;
+          a.target = "_blank";
+          a.textContent = `⚠️ Already in Roofr → job ${jid}${stage}`;
+          a.title = "Open the existing Roofr job — don't cold-call; disposition it";
+          a.style.color = "inherit";
+          a.addEventListener("click", (e) => { e.stopPropagation(); });
+          dup.appendChild(a);
+        } else {
+          dup.textContent = `⚠️ Already in Roofr${stage}`;
+        }
+        main.appendChild(dup);
+      }
 
       li.appendChild(main);
 
@@ -3392,6 +3419,29 @@
         callsEl.style.display = "none";
       }
     }
+    // Duplicate flag: this phone already has an active Roofr job. Warn hard in
+    // the card so a rep who opened it manually doesn't cold-call an existing
+    // customer — link straight to the job to disposition it.
+    const dupEl = document.getElementById("lsa-lead-dup");
+    if (dupEl) {
+      if (lead.roofr_duplicate) {
+        const jid = lead.roofr_job_id;
+        const stage = lead.roofr_stage ? ` · ${lead.roofr_stage}` : "";
+        dupEl.innerHTML = "";
+        const a = document.createElement("a");
+        a.target = "_blank";
+        a.style.color = "inherit";
+        a.textContent = jid
+          ? `⚠️ Already in Roofr → job ${jid}${stage} — disposition, don't cold-call`
+          : `⚠️ Already in Roofr${stage} — disposition, don't cold-call`;
+        if (jid) a.href = `https://app.roofr.com/jobs/details/${encodeURIComponent(jid)}`;
+        dupEl.appendChild(a);
+        dupEl.style.display = "";
+      } else {
+        dupEl.textContent = "";
+        dupEl.style.display = "none";
+      }
+    }
     set("lsa-company", lead.company || "Unknown company");
     set("lsa-job-description", lead.job_description || "No customer description provided.");
     set("lsa-summary", lead.summary || "");
@@ -3431,9 +3481,13 @@
       if (el) el.style.display = visible ? "" : "none";
     };
 
+    // A duplicate (already an active Roofr job) is closed manually, not dialed —
+    // give it the no-call disposition buttons (Booked/Unqualified/Other) instead
+    // of the Call button even though it has a phone.
+    const isDup = !!(_lsaLead && _lsaLead.roofr_duplicate);
     show("lsa-review-card", nextPhase !== "idle");
-    show("lsa-stage1", nextPhase === "reviewing" && _lsaLead && lsaHasPhone(_lsaLead));
-    show("lsa-no-phone-actions", nextPhase === "reviewing" && _lsaLead && !lsaHasPhone(_lsaLead));
+    show("lsa-stage1", nextPhase === "reviewing" && _lsaLead && lsaHasPhone(_lsaLead) && !isDup);
+    show("lsa-no-phone-actions", nextPhase === "reviewing" && _lsaLead && (!lsaHasPhone(_lsaLead) || isDup));
     show("lsa-dialing", nextPhase === "calling");
     show("lsa-stage2", nextPhase === "stage2");
 
@@ -3759,7 +3813,7 @@
     // dialer. Guarded by _lsaDoubleTapPending so the second dial fires once.
     // After that the server's due_now gate rests the lead (3h, then daily).
     if (!terminal && (lead.call_count || 0) === 0 && !_lsaDoubleTapPending
-        && lsaHasPhone(lead) && talkTime < 10) {
+        && lsaHasPhone(lead) && !lead.roofr_duplicate && talkTime < 10) {
       _lsaDoubleTapPending = true;
       const noteEl0 = document.getElementById("lsa-note");
       if (noteEl0) noteEl0.value = "";
@@ -3802,7 +3856,8 @@
   }
 
   async function lsaHandleNoPhoneDisposition(disposition) {
-    if (!_lsaLead || _lsaPhase !== "reviewing" || lsaHasPhone(_lsaLead)) return;
+    // Reachable for phone-less leads AND for duplicates (closed without dialing).
+    if (!_lsaLead || _lsaPhase !== "reviewing" || (lsaHasPhone(_lsaLead) && !_lsaLead.roofr_duplicate)) return;
     const stage2Note = document.getElementById("lsa-note");
     if (stage2Note) stage2Note.value = document.getElementById("lsa-no-phone-note")?.value || "";
     _lsaPhase = "stage2";

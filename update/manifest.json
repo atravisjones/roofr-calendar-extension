@@ -1,11 +1,11 @@
 {
-  "version": "3.2.11",
+  "version": "3.2.12",
   "minimum_chrome_version": "116",
-  "release_date": "2026-07-27T22:01:21.273Z",
+  "release_date": "2026-07-27T22:49:52.692Z",
   "changelog": [
-    "LSA Leads now follow the same call cadence as Missed Calls: the first attempt double-taps (auto-dials twice), then the lead rests 3 hours between the next tries, then once a day — auto-marked Unqualified at 7 attempts",
-    "Recently-called LSA leads drop out of the dialer queue until their next window opens, so no one re-dials them too soon"
+    "LSA Leads: duplicate protection — a lead whose phone already has an active Roofr job (appointment scheduled, proposal out, install scheduled, etc.) is flagged '⚠️ Already in Roofr' with a link to the job card and dropped from auto-dial, so no one cold-calls an existing customer",
+    "Flagged duplicates stay in the queue and can be closed without dialing: opening the card shows Booked / Unqualified / Other so a rep verifies against the job card and dispositions it in one click"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.11/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.11"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.12/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.12"
 }

@@ -2990,6 +2990,14 @@
     return String(row?.phone10 || "").replace(/\D/g, "").length !== 10 && lsaDialDigits(row).length === 10;
   }
 
+  // Clean 10-digit display (drop the leading country-code 1), formatted, with a
+  // Google tag when we're falling back to the Google-sourced number.
+  function lsaPhoneDisplay(row) {
+    const d = lsaDialDigits(row);
+    const pretty = d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : d;
+    return lsaUsesGooglePhone(row) ? `${pretty} · Google` : pretty;
+  }
+
   function lsaDisplayName(row) {
     const name = String(row?.name || "").trim();
     if (name && name !== "Potential Customer") return name;
@@ -3148,16 +3156,18 @@
       const phone = document.createElement(lsaHasPhone(lead) ? "a" : "div");
       if (lsaHasPhone(lead)) {
         const digits = lsaDialDigits(lead);
+        // Already in Roofr → the number links to the job card; otherwise it
+        // opens CTM call history for the number.
+        const dupUrl = (lead.roofr_duplicate && lead.roofr_job_url) ? lead.roofr_job_url : null;
         phone.className = "rsched-phone phone-link";
-        phone.href = `https://app.calltrackingmetrics.com/calls/desk#filter=${digits}`;
-        phone.title = "Open CTM call history for this number";
-        phone.textContent = lsaUsesGooglePhone(lead)
-          ? `${lead.google_phone || lead.google_phone10} · Google`
-          : (lead.phone || lead.phone10);
+        phone.href = dupUrl || `https://app.calltrackingmetrics.com/calls/desk#filter=${digits}`;
+        phone.title = dupUrl ? "Open the existing Roofr job" : "Open CTM call history for this number";
+        phone.textContent = lsaPhoneDisplay(lead);
         phone.addEventListener("click", (e) => {
           e.stopPropagation();
           if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return; // let default new-tab
           e.preventDefault();
+          if (dupUrl) { window.open(dupUrl, "_blank"); return; }
           lsaOpenCtm(digits);
         });
       } else {
@@ -3391,13 +3401,17 @@
     if (phoneEl) {
       if (lsaHasPhone(lead)) {
         const digits = lsaDialDigits(lead);
+        const dupUrl = (lead.roofr_duplicate && lead.roofr_job_url) ? lead.roofr_job_url : null;
+        const pretty = digits.length === 10
+          ? `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`
+          : digits;
         phoneEl.textContent = lsaUsesGooglePhone(lead)
-          ? `${lead.google_phone || lead.google_phone10} (real # via Google LSA)`
-          : (lead.phone || lead.phone10);
+          ? `${pretty} (real # via Google LSA)`
+          : pretty;
         phoneEl.style.cursor = "pointer";
         phoneEl.style.textDecoration = "underline";
-        phoneEl.title = "Open CTM call history for this number";
-        phoneEl.onclick = () => lsaOpenCtm(digits);
+        phoneEl.title = dupUrl ? "Open the existing Roofr job" : "Open CTM call history for this number";
+        phoneEl.onclick = dupUrl ? () => window.open(dupUrl, "_blank") : () => lsaOpenCtm(digits);
       } else {
         phoneEl.textContent = "No phone number";
         phoneEl.style.cursor = "";

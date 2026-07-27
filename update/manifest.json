@@ -1,10 +1,11 @@
 {
-  "version": "3.2.13",
+  "version": "3.2.14",
   "minimum_chrome_version": "116",
-  "release_date": "2026-07-27T23:24:53.716Z",
+  "release_date": "2026-07-27T23:35:54.359Z",
   "changelog": [
-    "Fix: the '⚠️ Already in Roofr' job-card link now opens the correct job (was going nowhere)"
+    "LSA phone numbers now display as a clean 10-digit number (no leading 1)",
+    "If the number is already in Roofr, clicking it opens the job card; otherwise it opens CTM call history"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.13/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.13"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.14/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.14"
 }

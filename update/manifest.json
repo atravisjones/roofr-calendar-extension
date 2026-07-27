@@ -1,11 +1,10 @@
 {
-  "version": "3.2.12",
+  "version": "3.2.13",
   "minimum_chrome_version": "116",
-  "release_date": "2026-07-27T22:49:52.692Z",
+  "release_date": "2026-07-27T23:24:53.716Z",
   "changelog": [
-    "LSA Leads: duplicate protection — a lead whose phone already has an active Roofr job (appointment scheduled, proposal out, install scheduled, etc.) is flagged '⚠️ Already in Roofr' with a link to the job card and dropped from auto-dial, so no one cold-calls an existing customer",
-    "Flagged duplicates stay in the queue and can be closed without dialing: opening the card shows Booked / Unqualified / Other so a rep verifies against the job card and dispositions it in one click"
+    "Fix: the '⚠️ Already in Roofr' job-card link now opens the correct job (was going nowhere)"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.12/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.12"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.13/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.13"
 }

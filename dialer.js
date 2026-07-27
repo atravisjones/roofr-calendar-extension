@@ -3203,9 +3203,9 @@
         dup.style.fontWeight = "600";
         const jid = lead.roofr_job_id;
         const stage = lead.roofr_stage ? ` · ${lead.roofr_stage}` : "";
-        if (jid) {
+        if (lead.roofr_job_url) {
           const a = document.createElement("a");
-          a.href = `https://app.roofr.com/jobs/details/${encodeURIComponent(jid)}`;
+          a.href = lead.roofr_job_url;
           a.target = "_blank";
           a.textContent = `⚠️ Already in Roofr → job ${jid}${stage}`;
           a.title = "Open the existing Roofr job — don't cold-call; disposition it";
@@ -3213,7 +3213,7 @@
           a.addEventListener("click", (e) => { e.stopPropagation(); });
           dup.appendChild(a);
         } else {
-          dup.textContent = `⚠️ Already in Roofr${stage}`;
+          dup.textContent = `⚠️ Already in Roofr${jid ? ` → job ${jid}` : ""}${stage}`;
         }
         main.appendChild(dup);
       }
@@ -3434,7 +3434,7 @@
         a.textContent = jid
           ? `⚠️ Already in Roofr → job ${jid}${stage} — disposition, don't cold-call`
           : `⚠️ Already in Roofr${stage} — disposition, don't cold-call`;
-        if (jid) a.href = `https://app.roofr.com/jobs/details/${encodeURIComponent(jid)}`;
+        if (lead.roofr_job_url) a.href = lead.roofr_job_url;
         dupEl.appendChild(a);
         dupEl.style.display = "";
       } else {

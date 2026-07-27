@@ -29,6 +29,7 @@
   const RSCHED_CALLS_URL = `${API_BASE}/api/roofr-rsched-calls`;
   const LSA_CALLS_URL = `${API_BASE}/api/roofr-lsa-calls`;
   const LEADTRUFFLE_OUTCOME_URL = `${API_BASE}/api/leadtruffle-outcome`;
+  const LEADTRUFFLE_STATUS_URL = "https://dm6wvhamqhvjwra3y5egnanooe0gdtzf.lambda-url.us-west-2.on.aws/trpc/updateLeadStatus?batch=1";
   const LSA_HEARTBEAT_MS = 60000;
   const WC_MAX_ATTEMPTS = 4;
   const WC_RENEW_MS = 90000;             // lock heartbeat during a long welcome call
@@ -2894,6 +2895,65 @@
     return company || "";
   }
 
+  function lsaLeadTruffleStatus(disposition, company) {
+    const normalized = String(company || "").trim().toLowerCase();
+    const isRoofers = normalized === "arizona roofers";
+    const isRoofPros = ["arizona roof pros", "arizona roof pro", "az roof pros", "az roof pro"].includes(normalized);
+
+    if (disposition === "Booked") {
+      if (isRoofPros) return { value: "BOOKED_AZPRO", label: "Booked AZPRO" };
+      if (isRoofers) return { value: "WON", label: "Booked AZR" };
+    }
+    if (disposition === "Unqualified") {
+      if (isRoofPros) return { value: "LOST_UNQUALIFIED_1", label: "Lost/Unqualified AZPRO" };
+      if (isRoofers) return { value: "LOST_UNQUALIFIED", label: "Lost/Unqualified AZR" };
+    }
+    return null;
+  }
+
+  async function lsaUpdateLeadTruffleStatus(leadId, disposition, company) {
+    const status = lsaLeadTruffleStatus(disposition, company);
+    if (!status) {
+      log(`lsa: LT status update skipped (no company mapping for ${company || "blank"})`, "warn", "lsa");
+      return;
+    }
+
+    try {
+      let tabId = _lsaLtTabId;
+      if (tabId == null) {
+        const tabs = await chrome.tabs.query({ url: "https://app.leadtruffle.com/*" });
+        tabId = tabs[0]?.id;
+      }
+      if (tabId == null) throw new Error("LeadTruffle tab not found");
+
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => localStorage.getItem("authToken"),
+      });
+      const token = results?.[0]?.result;
+      if (!token) throw new Error("authToken unavailable");
+
+      const response = await fetch(LEADTRUFFLE_STATUS_URL, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          0: {
+            leadSubmissionId: String(leadId || ""),
+            conversionStatus: status.value,
+          },
+        }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      log(`lsa: LT status updated (${status.label})`, "ok", "lsa");
+    } catch (e) {
+      log(`lsa: LT status update skipped (${e?.message || "unknown error"})`, "warn", "lsa");
+    }
+  }
+
   function lsaHasPhone(row) {
     return String(row?.phone10 || "").replace(/\D/g, "").length === 10;
   }
@@ -3538,6 +3598,10 @@
     }).catch(e => {
       log(`lsa: LeadTruffle outcome post failed: ${e.message}`, "warn", "lsa");
     });
+
+    if (disposition === "Booked" || disposition === "Unqualified") {
+      void lsaUpdateLeadTruffleStatus(leadId, disposition, lead.company);
+    }
 
     _lsaClaimed = false;
     lsaStopHeartbeat();

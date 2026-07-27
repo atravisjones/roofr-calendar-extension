@@ -2116,6 +2116,19 @@
     ).length);
   })();
 
+  // LSA queue live-refresh. The LeadTruffle webhook lands new leads (and
+  // clears booked/lost ones) in seconds, but the panel only shows them on
+  // reload. While the LSA tab is open and idle — no card under review, no
+  // active call, not mid-claim — re-pull the feed every 75s so pushed leads
+  // surface on their own. Guarded to a no-op on other tabs / mid-flow, and
+  // fetchLeads() coalesces so it can't stack.
+  const LSA_AUTO_REFRESH_MS = 75000;
+  setInterval(() => {
+    if (currentTab === "lsa" && _lsaPhase === "idle" && !_lsaClaiming) {
+      fetchLeads({ force: true });
+    }
+  }, LSA_AUTO_REFRESH_MS);
+
   // Prime the Welcome Calls badge once on load (counts only due/overdue rows).
   (async () => {
     try {

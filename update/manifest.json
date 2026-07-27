@@ -1,11 +1,10 @@
 {
-  "version": "3.2.14",
+  "version": "3.2.15",
   "minimum_chrome_version": "116",
-  "release_date": "2026-07-27T23:35:54.359Z",
+  "release_date": "2026-07-27T23:48:15.022Z",
   "changelog": [
-    "LSA phone numbers now display as a clean 10-digit number (no leading 1)",
-    "If the number is already in Roofr, clicking it opens the job card; otherwise it opens CTM call history"
+    "LSA leads now show the REAL number of dials to that number and who last called them (from CTM), replacing the dialer's own count which reps rarely logged"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.14/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.14"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.15/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.15"
 }

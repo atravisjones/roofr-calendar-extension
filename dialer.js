@@ -3187,18 +3187,20 @@
 
       main.append(name, phone, meta);
 
-      // Call cadence: N/7 with who last called + when; fresh leads flag the
-      // double-tap (auto second dial) on the first attempt.
-      const cc = lead.call_count || 0;
+      // Real dials to this number (CTM) + who last called + when. Fresh leads
+      // flag the double-tap (auto second dial) on the first attempt.
+      const cc = lead.ctm_dials || 0;
       const calls = document.createElement("div");
       calls.className = "rsched-meta";
       calls.style.marginTop = "1px";
       if (cc > 0) {
         if (cc >= 6) calls.style.color = "var(--warning, #c47f17)";
-        calls.textContent = `📞 ${cc}/7 call${cc === 1 ? "" : "s"} · last ${lead.last_call_by || "?"} ${lsaAge(lead.last_call_at)}`;
+        const by = lead.ctm_last_by ? ` · last ${lead.ctm_last_by}` : "";
+        const ago = lead.ctm_last_at ? ` ${lsaAge(lead.ctm_last_at)}` : "";
+        calls.textContent = `📞 ${cc} dial${cc === 1 ? "" : "s"}${by}${ago}`;
       } else {
         calls.style.color = "var(--muted)";
-        calls.textContent = "📞 0/7 · ×2 double-tap on first call";
+        calls.textContent = "📞 no dials yet · ×2 double-tap on first call";
       }
       main.appendChild(calls);
 
@@ -3420,12 +3422,14 @@
         phoneEl.onclick = null;
       }
     }
-    // Call cadence line: N/7 calls · last by <rep> <ago>.
+    // Real dials to this number (CTM) · who last called · when.
     const callsEl = document.getElementById("lsa-lead-calls");
     if (callsEl) {
-      const cc = lead.call_count || 0;
+      const cc = lead.ctm_dials || 0;
       if (cc > 0) {
-        callsEl.textContent = `📞 ${cc}/7 call${cc === 1 ? "" : "s"} · last by ${lead.last_call_by || "?"} ${lsaAge(lead.last_call_at)}`;
+        const by = lead.ctm_last_by ? ` · last by ${lead.ctm_last_by}` : "";
+        const ago = lead.ctm_last_at ? ` ${lsaAge(lead.ctm_last_at)}` : "";
+        callsEl.textContent = `📞 ${cc} dial${cc === 1 ? "" : "s"}${by}${ago}`;
         callsEl.style.color = cc >= 6 ? "var(--warning, #c47f17)" : "";
         callsEl.style.display = "";
       } else {

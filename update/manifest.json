@@ -1,12 +1,11 @@
 {
-  "version": "3.2.10",
+  "version": "3.2.11",
   "minimum_chrome_version": "116",
-  "release_date": "2026-07-27T21:49:20.467Z",
+  "release_date": "2026-07-27T22:01:21.273Z",
   "changelog": [
-    "LSA Leads now show a call count (N/7) plus who called last and when — the goal is 7 attempts before a lead is marked Lost/Unqualified",
-    "\"No Answer\" now keeps a lead in the queue for the next attempt instead of removing it; a lead is auto-marked Unqualified once it reaches 7 attempts (Booked/Unqualified still finish it immediately)",
-    "Click the phone number under a lead's name to open CTM's call history filtered to that number (works in the list and the review card)"
+    "LSA Leads now follow the same call cadence as Missed Calls: the first attempt double-taps (auto-dials twice), then the lead rests 3 hours between the next tries, then once a day — auto-marked Unqualified at 7 attempts",
+    "Recently-called LSA leads drop out of the dialer queue until their next window opens, so no one re-dials them too soon"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.10/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.10"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.11/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.11"
 }

@@ -100,11 +100,11 @@
   let _lsaPhase = "idle";       // 'idle' | 'reviewing' | 'calling' | 'stage2'
   let _lsaClaimed = false;
   let _lsaClaiming = false;
-  // Leads attempted (non-terminal) this session — suppresses re-dialing the
-  // same lead again in one sitting while the 7-call count accrues across
-  // sessions. Leads auto-Lost at 7 (fired once each).
-  const _lsaAttemptedThisSession = new Set();
+  // Cadence: the server's due_now gate rests a lead between attempts (3h under
+  // 3 tries, then daily), so no session-suppression is needed. Leads auto-Lost
+  // at 7 (fired once each). Double-tap = the fresh-lead's automatic second dial.
   const _lsaAutoLost = new Set();
+  let _lsaDoubleTapPending = false;
   let _lsaHeartbeatId = null;
   let _lsaCallTimerId = null;
   let _lsaCallStartMs = 0;
@@ -1062,13 +1062,14 @@
           : Array.isArray(data.leads)
             ? data.leads
             : [];
-        let loaded = rows.filter(row => !_lsaAttemptedThisSession.has(lsaLeadId(row)));
         // Auto-Lost backstop: a lead that reached the 7-call cadence without a
         // terminal disposition gets auto-disposed as Unqualified (note + LT
-        // writeback). Fire once per lead per session; then drop from the queue.
-        const exhausted = loaded.filter(row => (row.call_count || 0) >= 7 && !_lsaAutoLost.has(lsaLeadId(row)));
+        // writeback). Fire once per lead per session, before the due-gate filter.
+        const exhausted = rows.filter(row => (row.call_count || 0) >= 7 && !_lsaAutoLost.has(lsaLeadId(row)));
         for (const row of exhausted) { _lsaAutoLost.add(lsaLeadId(row)); lsaAutoLose(row); }
-        _lsaAll = loaded.filter(row => (row.call_count || 0) < 7);
+        // Dialable = under 7 attempts AND due now (server rests recently-called
+        // leads until their next 3h / daily window).
+        _lsaAll = rows.filter(row => (row.call_count || 0) < 7 && row.due_now !== false);
         log(`LSA leads loaded: ${_lsaAll.length}`, "ok", "lsa");
         if (_lsaPhase === "idle") renderLsaQueue();
         else updateLsaBadge(_lsaAll.length);
@@ -3175,16 +3176,20 @@
 
       main.append(name, phone, meta);
 
-      // Call cadence: how many times called / 7, and who last called + when.
+      // Call cadence: N/7 with who last called + when; fresh leads flag the
+      // double-tap (auto second dial) on the first attempt.
       const cc = lead.call_count || 0;
+      const calls = document.createElement("div");
+      calls.className = "rsched-meta";
+      calls.style.marginTop = "1px";
       if (cc > 0) {
-        const calls = document.createElement("div");
-        calls.className = "rsched-meta";
-        calls.style.marginTop = "1px";
         if (cc >= 6) calls.style.color = "var(--warning, #c47f17)";
         calls.textContent = `📞 ${cc}/7 call${cc === 1 ? "" : "s"} · last ${lead.last_call_by || "?"} ${lsaAge(lead.last_call_at)}`;
-        main.appendChild(calls);
+      } else {
+        calls.style.color = "var(--muted)";
+        calls.textContent = "📞 0/7 · ×2 double-tap on first call";
       }
+      main.appendChild(calls);
 
       li.appendChild(main);
 
@@ -3747,11 +3752,29 @@
       void lsaUpdateLeadTruffleStatus(leadId, disposition, lead.company);
     }
 
-    // Non-terminal outcomes (No Answer, …) re-queue toward the 7-call cadence;
-    // suppress re-dialing this same lead again in the current session.
-    if (disposition !== "Booked" && disposition !== "Unqualified") {
-      _lsaAttemptedThisSession.add(leadId);
+    const terminal = (disposition === "Booked" || disposition === "Unqualified");
+
+    // Double-tap: on a fresh lead's first non-terminal, no-connect outcome,
+    // automatically dial once more before it rests — mirrors the missed-calls
+    // dialer. Guarded by _lsaDoubleTapPending so the second dial fires once.
+    // After that the server's due_now gate rests the lead (3h, then daily).
+    if (!terminal && (lead.call_count || 0) === 0 && !_lsaDoubleTapPending
+        && lsaHasPhone(lead) && talkTime < 10) {
+      _lsaDoubleTapPending = true;
+      const noteEl0 = document.getElementById("lsa-note");
+      if (noteEl0) noteEl0.value = "";
+      const claim = await lsaWrite({ action: "claim", lead_id: leadId, rep });
+      if (claim && claim.claimed) {
+        _lsaClaimed = true;
+        lsaStartHeartbeat();
+        _lsaPhase = "reviewing";
+        log("lsa: double-tap — second dial on first attempt", "act", "lsa");
+        await lsaHandleCall();
+        return;
+      }
+      _lsaDoubleTapPending = false;   // couldn't re-claim → just advance
     }
+    _lsaDoubleTapPending = false;
 
     _lsaClaimed = false;
     lsaStopHeartbeat();

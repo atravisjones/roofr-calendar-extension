@@ -109,6 +109,7 @@
   let _lsaDialAt = 0;
   let _lsaBusyAtDial = false;
   let _lsaSkippedIds = new Set();
+  let _lsaLtTabId = null;         // the single reused LeadTruffle conversation tab
 
   // ── Needs Rescheduled state (fully ISOLATED from the leads/missed dialer) ──
   // This flow never sets `currentLead`, never calls advanceToNext/onCallEnded/
@@ -3087,6 +3088,15 @@
     lsaShowPhase("reviewing");
     lsaStartHeartbeat();
 
+    // Same review flow as rsched (which opens the Roofr job): open the
+    // LeadTruffle conversation in the one reused tab so the CSR reads the
+    // real thread before dialing.
+    if (lead.conversation_url) {
+      lsaOpenConversationTab(lead.conversation_url);
+    } else {
+      log("lsa: no conversation link for this lead — review from the card", "info", "lsa");
+    }
+
     document.querySelectorAll(".lsa-row").forEach(row => {
       row.classList.toggle("active", row.dataset.leadId === lsaLeadId(lead));
     });
@@ -3492,6 +3502,16 @@
       sendToCtm({ type: "hangup" }).catch(() => {});
       lsaOnCallEnded();
     });
+
+    const convLink = document.getElementById("lsa-conversation-link");
+    if (convLink) {
+      convLink.addEventListener("click", (e) => {
+        const href = convLink.getAttribute("href") || "";
+        if (!href || href === "#") return;
+        e.preventDefault();
+        lsaOpenConversationTab(href);
+      });
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -3641,6 +3661,21 @@
   // track" that respects the tab's current list filter — so a job filtered out
   // of that view never opens. A cold tab load opens the card every time. We
   // reuse ONE dedicated tab: open the new one, then close the previous.
+  function lsaOpenConversationTab(url) {
+    if (!url) return;
+    try {
+      const prev = _lsaLtTabId;
+      chrome.tabs.create({ url, active: true }, (t) => {
+        if (chrome.runtime.lastError || !t) { window.open(url, "_blank"); return; }
+        _lsaLtTabId = t.id;
+        if (t.windowId != null) chrome.windows.update(t.windowId, { focused: true });
+        if (prev != null && prev !== t.id) {
+          chrome.tabs.remove(prev, () => { void chrome.runtime.lastError; });
+        }
+      });
+    } catch (_) { window.open(url, "_blank"); }
+  }
+
   function rschedOpenJobCard(url) {
     if (!url) return;
     try {

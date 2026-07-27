@@ -1,10 +1,14 @@
 {
-  "version": "3.2.5",
+  "version": "3.2.9",
   "minimum_chrome_version": "116",
-  "release_date": "2026-07-22T20:06:32.901Z",
+  "release_date": "2026-07-27T21:26:55.432Z",
   "changelog": [
-    "Links menu: added Leads Form, Missed Calls (Speed to Leads), and LSA's (LeadTruffle) to the footer Links dropdown"
+    "New LSA Leads queue: work Google Local Services Ads leads (from LeadTruffle) right in the dialer — review the conversation, claim-on-open so no two reps take the same lead, and dispositions write back to LeadTruffle (timestamped note + pipeline status + reassignment to the caller)",
+    "LSA leads dial from the matching caller ID (Arizona Roofers / AZ Roof Pro) and show the customer's REAL phone pulled from Google even when LeadTruffle only has a masked number",
+    "New LSA leads and booked/lost changes now arrive in seconds and the queue refreshes on its own — no manual reload",
+    "Company + status filters (Callable default) and a no-phone review flow; queue dropdown replaces the cramped tab bar",
+    "Welcome Calls: Deposits On Hold jobs no longer appear in the due queue"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.5/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.5"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.9/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.9"
 }

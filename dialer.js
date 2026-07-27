@@ -3529,6 +3529,7 @@
       },
       body: JSON.stringify({
         phone: lead.phone || "",
+        lead_id: String(leadId || ""),
         csr: rep,
         outcome: disposition,
         note,

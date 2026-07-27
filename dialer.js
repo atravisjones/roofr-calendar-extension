@@ -2954,12 +2954,34 @@
     }
   }
 
+  // LT phone wins; google_phone10 (real consumer number from the Google Ads
+  // API sweep, Roofers account only for now) makes otherwise phone-less
+  // leads dialable. The LT writeback stays keyed on lead.phone/lead_id —
+  // never send the Google number to LeadTruffle as a lookup key.
+  function lsaDialDigits(row) {
+    const lt = String(row?.phone10 || "").replace(/\D/g, "");
+    if (lt.length === 10) return lt;
+    const g = String(row?.google_phone10 || "").replace(/\D/g, "");
+    return g.length === 10 ? g : "";
+  }
+
+  function lsaUsesGooglePhone(row) {
+    return String(row?.phone10 || "").replace(/\D/g, "").length !== 10 && lsaDialDigits(row).length === 10;
+  }
+
+  function lsaDisplayName(row) {
+    const name = String(row?.name || "").trim();
+    if (name && name !== "Potential Customer") return name;
+    return String(row?.google_name || "").trim() || name;
+  }
+
   function lsaHasPhone(row) {
-    return String(row?.phone10 || "").replace(/\D/g, "").length === 10;
+    return lsaDialDigits(row).length === 10;
   }
 
   function lsaStatusBucket(row) {
     const status = String(row?.lead_status || "").trim().toUpperCase();
+    if (String(row?.google_lead_status || "").trim().toUpperCase() === "BOOKED") return "booked";
     if (!lsaHasPhone(row)) return "no-phone";
     if (!status) return "new";
     if (status.startsWith("NURTURING")) return "nurturing";
@@ -2974,7 +2996,8 @@
     const bucket = lsaStatusBucket(row);
     if (status === "callable") {
       const raw = String(row?.lead_status || "").trim().toUpperCase();
-      return lsaHasPhone(row) && !raw.startsWith("BOOKED") && !raw.startsWith("LOST") && raw !== "WON";
+      const graw = String(row?.google_lead_status || "").trim().toUpperCase();
+      return lsaHasPhone(row) && graw !== "BOOKED" && !raw.startsWith("BOOKED") && !raw.startsWith("LOST") && raw !== "WON";
     }
     return bucket === status;
   }
@@ -3095,11 +3118,15 @@
 
       const name = document.createElement("div");
       name.className = "rsched-name";
-      name.textContent = lead.name || "(no name)";
+      name.textContent = lsaDisplayName(lead) || "(no name)";
 
       const phone = document.createElement("div");
       phone.className = "rsched-phone";
-      phone.textContent = lsaHasPhone(lead) ? (lead.phone || lead.phone10) : "no #";
+      phone.textContent = lsaHasPhone(lead)
+        ? (lsaUsesGooglePhone(lead)
+          ? `${lead.google_phone || lead.google_phone10} · Google`
+          : (lead.phone || lead.phone10))
+        : "no #";
       if (!lsaHasPhone(lead)) phone.className = "lsa-lock-chip";
 
       const meta = document.createElement("div");
@@ -3280,8 +3307,12 @@
       if (el) el.textContent = value || "—";
     };
 
-    set("lsa-lead-name", lead.name || "(no name)");
-    set("lsa-lead-phone", lsaHasPhone(lead) ? (lead.phone || lead.phone10) : "No phone number");
+    set("lsa-lead-name", lsaDisplayName(lead) || "(no name)");
+    set("lsa-lead-phone", lsaHasPhone(lead)
+      ? (lsaUsesGooglePhone(lead)
+        ? `${lead.google_phone || lead.google_phone10} (real # via Google LSA)`
+        : (lead.phone || lead.phone10))
+      : "No phone number");
     set("lsa-company", lead.company || "Unknown company");
     set("lsa-job-description", lead.job_description || "No customer description provided.");
     set("lsa-summary", lead.summary || "");
@@ -3431,9 +3462,9 @@
       return;
     }
 
-    const e164 = toE164(lead.phone || lead.phone10 || "");
+    const e164 = toE164(lead.phone || lead.phone10 || lead.google_phone || lead.google_phone10 || "");
     if (!e164) {
-      log(`lsa: bad/empty phone: ${lead.phone || "(none)"}`, "err", "lsa");
+      log(`lsa: bad/empty phone: ${lead.phone || lead.google_phone || "(none)"}`, "err", "lsa");
       return;
     }
 

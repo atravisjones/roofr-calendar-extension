@@ -1,10 +1,10 @@
 {
-  "version": "3.2.21",
+  "version": "3.2.22",
   "minimum_chrome_version": "116",
-  "release_date": "2026-07-28T21:34:33.559Z",
+  "release_date": "2026-07-28T21:46:34.557Z",
   "changelog": [
     "LSA leads now show the REAL number of dials to that number and who last called them (from CTM), replacing the dialer's own count which reps rarely logged"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.21/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.21"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.22/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.22"
 }

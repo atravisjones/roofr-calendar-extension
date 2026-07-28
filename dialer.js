@@ -3126,9 +3126,10 @@
     const bucket = lsaStatusBucket(row);
     // Done is a record, not a worklist — it always shows everything.
     if (bucket === "done") return true;
-    // Message rests too: the server gives no-phone leads a flat 24h between
-    // touches, so a thread messaged an hour ago is not actionable yet.
-    if (bucket === "message") return row.due_now !== false;
+    // Message NEVER rests — a customer can reply at any moment, and hiding a
+    // live thread for hours is worse than a rep seeing it twice. Recency is
+    // rendered on the row instead so they can judge (Travis 2026-07-28).
+    if (bucket === "message") return true;
     return row.due_now !== false && (row.call_count || 0) < 7;
   }
 
@@ -3229,18 +3230,34 @@
 
       // Real dials to this number (CTM) + who last called + when. Fresh leads
       // flag the double-tap (auto second dial) on the first attempt.
-      const cc = lead.ctm_dials || 0;
       const calls = document.createElement("div");
       calls.className = "rsched-meta";
       calls.style.marginTop = "1px";
-      if (cc > 0) {
-        if (cc >= 6) calls.style.color = "var(--warning, #c47f17)";
-        const by = lead.ctm_last_by ? ` · last ${lead.ctm_last_by}` : "";
-        const ago = lead.ctm_last_at ? ` ${lsaAge(lead.ctm_last_at)}` : "";
-        calls.textContent = `📞 ${cc} dial${cc === 1 ? "" : "s"}${by}${ago}`;
+      if (lsaStatusBucket(lead) === "message") {
+        // Message leads have no number, so dial counts are meaningless — showing
+        // "no dials yet · double-tap" on one was simply wrong. These never rest,
+        // so this line is the ONLY thing stopping a rep re-messaging a thread
+        // they touched minutes ago. It has to be here.
+        const mc = lead.message_count || 0;
+        if (mc > 0) {
+          const by = lead.last_message_by ? ` · last ${lead.last_message_by}` : "";
+          const ago = lead.last_message_at ? ` ${lsaAge(lead.last_message_at)}` : "";
+          calls.textContent = `💬 ${mc} message${mc === 1 ? "" : "s"} sent${by}${ago}`;
+        } else {
+          calls.style.color = "var(--muted)";
+          calls.textContent = "💬 not messaged yet";
+        }
       } else {
-        calls.style.color = "var(--muted)";
-        calls.textContent = "📞 no dials yet · ×2 double-tap on first call";
+        const cc = lead.ctm_dials || 0;
+        if (cc > 0) {
+          if (cc >= 6) calls.style.color = "var(--warning, #c47f17)";
+          const by = lead.ctm_last_by ? ` · last ${lead.ctm_last_by}` : "";
+          const ago = lead.ctm_last_at ? ` ${lsaAge(lead.ctm_last_at)}` : "";
+          calls.textContent = `📞 ${cc} dial${cc === 1 ? "" : "s"}${by}${ago}`;
+        } else {
+          calls.style.color = "var(--muted)";
+          calls.textContent = "📞 no dials yet · ×2 double-tap on first call";
+        }
       }
       main.appendChild(calls);
 

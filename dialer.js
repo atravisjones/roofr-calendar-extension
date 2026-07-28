@@ -3204,28 +3204,39 @@
       }
       main.appendChild(calls);
 
-      // Duplicate protection: this phone already has an ACTIVE Roofr job. It's
+      // Duplicate protection: this phone already has a Roofr job. Both classes are
       // excluded from auto-dial (lsaAvailableRows) — surface the job link so the
-      // rep opens/dispositions it instead of cold-calling an existing customer.
+      // rep opens/dispositions it instead of cold-calling.
+      //   active — someone owns it, don't cold-call an existing customer
+      //   closed — it already ran its course; "Already in Roofr" would read wrong
+      //            on a dead job, so the wording states the stage plainly instead
       if (lead.roofr_duplicate) {
+        const isClosed = lead.roofr_match_class === "closed";
         const dup = document.createElement("div");
         dup.className = "rsched-meta lsa-dup";
         dup.style.marginTop = "1px";
-        dup.style.color = "var(--danger, #c0392b)";
+        dup.style.color = isClosed ? "var(--muted-strong, #5b6470)" : "var(--danger, #c0392b)";
         dup.style.fontWeight = "600";
         const jid = lead.roofr_job_id;
         const stage = lead.roofr_stage ? ` · ${lead.roofr_stage}` : "";
+        const label = isClosed
+          ? `⛔ Roofr job ${jid}${stage}`
+          : `⚠️ Already in Roofr → job ${jid}${stage}`;
         if (lead.roofr_job_url) {
           const a = document.createElement("a");
           a.href = lead.roofr_job_url;
           a.target = "_blank";
-          a.textContent = `⚠️ Already in Roofr → job ${jid}${stage}`;
-          a.title = "Open the existing Roofr job — don't cold-call; disposition it";
+          a.textContent = label;
+          a.title = isClosed
+            ? "This job was already closed out in Roofr — open it to confirm before dispositioning"
+            : "Open the existing Roofr job — don't cold-call; disposition it";
           a.style.color = "inherit";
           a.addEventListener("click", (e) => { e.stopPropagation(); });
           dup.appendChild(a);
         } else {
-          dup.textContent = `⚠️ Already in Roofr${jid ? ` → job ${jid}` : ""}${stage}`;
+          dup.textContent = isClosed
+            ? `⛔ Roofr job${jid ? ` ${jid}` : ""}${stage}`
+            : `⚠️ Already in Roofr${jid ? ` → job ${jid}` : ""}${stage}`;
         }
         main.appendChild(dup);
       }
@@ -3443,15 +3454,24 @@
     const dupEl = document.getElementById("lsa-lead-dup");
     if (dupEl) {
       if (lead.roofr_duplicate) {
+        const isClosed = lead.roofr_match_class === "closed";
         const jid = lead.roofr_job_id;
         const stage = lead.roofr_stage ? ` · ${lead.roofr_stage}` : "";
         dupEl.innerHTML = "";
         const a = document.createElement("a");
         a.target = "_blank";
         a.style.color = "inherit";
-        a.textContent = jid
-          ? `⚠️ Already in Roofr → job ${jid}${stage} — disposition, don't cold-call`
-          : `⚠️ Already in Roofr${stage} — disposition, don't cold-call`;
+        if (isClosed) {
+          // Already closed out in Roofr — "Already in Roofr" reads as though it
+          // were live, which is what made these cards confusing in the first place.
+          a.textContent = jid
+            ? `⛔ Roofr job ${jid}${stage} — already closed out, confirm before dispositioning`
+            : `⛔ Roofr job${stage} — already closed out`;
+        } else {
+          a.textContent = jid
+            ? `⚠️ Already in Roofr → job ${jid}${stage} — disposition, don't cold-call`
+            : `⚠️ Already in Roofr${stage} — disposition, don't cold-call`;
+        }
         if (lead.roofr_job_url) a.href = lead.roofr_job_url;
         dupEl.appendChild(a);
         dupEl.style.display = "";

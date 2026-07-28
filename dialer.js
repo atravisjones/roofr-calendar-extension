@@ -120,7 +120,7 @@
   // fall back to the useful callable/all-company view.
   const LSA_FILTERS_KEY = "lsaLeadFilters";
   let _lsaCompanyFilter = "all";
-  let _lsaStatusFilter = "callable";
+  let _lsaStatusFilter = "dial";
 
   // ── Needs Rescheduled state (fully ISOLATED from the leads/missed dialer) ──
   // This flow never sets `currentLead`, never calls advanceToNext/onCallEnded/
@@ -1052,7 +1052,7 @@
       // ── LSA Leads tab: claim-at-review queue from LeadTruffle ──
       if (currentTab === "lsa") {
         log("fetching LSA leads…", "info", "lsa");
-        const data = await lsaWrite({ action: "feed", rep: repName || "Unknown" });
+        const data = await lsaWrite({ action: "feed", rep: repName || "Unknown", include_done: true });
         if (data.error) {
           log(`fetch LSA leads failed: ${data.error}`, "err", "lsa");
           return;
@@ -1067,9 +1067,12 @@
         // writeback). Fire once per lead per session, before the due-gate filter.
         const exhausted = rows.filter(row => (row.call_count || 0) >= 7 && !_lsaAutoLost.has(lsaLeadId(row)));
         for (const row of exhausted) { _lsaAutoLost.add(lsaLeadId(row)); lsaAutoLose(row); }
-        // Dialable = under 7 attempts AND due now (server rests recently-called
-        // leads until their next 3h / daily window).
-        _lsaAll = rows.filter(row => (row.call_count || 0) < 7 && row.due_now !== false);
+        // Keep EVERY row the server returned. The cadence gate (under 7 attempts
+        // and due now) decides what may be auto-DIALED and lives in
+        // lsaAvailableRows — it must not prune the list itself, or the Done and
+        // Message buckets would silently lose resting and exhausted leads, which
+        // are exactly the ones a rep opens those buckets to look at.
+        _lsaAll = rows;
         log(`LSA leads loaded: ${_lsaAll.length}`, "ok", "lsa");
         if (_lsaPhase === "idle") renderLsaQueue();
         else updateLsaBadge(_lsaAll.length);
@@ -2110,7 +2113,7 @@
   })();
   // Prime the LSA badge once on load.
   (async () => {
-    const data = await lsaWrite({ action: "feed", rep: repName || "Unknown" });
+    const data = await lsaWrite({ action: "feed", rep: repName || "Unknown", include_done: true });
     if (data.error) return;
     const rows = Array.isArray(data.rows)
       ? data.rows
@@ -3008,27 +3011,27 @@
     return lsaDialDigits(row).length === 10;
   }
 
+  // Three buckets, keyed on the ACTION a lead needs rather than its status —
+  // the seven status buckets this replaced made you read a status and then work
+  // out what to do with it. The server computes lsa_bucket; the local fallback
+  // keeps an older feed (one without the field) usable.
+  //   dial    — has a number and nothing has resolved it
+  //   message — no number; work the LeadTruffle thread instead
+  //   done    — booked/lost/won, already a Roofr job, or dispositioned here
   function lsaStatusBucket(row) {
+    const served = String(row?.lsa_bucket || "").trim().toLowerCase();
+    if (served === "dial" || served === "message" || served === "done") return served;
     const status = String(row?.lead_status || "").trim().toUpperCase();
-    if (String(row?.google_lead_status || "").trim().toUpperCase() === "BOOKED") return "booked";
-    if (!lsaHasPhone(row)) return "no-phone";
-    if (!status) return "new";
-    if (status.startsWith("NURTURING")) return "nurturing";
-    if (status.startsWith("BOOKED")) return "booked";
-    if (status.startsWith("LOST")) return "lost";
-    if (status === "WON") return "won";
-    return "callable";
+    const google = String(row?.google_lead_status || "").trim().toUpperCase();
+    const resolved = google === "BOOKED" || status.startsWith("BOOKED")
+      || status.startsWith("LOST") || status === "WON";
+    if (resolved || row?.roofr_duplicate || row?.dispositioned) return "done";
+    return lsaHasPhone(row) ? "dial" : "message";
   }
 
   function lsaMatchesStatus(row, status = _lsaStatusFilter) {
     if (status === "all") return true;
-    const bucket = lsaStatusBucket(row);
-    if (status === "callable") {
-      const raw = String(row?.lead_status || "").trim().toUpperCase();
-      const graw = String(row?.google_lead_status || "").trim().toUpperCase();
-      return lsaHasPhone(row) && graw !== "BOOKED" && !raw.startsWith("BOOKED") && !raw.startsWith("LOST") && raw !== "WON";
-    }
-    return bucket === status;
+    return lsaStatusBucket(row) === status;
   }
 
   function lsaMatchesCompany(row, company = _lsaCompanyFilter) {
@@ -3048,9 +3051,12 @@
     const statusSelect = document.getElementById("lsa-status-select");
     const companies = ["Arizona Roofers", "Arizona Roof Pros"];
     const statuses = [
-      ["callable", "Callable"], ["new", "New (uncontacted)"], ["nurturing", "Nurturing"],
-      ["booked", "Booked"], ["lost", "Lost/Unqualified"], ["won", "Won"],
-      ["no-phone", "No phone"], ["all", "All"],
+      ["dial", "📞 Call"],
+      ["message", "💬 Message"],
+      // Not "Booked/Lost" — a lead lands here on a Roofr job alone, which is
+      // neither of those. The label has to cover all three reasons.
+      ["done", "✓ Done (booked, lost, or in Roofr)"],
+      ["all", "All"],
     ];
     const companyScoped = _lsaAll.filter(row => lsaMatchesStatus(row));
     const statusScoped = _lsaAll.filter(row => lsaMatchesCompany(row));
@@ -3092,10 +3098,10 @@
     try {
       const saved = (await chrome.storage.local.get([LSA_FILTERS_KEY]))?.[LSA_FILTERS_KEY] || {};
       _lsaCompanyFilter = ["all", "Arizona Roofers", "Arizona Roof Pros"].includes(saved.company) ? saved.company : "all";
-      _lsaStatusFilter = ["callable", "new", "nurturing", "booked", "lost", "won", "no-phone", "all"].includes(saved.status) ? saved.status : "callable";
+      _lsaStatusFilter = ["dial", "message", "done", "all"].includes(saved.status) ? saved.status : "dial";
     } catch (_) {
       _lsaCompanyFilter = "all";
-      _lsaStatusFilter = "callable";
+      _lsaStatusFilter = "dial";
     }
     lsaPopulateFilterSelects();
     if (currentTab === "lsa") renderLsaQueue();
@@ -3113,7 +3119,10 @@
 
   function lsaAvailableRows() {
     return lsaVisibleRows().filter(row =>
-      !row.roofr_duplicate &&  // already an active Roofr job — flagged, never auto-dialed
+      lsaStatusBucket(row) === "dial" &&  // never auto-dial message-only or done leads
+      !row.roofr_duplicate &&             // belt and braces: any Roofr job blocks a dial
+      (row.call_count || 0) < 7 &&        // cadence gate — moved off _lsaAll so the
+      row.due_now !== false &&            // Done/Message buckets keep their rows
       !(row.locked_by && row.locked_by !== repName) &&
       !_lsaSkippedIds.has(lsaLeadId(row))
     );
@@ -3526,6 +3535,10 @@
     show("lsa-review-card", nextPhase !== "idle");
     show("lsa-stage1", nextPhase === "reviewing" && _lsaLead && lsaHasPhone(_lsaLead) && !isDup);
     show("lsa-no-phone-actions", nextPhase === "reviewing" && _lsaLead && (!lsaHasPhone(_lsaLead) || isDup));
+    // "Messaged" only makes sense on a lead we're working in the LeadTruffle
+    // thread — not on a duplicate being closed out against a Roofr job.
+    show("lsa-btn-no-phone-messaged",
+      nextPhase === "reviewing" && !!_lsaLead && lsaStatusBucket(_lsaLead) === "message");
     show("lsa-dialing", nextPhase === "calling");
     show("lsa-stage2", nextPhase === "stage2");
 
@@ -3954,6 +3967,7 @@
     on("lsa-btn-unqualified", () => lsaHandleStage2("Unqualified"));
     on("lsa-btn-other", () => lsaHandleStage2("Other"));
     on("lsa-btn-no-phone-skip", lsaHandleSkip);
+    on("lsa-btn-no-phone-messaged", () => lsaHandleNoPhoneDisposition("Messaged"));
     on("lsa-btn-no-phone-booked", () => lsaHandleNoPhoneDisposition("Booked"));
     on("lsa-btn-no-phone-unqualified", () => lsaHandleNoPhoneDisposition("Unqualified"));
     on("lsa-btn-no-phone-other", () => lsaHandleNoPhoneDisposition("Other"));

@@ -3107,13 +3107,23 @@
     if (currentTab === "lsa") renderLsaQueue();
   }
 
+  // A Call-bucket lead that's resting between attempts (server due_now=false, or
+  // 7 attempts spent) is not actionable, so it stays out of the Call queue — a
+  // rep opening Call wants a worklist, not a roster. Message and Done keep every
+  // row; hiding resting leads there was the bug that emptied those buckets.
+  function lsaActionableForBucket(row) {
+    if (lsaStatusBucket(row) !== "dial") return true;
+    return row.due_now !== false && (row.call_count || 0) < 7;
+  }
+
   function lsaVisibleRows() {
     return _lsaAll.filter(row =>
       !row.called &&
       !row.called_at &&
       !row.already_called &&
       lsaMatchesCompany(row) &&
-      lsaMatchesStatus(row)
+      lsaMatchesStatus(row) &&
+      lsaActionableForBucket(row)
     );
   }
 

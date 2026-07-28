@@ -3869,12 +3869,15 @@
 
     const terminal = (disposition === "Booked" || disposition === "Unqualified");
 
-    // Double-tap: on a fresh lead's first non-terminal, no-connect outcome,
-    // automatically dial once more before it rests — mirrors the missed-calls
-    // dialer. Guarded by _lsaDoubleTapPending so the second dial fires once.
-    // After that the server's due_now gate rests the lead (3h, then daily).
-    if (!terminal && (lead.call_count || 0) === 0 && !_lsaDoubleTapPending
-        && lsaHasPhone(lead) && !lead.roofr_duplicate && talkTime < 10) {
+    // Double-tap: a fresh lead's first "No Answer" gets one immediate redial —
+    // people routinely ignore the first ring and pick up the second. Keyed on
+    // the DISPOSITION the rep chose, not on a talk-time counter: the old
+    // talkTime<10 rule counted leaving a voicemail as a connection, so any rep
+    // who left a VM silently lost their second dial (Travis 2026-07-28). Left VM
+    // deliberately does NOT double-tap — that touch is already spent.
+    // Guarded by _lsaDoubleTapPending so the second dial fires exactly once.
+    if (disposition === "No Answer" && (lead.call_count || 0) === 0 && !_lsaDoubleTapPending
+        && lsaHasPhone(lead) && !lead.roofr_duplicate) {
       _lsaDoubleTapPending = true;
       const noteEl0 = document.getElementById("lsa-note");
       if (noteEl0) noteEl0.value = "";

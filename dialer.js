@@ -3123,7 +3123,12 @@
   // rep opening Call wants a worklist, not a roster. Message and Done keep every
   // row; hiding resting leads there was the bug that emptied those buckets.
   function lsaActionableForBucket(row) {
-    if (lsaStatusBucket(row) !== "dial") return true;
+    const bucket = lsaStatusBucket(row);
+    // Done is a record, not a worklist — it always shows everything.
+    if (bucket === "done") return true;
+    // Message rests too: the server gives no-phone leads a flat 24h between
+    // touches, so a thread messaged an hour ago is not actionable yet.
+    if (bucket === "message") return row.due_now !== false;
     return row.due_now !== false && (row.call_count || 0) < 7;
   }
 
@@ -3140,10 +3145,15 @@
 
   function lsaAvailableRows() {
     return lsaVisibleRows().filter(row =>
-      lsaStatusBucket(row) === "dial" &&  // never auto-dial message-only or done leads
-      !row.roofr_duplicate &&             // belt and braces: any Roofr job blocks a dial
-      (row.call_count || 0) < 7 &&        // cadence gate — moved off _lsaAll so the
-      row.due_now !== false &&            // Done/Message buckets keep their rows
+      // Workable = Call or Message. Both are queues a rep walks with Start; the
+      // Done bucket is a record and is never handed out. Which of the two you
+      // actually get is decided by the status filter, since lsaVisibleRows has
+      // already narrowed to it. Safe for Message because every consumer of this
+      // list only OPENS a card — nothing here dials on its own, and the Call
+      // button is hidden on a phone-less lead.
+      ["dial", "message"].includes(lsaStatusBucket(row)) &&
+      !row.roofr_duplicate &&             // any Roofr job blocks it either way
+      lsaActionableForBucket(row) &&      // per-bucket cadence gate
       !(row.locked_by && row.locked_by !== repName) &&
       !_lsaSkippedIds.has(lsaLeadId(row))
     );

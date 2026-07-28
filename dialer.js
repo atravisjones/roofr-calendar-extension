@@ -119,6 +119,9 @@
   // LSA filters persist per browser profile. Invalid/restored-old values always
   // fall back to the useful callable/all-company view.
   const LSA_FILTERS_KEY = "lsaLeadFilters";
+  // SINGLE source of truth for the status-bucket values. Two copies of this list
+  // drifted in v3.2.17 and silently emptied the queue — never inline it again.
+  const LSA_STATUS_VALUES = ["dial", "message", "done", "all"];
   let _lsaCompanyFilter = "all";
   let _lsaStatusFilter = "dial";
 
@@ -3058,7 +3061,10 @@
       ["done", "✓ Done (booked, lost, or in Roofr)"],
       ["all", "All"],
     ];
-    const companyScoped = _lsaAll.filter(row => lsaMatchesStatus(row));
+    // Counts must reflect what the queue will actually RENDER, so they apply the
+    // same actionable gate as lsaVisibleRows — otherwise Call reads "(19)" over
+    // an empty list because those 19 are all resting.
+    const companyScoped = _lsaAll.filter(row => lsaMatchesStatus(row) && lsaActionableForBucket(row));
     const statusScoped = _lsaAll.filter(row => lsaMatchesCompany(row));
     if (companySelect) {
       companySelect.innerHTML = "";
@@ -3071,7 +3077,7 @@
       statusSelect.innerHTML = "";
       for (const [value, label] of statuses) {
         const o = document.createElement("option"); o.value = value;
-        o.textContent = `${label} (${statusScoped.filter(row => lsaMatchesStatus(row, value)).length})`;
+        o.textContent = `${label} (${statusScoped.filter(row => lsaMatchesStatus(row, value) && lsaActionableForBucket(row)).length})`;
         o.selected = value === _lsaStatusFilter; statusSelect.appendChild(o);
       }
       statusSelect.disabled = _lsaPhase !== "idle";
@@ -3087,7 +3093,12 @@
   }
 
   function lsaSetStatusFilter(status) {
-    if (!["callable", "new", "nurturing", "booked", "lost", "won", "no-phone", "all"].includes(status)) status = "callable";
+    // Must stay in step with LSA_STATUS_VALUES / lsaRestoreFilters. When these
+    // drifted apart in v3.2.17 the whitelist here still held the old seven
+    // buckets, so picking "message" coerced to the dead "callable" value, which
+    // matches no row — the queue emptied and picking "dial" again fell into the
+    // same trap, so it could not be recovered without a reload.
+    if (!LSA_STATUS_VALUES.includes(status)) status = "dial";
     if (_lsaPhase !== "idle") { lsaPopulateFilterSelects(); return; }
     _lsaStatusFilter = status;
     lsaPersistFilters();
@@ -3098,7 +3109,7 @@
     try {
       const saved = (await chrome.storage.local.get([LSA_FILTERS_KEY]))?.[LSA_FILTERS_KEY] || {};
       _lsaCompanyFilter = ["all", "Arizona Roofers", "Arizona Roof Pros"].includes(saved.company) ? saved.company : "all";
-      _lsaStatusFilter = ["dial", "message", "done", "all"].includes(saved.status) ? saved.status : "dial";
+      _lsaStatusFilter = LSA_STATUS_VALUES.includes(saved.status) ? saved.status : "dial";
     } catch (_) {
       _lsaCompanyFilter = "all";
       _lsaStatusFilter = "dial";

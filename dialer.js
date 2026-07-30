@@ -127,6 +127,10 @@
   let _lsaArchived = new Set();
   let _lsaArchivedAt = new Map();
   let _lsaArchivedFetchedAt = 0;
+  // Why the last pull failed, surfaced in the Archive dropdown. "Unavailable"
+  // alone sent Travis looking for a bug when the actual cause was simply no
+  // LeadTruffle tab open — three different causes need three different actions.
+  let _lsaArchivedError = "not checked yet";
   const LSA_ARCHIVED_TTL_MS = 300000;     // 5 min — the 75s queue refresh must not hammer LT
   // Hard stop on how long a snapshot may keep suppressing work. Without this
   // the filter is NOT actually fail-open: once populated, a lead stays hidden
@@ -135,6 +139,21 @@
   // show everything again.
   const LSA_ARCHIVED_MAX_AGE_MS = 1800000;   // 30 min
   const LSA_ARCHIVED_PAGE = 1000;
+  const LSA_ARCHIVED_KEY = "lsaArchivedSnapshot";
+
+  // Reload the last snapshot on panel open. Same max-age rule as a live pull,
+  // so a stale one is discarded rather than silently suppressing work.
+  async function lsaRestoreArchived() {
+    try {
+      const saved = (await chrome.storage.local.get([LSA_ARCHIVED_KEY]))?.[LSA_ARCHIVED_KEY];
+      if (!saved || !Array.isArray(saved.ids) || !saved.fetchedAt) return;
+      if ((Date.now() - saved.fetchedAt) > LSA_ARCHIVED_MAX_AGE_MS) return;
+      _lsaArchived = new Set(saved.ids);
+      _lsaArchivedAt = new Map(Array.isArray(saved.at) ? saved.at : []);
+      _lsaArchivedFetchedAt = saved.fetchedAt;
+      _lsaArchivedError = "";
+    } catch (_) { /* no cache is fine — the next pull rebuilds it */ }
+  }
   // LSA filters persist per browser profile. Invalid/restored-old values always
   // fall back to the useful callable/all-company view.
   const LSA_FILTERS_KEY = "lsaLeadFilters";
@@ -3038,9 +3057,30 @@
       _lsaArchived = ids;
       _lsaArchivedAt = at;
       _lsaArchivedFetchedAt = Date.now();
+      _lsaArchivedError = "";
+      // Persist it. The read needs a logged-in LeadTruffle tab, but nothing
+      // says the rep must keep one open all day — caching means one visit to
+      // LeadTruffle keeps the filter working across panel reopens and tab
+      // closures for the whole freshness window, instead of the feature
+      // blinking out the moment they close the tab.
+      try {
+        chrome.storage.local.set({
+          [LSA_ARCHIVED_KEY]: {
+            ids: [...ids],
+            at: [...at.entries()],
+            fetchedAt: _lsaArchivedFetchedAt,
+          },
+        });
+      } catch (_) {}
       log(`lsa: ${ids.size} archived LeadTruffle threads`, "ok", "lsa");
     } catch (e) {
-      log(`lsa: archived check skipped (${e?.message || "unknown error"})`, "warn", "lsa");
+      const msg = e?.message || "unknown error";
+      _lsaArchivedError = msg === "LeadTruffle tab not found"
+        ? "open a LeadTruffle tab"
+        : msg === "authToken unavailable"
+          ? "sign in to LeadTruffle"
+          : msg;
+      log(`lsa: archived check skipped (${msg})`, "warn", "lsa");
     }
   }
 
@@ -3218,9 +3258,11 @@
       // stronger claim than we can make — so say it's unavailable instead.
       const usable = lsaArchivedUsable();
       archiveSelect.innerHTML = "";
+      const why = _lsaArchivedError
+        || (_lsaArchivedFetchedAt ? "archive data went stale" : "archive check unavailable");
       const opts = usable
         ? [["all", "All"], ["archived", "📦 Archived"], ["active", "Not archived"]]
-        : [["all", "All (archive check unavailable)"]];
+        : [["all", `All — ${why}`]];
       for (const [value, label] of opts) {
         const o = document.createElement("option");
         o.value = value;
@@ -3274,6 +3316,7 @@
       _lsaStatusFilter = "dial";
       _lsaArchiveFilter = "all";
     }
+    await lsaRestoreArchived();
     lsaPopulateFilterSelects();
     if (currentTab === "lsa") renderLsaQueue();
   }

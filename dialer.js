@@ -127,7 +127,14 @@
   let _lsaArchived = new Set();
   let _lsaArchivedAt = new Map();
   let _lsaArchivedFetchedAt = 0;
-  const LSA_ARCHIVED_TTL_MS = 300000;   // 5 min — the 75s queue refresh must not hammer LT
+  const LSA_ARCHIVED_TTL_MS = 300000;     // 5 min — the 75s queue refresh must not hammer LT
+  // Hard stop on how long a snapshot may keep suppressing work. Without this
+  // the filter is NOT actually fail-open: once populated, a lead stays hidden
+  // forever on a snapshot that may be hours stale, and a thread UN-archived in
+  // LeadTruffle never comes back. Past this age we stop trusting the cache and
+  // show everything again.
+  const LSA_ARCHIVED_MAX_AGE_MS = 1800000;   // 30 min
+  const LSA_ARCHIVED_PAGE = 1000;
   // LSA filters persist per browser profile. Invalid/restored-old values always
   // fall back to the useful callable/all-company view.
   const LSA_FILTERS_KEY = "lsaLeadFilters";
@@ -2960,19 +2967,31 @@
   // LeadTruffle tab holds — there is no service credential, which is why every
   // LT-private call (status write, archived read) needs a tab open.
   async function lsaLeadTruffleToken() {
-    let tabId = _lsaLtTabId;
-    if (tabId == null) {
-      const tabs = await chrome.tabs.query({ url: "https://app.leadtruffle.com/*" });
-      tabId = tabs[0]?.id;
-    }
-    if (tabId == null) throw new Error("LeadTruffle tab not found");
+    const read = async (tabId) => {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => localStorage.getItem("authToken"),
+      });
+      return results?.[0]?.result;
+    };
 
-    const results = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => localStorage.getItem("authToken"),
-    });
-    const token = results?.[0]?.result;
+    // The cached tab id goes stale the moment the rep closes or navigates that
+    // tab, and without a retry every LeadTruffle call fails from then on until
+    // the panel is reopened. Re-discover once before giving up.
+    if (_lsaLtTabId != null) {
+      try {
+        const token = await read(_lsaLtTabId);
+        if (token) return token;
+      } catch (_) { /* fall through to re-discovery */ }
+      _lsaLtTabId = null;
+    }
+
+    const tabs = await chrome.tabs.query({ url: "https://app.leadtruffle.com/*" });
+    const tabId = tabs[0]?.id;
+    if (tabId == null) throw new Error("LeadTruffle tab not found");
+    const token = await read(tabId);
     if (!token) throw new Error("authToken unavailable");
+    _lsaLtTabId = tabId;
     return token;
   }
 
@@ -2984,12 +3003,20 @@
     if (!force && (Date.now() - _lsaArchivedFetchedAt) < LSA_ARCHIVED_TTL_MS) return;
     try {
       const token = await lsaLeadTruffleToken();
-      const input = encodeURIComponent(JSON.stringify({ 0: { limit: 500, view: "ARCHIVED" } }));
+      const input = encodeURIComponent(JSON.stringify({ 0: { limit: LSA_ARCHIVED_PAGE, view: "ARCHIVED" } }));
       const response = await fetch(`${LEADTRUFFLE_OVERVIEW_URL}&input=${input}`, {
         headers: { "Authorization": `Bearer ${token}` },
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const rows = (await response.json())?.[0]?.result?.data?.data || [];
+      // A bare row cap silently tightens as volume grows — the exact failure
+      // that hid older leads from this same feed on 2026-07-28. LeadTruffle's
+      // overview call exposes no date filter, so the cap can't be replaced with
+      // an age window; instead, say so loudly the moment it starts binding
+      // rather than quietly treating capped-off threads as still live.
+      if (rows.length >= LSA_ARCHIVED_PAGE) {
+        log(`lsa: archived list hit the ${LSA_ARCHIVED_PAGE}-row cap — older archived threads may still show as live work`, "err", "lsa");
+      }
       const ids = new Set();
       const at = new Map();
       for (const row of rows) {
@@ -3008,56 +3035,6 @@
       log(`lsa: ${ids.size} archived LeadTruffle threads`, "ok", "lsa");
     } catch (e) {
       log(`lsa: archived check skipped (${e?.message || "unknown error"})`, "warn", "lsa");
-    }
-  }
-
-  // One homeowner, both brands. Google shows a consumer's request to every
-  // advertiser it matches, so the same person routinely exists as two separate
-  // LeadTruffle leads that arrive seconds apart. Resolving one has to resolve
-  // the other or the pair contradicts itself — measured 2026-07-30, one twin
-  // sat at LOST_UNQUALIFIED on Roof Pros while the other was WON on Roofers.
-  //
-  // Each twin gets ITS OWN brand's status value rather than a copy of this
-  // lead's: Booked is BOOKED_AZPRO on Roof Pros but WON on Arizona Roofers,
-  // which is why lsaLeadTruffleStatus is re-evaluated per twin company.
-  async function lsaPropagateToTwins(lead, disposition, rep, note) {
-    const twins = Array.isArray(lead?.twins) ? lead.twins : [];
-    if (!twins.length) return;
-    const from = lead.company || "the other brand";
-    const archive = disposition === "Booked";
-    for (const twin of twins) {
-      const twinId = String(twin?.lead_id || "").trim();
-      if (!twinId) continue;
-      const brand = twin.company || "twin";
-      try {
-        await lsaWrite({
-          action: "log",
-          lead_id: twinId,
-          rep,
-          disposition,
-          note: `${note ? `${note} — ` : ""}auto-applied from the ${from} copy of this lead`,
-        });
-        // Note + reassignment + (on Booked) the archive flag.
-        fetch(LEADTRUFFLE_OUTCOME_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" },
-          body: JSON.stringify({
-            // Deliberately NO phone: twins share a number, so a phone-keyed
-            // update is ambiguous between the two copies. leadId is exact.
-            lead_id: twinId,
-            csr: rep,
-            outcome: disposition,
-            note: `Auto-applied from the ${from} copy of this lead`,
-            talkTime: 0,
-            archive,
-          }),
-        }).catch(() => {});
-        await lsaUpdateLeadTruffleStatus(twinId, disposition, twin.company);
-        _lsaAll = _lsaAll.filter(row => lsaLeadId(row) !== twinId);
-        log(`lsa: ${disposition} also applied to the ${brand} copy`, "ok", "lsa");
-      } catch (e) {
-        log(`lsa: twin propagation failed for ${brand} (${e?.message || "unknown error"})`, "warn", "lsa");
-      }
     }
   }
 
@@ -3132,7 +3109,13 @@
   //   dial    — has a number and nothing has resolved it
   //   message — no number; work the LeadTruffle thread instead
   //   done    — booked/lost/won, already a Roofr job, or dispositioned here
+  function lsaArchivedUsable() {
+    return _lsaArchivedFetchedAt > 0
+      && (Date.now() - _lsaArchivedFetchedAt) <= LSA_ARCHIVED_MAX_AGE_MS;
+  }
+
   function lsaIsArchived(row) {
+    if (!lsaArchivedUsable()) return false;   // stale snapshot must not hide work
     const cid = String(row?.client_id || "").trim();
     return !!cid && _lsaArchived.has(cid);
   }
@@ -3473,6 +3456,12 @@
     }
   }
 
+  function lsaTwinIds(lead) {
+    return (Array.isArray(lead?.twins) ? lead.twins : [])
+      .map(t => String(t?.lead_id || "").trim())
+      .filter(Boolean);
+  }
+
   function lsaClaimBlockedReason(result) {
     if (
       result.reason === "called" ||
@@ -3480,6 +3469,11 @@
       result.already_called
     ) {
       return `already called${result.by ? ` by ${result.by}` : ""}`;
+    }
+    // Same homeowner, other brand — say so plainly, or the rep just sees a
+    // lock on a lead nobody appears to be working.
+    if (result.reason === "twin_locked") {
+      return `same customer is open on the other brand${result.by ? ` with ${result.by}` : ""}`;
     }
     const owner = result.by || result.locked_by;
     return owner ? `locked by ${owner}` : (result.reason || "claim denied");
@@ -3555,6 +3549,10 @@
       action: "claim",
       lead_id: lsaLeadId(lead),
       rep: repName || "Unknown",
+      // The server refuses this claim if another rep already holds the twin —
+      // same homeowner, other brand. Stops two CSRs cold-calling one person
+      // from two brands minutes apart.
+      twin_ids: lsaTwinIds(lead),
     });
     _lsaClaiming = false;
 
@@ -3691,28 +3689,20 @@
         dupEl.style.display = "none";
       }
     }
-    // Twin: the same homeowner's lead on the other brand. The checkbox is the
-    // confirm step for Unqualified — this panel has never used a modal, and a
-    // blocking dialog in a side panel is worse than an inline tick.
+    // Twin: the same homeowner's lead on the other brand. Advisory only for
+    // now — the rep closes the other copy themselves. The claim guard already
+    // stops the pair being worked simultaneously.
     const twinEl = document.getElementById("lsa-lead-twin");
-    const twinConfirmEl = document.getElementById("lsa-twin-confirm");
-    const twinBox = document.getElementById("lsa-twin-propagate");
-    const twinLabel = document.getElementById("lsa-twin-confirm-label");
     const twins = Array.isArray(lead.twins) ? lead.twins : [];
     if (twinEl) {
       if (twins.length) {
         const brands = twins.map(t => t.company || "other brand").join(", ");
-        twinEl.textContent = `🔗 Also in ${brands} — Booked closes both`;
+        twinEl.textContent = `🔗 Same customer also in ${brands} — close that copy too`;
         twinEl.title = "Google showed this request to both brands, so it exists twice in LeadTruffle";
         twinEl.style.display = "";
-        if (twinLabel) twinLabel.textContent = `Unqualified also closes the ${brands} copy`;
-        if (twinConfirmEl) twinConfirmEl.style.display = "flex";
-        if (twinBox) twinBox.checked = false;   // must be a deliberate tick every time
       } else {
         twinEl.textContent = "";
         twinEl.style.display = "none";
-        if (twinConfirmEl) twinConfirmEl.style.display = "none";
-        if (twinBox) twinBox.checked = false;
       }
     }
     // Archived in LeadTruffle — shown independently of the Roofr-duplicate line
@@ -4098,17 +4088,16 @@
 
     if (disposition === "Booked" || disposition === "Unqualified") {
       void lsaUpdateLeadTruffleStatus(leadId, disposition, lead.company);
-      // Booked propagates to the twin unconditionally — a booking is verified
-      // fact. Unqualified only propagates when the rep ticks the box: they may
-      // have qualified only one brand's request, and silently marking a live
-      // lead Lost is the expensive direction to be wrong in.
+      // Automatic twin propagation is deliberately NOT done here. Review found
+      // it needs durable, idempotent, server-side orchestration: run from the
+      // browser it has no idempotency key and the panel can close mid-loop,
+      // leaving one twin resolved and the other silently half-written. It moves
+      // into a single server-side resolve action instead. Until then the twin
+      // is flagged, the double-dial guard stops the pair being worked at once,
+      // and the rep closes the other copy themselves.
       const twinCount = Array.isArray(lead.twins) ? lead.twins.length : 0;
-      const propagate = disposition === "Booked"
-        || !!document.getElementById("lsa-twin-propagate")?.checked;
-      if (twinCount && propagate) {
-        void lsaPropagateToTwins(lead, disposition, rep, note);
-      } else if (twinCount) {
-        log(`lsa: twin left open — ${disposition} not propagated (box unticked)`, "info", "lsa");
+      if (twinCount) {
+        log(`lsa: heads up — same customer also open on ${lead.twins.map(t => t.company || "the other brand").join(", ")}`, "warn", "lsa");
       }
     }
 
@@ -4126,7 +4115,7 @@
       _lsaDoubleTapPending = true;
       const noteEl0 = document.getElementById("lsa-note");
       if (noteEl0) noteEl0.value = "";
-      const claim = await lsaWrite({ action: "claim", lead_id: leadId, rep });
+      const claim = await lsaWrite({ action: "claim", lead_id: leadId, rep, twin_ids: lsaTwinIds(lead) });
       if (claim && claim.claimed) {
         _lsaClaimed = true;
         lsaStartHeartbeat();

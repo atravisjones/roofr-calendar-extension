@@ -3042,7 +3042,8 @@
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" },
           body: JSON.stringify({
-            phone: twin.phone || "",
+            // Deliberately NO phone: twins share a number, so a phone-keyed
+            // update is ambiguous between the two copies. leadId is exact.
             lead_id: twinId,
             csr: rep,
             outcome: disposition,

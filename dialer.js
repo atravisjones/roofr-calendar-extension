@@ -138,7 +138,13 @@
   // LeadTruffle never comes back. Past this age we stop trusting the cache and
   // show everything again.
   const LSA_ARCHIVED_MAX_AGE_MS = 1800000;   // 30 min
-  const LSA_ARCHIVED_PAGE = 1000;
+  // LeadTruffle hard-caps this at 500 ("Number must be less than or equal to
+  // 500") and 400s the whole call above it — v3.2.23 asked for 1000 and killed
+  // the feature outright. It DOES accept `offset`, so the cap is paged through
+  // rather than raised. (page/cursor/skip are silently ignored; offset is real
+  // — verified by a full paged sweep matching the single-shot set exactly.)
+  const LSA_ARCHIVED_PAGE = 500;
+  const LSA_ARCHIVED_MAX_PAGES = 12;   // 6000 threads — a runaway-loop backstop
   const LSA_ARCHIVED_KEY = "lsaArchivedSnapshot";
 
   // Reload the last snapshot on panel open. Same max-age rule as a live pull,
@@ -3028,19 +3034,25 @@
     if (!force && (Date.now() - _lsaArchivedFetchedAt) < LSA_ARCHIVED_TTL_MS) return;
     try {
       const token = await lsaLeadTruffleToken();
-      const input = encodeURIComponent(JSON.stringify({ 0: { limit: LSA_ARCHIVED_PAGE, view: "ARCHIVED" } }));
-      const response = await fetch(`${LEADTRUFFLE_OVERVIEW_URL}&input=${input}`, {
-        headers: { "Authorization": `Bearer ${token}` },
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const rows = (await response.json())?.[0]?.result?.data?.data || [];
-      // A bare row cap silently tightens as volume grows — the exact failure
-      // that hid older leads from this same feed on 2026-07-28. LeadTruffle's
-      // overview call exposes no date filter, so the cap can't be replaced with
-      // an age window; instead, say so loudly the moment it starts binding
-      // rather than quietly treating capped-off threads as still live.
-      if (rows.length >= LSA_ARCHIVED_PAGE) {
-        log(`lsa: archived list hit the ${LSA_ARCHIVED_PAGE}-row cap — older archived threads may still show as live work`, "err", "lsa");
+      // Page through with offset instead of asking for one huge list — a bare
+      // row cap silently tightens as volume grows (the failure that hid older
+      // leads from this same feed on 2026-07-28), and here it cannot even be
+      // raised: LeadTruffle rejects limit>500 outright.
+      const rows = [];
+      for (let p = 0; p < LSA_ARCHIVED_MAX_PAGES; p++) {
+        const input = encodeURIComponent(JSON.stringify({
+          0: { limit: LSA_ARCHIVED_PAGE, view: "ARCHIVED", offset: p * LSA_ARCHIVED_PAGE },
+        }));
+        const response = await fetch(`${LEADTRUFFLE_OVERVIEW_URL}&input=${input}`, {
+          headers: { "Authorization": `Bearer ${token}` },
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const batch = (await response.json())?.[0]?.result?.data?.data || [];
+        rows.push(...batch);
+        if (batch.length < LSA_ARCHIVED_PAGE) break;      // short page = last page
+        if (p === LSA_ARCHIVED_MAX_PAGES - 1) {
+          log(`lsa: archived list still full after ${LSA_ARCHIVED_MAX_PAGES} pages — some archived threads may still show as live work`, "err", "lsa");
+        }
       }
       const ids = new Set();
       const at = new Map();

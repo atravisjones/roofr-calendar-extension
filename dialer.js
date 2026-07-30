@@ -4181,6 +4181,14 @@
     document.querySelectorAll(".lsa-row").forEach(row => {
       row.classList.remove("active");
     });
+
+    // The filter selects are disabled while a card is open and re-enabled ONLY
+    // by lsaPopulateFilterSelects, which runs from renderLsaQueue. Restoring
+    // the phase here without re-rendering left them dead after every Close —
+    // the rep could not change Call/Message/Done or the company until the 75s
+    // auto-refresh happened to fire, which is why it presented as an
+    // intermittent "filters stopped working".
+    renderLsaQueue();
   }
 
   function lsaBindButtons() {

@@ -3011,6 +3011,55 @@
     }
   }
 
+  // One homeowner, both brands. Google shows a consumer's request to every
+  // advertiser it matches, so the same person routinely exists as two separate
+  // LeadTruffle leads that arrive seconds apart. Resolving one has to resolve
+  // the other or the pair contradicts itself — measured 2026-07-30, one twin
+  // sat at LOST_UNQUALIFIED on Roof Pros while the other was WON on Roofers.
+  //
+  // Each twin gets ITS OWN brand's status value rather than a copy of this
+  // lead's: Booked is BOOKED_AZPRO on Roof Pros but WON on Arizona Roofers,
+  // which is why lsaLeadTruffleStatus is re-evaluated per twin company.
+  async function lsaPropagateToTwins(lead, disposition, rep, note) {
+    const twins = Array.isArray(lead?.twins) ? lead.twins : [];
+    if (!twins.length) return;
+    const from = lead.company || "the other brand";
+    const archive = disposition === "Booked";
+    for (const twin of twins) {
+      const twinId = String(twin?.lead_id || "").trim();
+      if (!twinId) continue;
+      const brand = twin.company || "twin";
+      try {
+        await lsaWrite({
+          action: "log",
+          lead_id: twinId,
+          rep,
+          disposition,
+          note: `${note ? `${note} — ` : ""}auto-applied from the ${from} copy of this lead`,
+        });
+        // Note + reassignment + (on Booked) the archive flag.
+        fetch(LEADTRUFFLE_OUTCOME_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" },
+          body: JSON.stringify({
+            phone: twin.phone || "",
+            lead_id: twinId,
+            csr: rep,
+            outcome: disposition,
+            note: `Auto-applied from the ${from} copy of this lead`,
+            talkTime: 0,
+            archive,
+          }),
+        }).catch(() => {});
+        await lsaUpdateLeadTruffleStatus(twinId, disposition, twin.company);
+        _lsaAll = _lsaAll.filter(row => lsaLeadId(row) !== twinId);
+        log(`lsa: ${disposition} also applied to the ${brand} copy`, "ok", "lsa");
+      } catch (e) {
+        log(`lsa: twin propagation failed for ${brand} (${e?.message || "unknown error"})`, "warn", "lsa");
+      }
+    }
+  }
+
   async function lsaUpdateLeadTruffleStatus(leadId, disposition, company) {
     const status = lsaLeadTruffleStatus(disposition, company);
     if (!status) {
@@ -3388,6 +3437,20 @@
         main.appendChild(arch);
       }
 
+      // Twin on the other brand — flagged in the list so a rep spots the pair
+      // before opening either one.
+      const rowTwins = Array.isArray(lead.twins) ? lead.twins : [];
+      if (rowTwins.length) {
+        const tw = document.createElement("div");
+        tw.className = "rsched-meta lsa-twin";
+        tw.style.marginTop = "1px";
+        tw.style.color = "var(--accent, #2d6cdf)";
+        tw.style.fontWeight = "600";
+        tw.textContent = `🔗 Also in ${rowTwins.map(t => t.company || "other brand").join(", ")}`;
+        tw.title = "Same customer, submitted to both brands — closing one closes the other";
+        main.appendChild(tw);
+      }
+
       li.appendChild(main);
 
       if (lockedOther) {
@@ -3625,6 +3688,30 @@
       } else {
         dupEl.textContent = "";
         dupEl.style.display = "none";
+      }
+    }
+    // Twin: the same homeowner's lead on the other brand. The checkbox is the
+    // confirm step for Unqualified — this panel has never used a modal, and a
+    // blocking dialog in a side panel is worse than an inline tick.
+    const twinEl = document.getElementById("lsa-lead-twin");
+    const twinConfirmEl = document.getElementById("lsa-twin-confirm");
+    const twinBox = document.getElementById("lsa-twin-propagate");
+    const twinLabel = document.getElementById("lsa-twin-confirm-label");
+    const twins = Array.isArray(lead.twins) ? lead.twins : [];
+    if (twinEl) {
+      if (twins.length) {
+        const brands = twins.map(t => t.company || "other brand").join(", ");
+        twinEl.textContent = `🔗 Also in ${brands} — Booked closes both`;
+        twinEl.title = "Google showed this request to both brands, so it exists twice in LeadTruffle";
+        twinEl.style.display = "";
+        if (twinLabel) twinLabel.textContent = `Unqualified also closes the ${brands} copy`;
+        if (twinConfirmEl) twinConfirmEl.style.display = "flex";
+        if (twinBox) twinBox.checked = false;   // must be a deliberate tick every time
+      } else {
+        twinEl.textContent = "";
+        twinEl.style.display = "none";
+        if (twinConfirmEl) twinConfirmEl.style.display = "none";
+        if (twinBox) twinBox.checked = false;
       }
     }
     // Archived in LeadTruffle — shown independently of the Roofr-duplicate line
@@ -3999,6 +4086,10 @@
         outcome: disposition,
         note,
         talkTime,
+        // A booked lead is finished, so its LeadTruffle thread leaves the
+        // team's inbox (Travis 2026-07-30) — and archived threads now also drop
+        // out of this dialer's worklist, so the two reinforce each other.
+        archive: disposition === "Booked",
       }),
     }).catch(e => {
       log(`lsa: LeadTruffle outcome post failed: ${e.message}`, "warn", "lsa");
@@ -4006,6 +4097,18 @@
 
     if (disposition === "Booked" || disposition === "Unqualified") {
       void lsaUpdateLeadTruffleStatus(leadId, disposition, lead.company);
+      // Booked propagates to the twin unconditionally — a booking is verified
+      // fact. Unqualified only propagates when the rep ticks the box: they may
+      // have qualified only one brand's request, and silently marking a live
+      // lead Lost is the expensive direction to be wrong in.
+      const twinCount = Array.isArray(lead.twins) ? lead.twins.length : 0;
+      const propagate = disposition === "Booked"
+        || !!document.getElementById("lsa-twin-propagate")?.checked;
+      if (twinCount && propagate) {
+        void lsaPropagateToTwins(lead, disposition, rep, note);
+      } else if (twinCount) {
+        log(`lsa: twin left open — ${disposition} not propagated (box unticked)`, "info", "lsa");
+      }
     }
 
     const terminal = (disposition === "Booked" || disposition === "Unqualified");

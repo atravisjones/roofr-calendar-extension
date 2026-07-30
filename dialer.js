@@ -30,6 +30,11 @@
   const LSA_CALLS_URL = `${API_BASE}/api/roofr-lsa-calls`;
   const LEADTRUFFLE_OUTCOME_URL = `${API_BASE}/api/leadtruffle-outcome`;
   const LEADTRUFFLE_STATUS_URL = "https://dm6wvhamqhvjwra3y5egnanooe0gdtzf.lambda-url.us-west-2.on.aws/trpc/updateLeadStatus?batch=1";
+  // Archived state is INVISIBLE to the backend: LeadTruffle's public API accepts
+  // `archived` as a write field but never returns it, and there is no archive
+  // webhook event. The app's own tRPC is the only read path, and it authenticates
+  // with the CSR's browser session — so the filter has to live here, client-side.
+  const LEADTRUFFLE_OVERVIEW_URL = "https://dm6wvhamqhvjwra3y5egnanooe0gdtzf.lambda-url.us-west-2.on.aws/trpc/getConversationOverview?batch=1";
   const LSA_HEARTBEAT_MS = 60000;
   const WC_MAX_ATTEMPTS = 4;
   const WC_RENEW_MS = 90000;             // lock heartbeat during a long welcome call
@@ -116,6 +121,13 @@
   let _lsaBusyAtDial = false;
   let _lsaSkippedIds = new Set();
   let _lsaLtTabId = null;         // the single reused LeadTruffle conversation tab
+  // LeadTruffle client_ids whose conversation has been archived. Refreshed from
+  // the app's tRPC on a TTL; empty when no LeadTruffle tab is open, which fails
+  // OPEN (nothing gets hidden) rather than silently emptying the queue.
+  let _lsaArchived = new Set();
+  let _lsaArchivedAt = new Map();
+  let _lsaArchivedFetchedAt = 0;
+  const LSA_ARCHIVED_TTL_MS = 300000;   // 5 min — the 75s queue refresh must not hammer LT
   // LSA filters persist per browser profile. Invalid/restored-old values always
   // fall back to the useful callable/all-company view.
   const LSA_FILTERS_KEY = "lsaLeadFilters";
@@ -1055,7 +1067,13 @@
       // ── LSA Leads tab: claim-at-review queue from LeadTruffle ──
       if (currentTab === "lsa") {
         log("fetching LSA leads…", "info", "lsa");
-        const data = await lsaWrite({ action: "feed", rep: repName || "Unknown", include_done: true });
+        // Run the archived pull alongside the feed rather than after it —
+        // lsaRefreshArchived swallows its own errors, so this can never delay or
+        // break the queue, and the set is in place before the first render.
+        const [data] = await Promise.all([
+          lsaWrite({ action: "feed", rep: repName || "Unknown", include_done: true }),
+          lsaRefreshArchived(),
+        ]);
         if (data.error) {
           log(`fetch LSA leads failed: ${data.error}`, "err", "lsa");
           return;
@@ -2938,6 +2956,61 @@
     return null;
   }
 
+  // The app's tRPC authenticates with the session token the CSR's own logged-in
+  // LeadTruffle tab holds — there is no service credential, which is why every
+  // LT-private call (status write, archived read) needs a tab open.
+  async function lsaLeadTruffleToken() {
+    let tabId = _lsaLtTabId;
+    if (tabId == null) {
+      const tabs = await chrome.tabs.query({ url: "https://app.leadtruffle.com/*" });
+      tabId = tabs[0]?.id;
+    }
+    if (tabId == null) throw new Error("LeadTruffle tab not found");
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => localStorage.getItem("authToken"),
+    });
+    const token = results?.[0]?.result;
+    if (!token) throw new Error("authToken unavailable");
+    return token;
+  }
+
+  // Pull the archived conversation list and index it by client_id (= our
+  // lsa_leads.client_id). Best-effort: any failure leaves the previous set in
+  // place and logs a warning — an archived lead reappearing is a far smaller
+  // problem than the whole queue vanishing because LeadTruffle was unreachable.
+  async function lsaRefreshArchived(force = false) {
+    if (!force && (Date.now() - _lsaArchivedFetchedAt) < LSA_ARCHIVED_TTL_MS) return;
+    try {
+      const token = await lsaLeadTruffleToken();
+      const input = encodeURIComponent(JSON.stringify({ 0: { limit: 500, view: "ARCHIVED" } }));
+      const response = await fetch(`${LEADTRUFFLE_OVERVIEW_URL}&input=${input}`, {
+        headers: { "Authorization": `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const rows = (await response.json())?.[0]?.result?.data?.data || [];
+      const ids = new Set();
+      const at = new Map();
+      for (const row of rows) {
+        const id = String(row?.client?.id || "").trim();
+        if (!id) continue;
+        ids.add(id);
+        if (row.archivedAt) at.set(id, row.archivedAt);
+      }
+      // A zero-length list against a previously-populated set means the shape
+      // changed or the call half-failed — not that the team un-archived 290
+      // threads. Keep what we had.
+      if (!ids.size && _lsaArchived.size) throw new Error("empty archived list");
+      _lsaArchived = ids;
+      _lsaArchivedAt = at;
+      _lsaArchivedFetchedAt = Date.now();
+      log(`lsa: ${ids.size} archived LeadTruffle threads`, "ok", "lsa");
+    } catch (e) {
+      log(`lsa: archived check skipped (${e?.message || "unknown error"})`, "warn", "lsa");
+    }
+  }
+
   async function lsaUpdateLeadTruffleStatus(leadId, disposition, company) {
     const status = lsaLeadTruffleStatus(disposition, company);
     if (!status) {
@@ -2946,19 +3019,7 @@
     }
 
     try {
-      let tabId = _lsaLtTabId;
-      if (tabId == null) {
-        const tabs = await chrome.tabs.query({ url: "https://app.leadtruffle.com/*" });
-        tabId = tabs[0]?.id;
-      }
-      if (tabId == null) throw new Error("LeadTruffle tab not found");
-
-      const results = await chrome.scripting.executeScript({
-        target: { tabId },
-        func: () => localStorage.getItem("authToken"),
-      });
-      const token = results?.[0]?.result;
-      if (!token) throw new Error("authToken unavailable");
+      const token = await lsaLeadTruffleToken();
 
       const response = await fetch(LEADTRUFFLE_STATUS_URL, {
         method: "POST",
@@ -3021,7 +3082,21 @@
   //   dial    — has a number and nothing has resolved it
   //   message — no number; work the LeadTruffle thread instead
   //   done    — booked/lost/won, already a Roofr job, or dispositioned here
+  function lsaIsArchived(row) {
+    const cid = String(row?.client_id || "").trim();
+    return !!cid && _lsaArchived.has(cid);
+  }
+
+  function lsaArchivedAt(row) {
+    return _lsaArchivedAt.get(String(row?.client_id || "").trim()) || null;
+  }
+
   function lsaStatusBucket(row) {
+    // Archived in LeadTruffle = somebody already resolved this thread, so it is
+    // Done no matter what the feed says. This MUST be tested before the served
+    // bucket: the server has no read path for archived state, so its lsa_bucket
+    // will happily say "message" for a thread archived three weeks ago.
+    if (lsaIsArchived(row)) return "done";
     const served = String(row?.lsa_bucket || "").trim().toLowerCase();
     if (served === "dial" || served === "message" || served === "done") return served;
     const status = String(row?.lead_status || "").trim().toUpperCase();
@@ -3298,6 +3373,21 @@
         main.appendChild(dup);
       }
 
+      // Archived in LeadTruffle. Without this line the lead just silently isn't
+      // in Call/Message any more, and a rep hunting for it in Done has no idea
+      // why it moved.
+      if (lsaIsArchived(lead)) {
+        const arch = document.createElement("div");
+        arch.className = "rsched-meta lsa-archived";
+        arch.style.marginTop = "1px";
+        arch.style.color = "var(--muted-strong, #5b6470)";
+        arch.style.fontWeight = "600";
+        const when = lsaArchivedAt(lead);
+        arch.textContent = `📦 Archived in LeadTruffle${when ? ` · ${lsaAge(when)}` : ""}`;
+        arch.title = "This conversation was archived in LeadTruffle — it's already been dealt with";
+        main.appendChild(arch);
+      }
+
       li.appendChild(main);
 
       if (lockedOther) {
@@ -3535,6 +3625,19 @@
       } else {
         dupEl.textContent = "";
         dupEl.style.display = "none";
+      }
+    }
+    // Archived in LeadTruffle — shown independently of the Roofr-duplicate line
+    // because a lead can be both, and each explains a different thing.
+    const archEl = document.getElementById("lsa-lead-archived");
+    if (archEl) {
+      if (lsaIsArchived(lead)) {
+        const when = lsaArchivedAt(lead);
+        archEl.textContent = `📦 Archived in LeadTruffle${when ? ` · ${lsaAge(when)}` : ""} — already dealt with, close it out`;
+        archEl.style.display = "";
+      } else {
+        archEl.textContent = "";
+        archEl.style.display = "none";
       }
     }
     set("lsa-company", lead.company || "Unknown company");

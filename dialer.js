@@ -141,6 +141,12 @@
   // SINGLE source of truth for the status-bucket values. Two copies of this list
   // drifted in v3.2.17 and silently emptied the queue — never inline it again.
   const LSA_STATUS_VALUES = ["dial", "message", "done", "all"];
+  // Archive state is ORTHOGONAL to the Call/Message/Done buckets — it answers
+  // "has someone already closed this thread in LeadTruffle", not "what action
+  // does this need" — so it gets its own control rather than a fifth entry in
+  // the status list.
+  const LSA_ARCHIVE_VALUES = ["all", "archived", "active"];
+  let _lsaArchiveFilter = "all";
   let _lsaCompanyFilter = "all";
   let _lsaStatusFilter = "dial";
 
@@ -3149,12 +3155,25 @@
     return company === "all" || String(row?.company || "").trim() === company;
   }
 
+  function lsaMatchesArchive(row, mode = _lsaArchiveFilter) {
+    if (mode === "all") return true;
+    return mode === "archived" ? lsaIsArchived(row) : !lsaIsArchived(row);
+  }
+
   function lsaPrettifyStatus(status) {
     return String(status || "").trim().toLowerCase().replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
   }
 
   function lsaPersistFilters() {
-    try { chrome.storage.local.set({ [LSA_FILTERS_KEY]: { company: _lsaCompanyFilter, status: _lsaStatusFilter } }); } catch (_) {}
+    try {
+      chrome.storage.local.set({
+        [LSA_FILTERS_KEY]: {
+          company: _lsaCompanyFilter,
+          status: _lsaStatusFilter,
+          archive: _lsaArchiveFilter,
+        },
+      });
+    } catch (_) {}
   }
 
   function lsaPopulateFilterSelects() {
@@ -3172,8 +3191,9 @@
     // Counts must reflect what the queue will actually RENDER, so they apply the
     // same actionable gate as lsaVisibleRows — otherwise Call reads "(19)" over
     // an empty list because those 19 are all resting.
-    const companyScoped = _lsaAll.filter(row => lsaMatchesStatus(row) && lsaActionableForBucket(row));
-    const statusScoped = _lsaAll.filter(row => lsaMatchesCompany(row));
+    const companyScoped = _lsaAll.filter(row => lsaMatchesStatus(row) && lsaMatchesArchive(row) && lsaActionableForBucket(row));
+    const statusScoped = _lsaAll.filter(row => lsaMatchesCompany(row) && lsaMatchesArchive(row));
+    const archiveScoped = _lsaAll.filter(row => lsaMatchesCompany(row) && lsaMatchesStatus(row) && lsaActionableForBucket(row));
     if (companySelect) {
       companySelect.innerHTML = "";
       const add = (value, label, count) => { const o = document.createElement("option"); o.value = value; o.textContent = `${label} (${count})`; o.selected = value === _lsaCompanyFilter; companySelect.appendChild(o); };
@@ -3190,12 +3210,42 @@
       }
       statusSelect.disabled = _lsaPhase !== "idle";
     }
+    const archiveSelect = document.getElementById("lsa-archive-select");
+    if (archiveSelect) {
+      // Without a usable snapshot (no LeadTruffle tab, or one older than the
+      // max age) nothing is known to be archived. Offering the filter anyway
+      // would quietly answer "0 archived / everything active", which is a
+      // stronger claim than we can make — so say it's unavailable instead.
+      const usable = lsaArchivedUsable();
+      archiveSelect.innerHTML = "";
+      const opts = usable
+        ? [["all", "All"], ["archived", "📦 Archived"], ["active", "Not archived"]]
+        : [["all", "All (archive check unavailable)"]];
+      for (const [value, label] of opts) {
+        const o = document.createElement("option");
+        o.value = value;
+        o.textContent = usable
+          ? `${label} (${archiveScoped.filter(row => lsaMatchesArchive(row, value)).length})`
+          : label;
+        o.selected = value === _lsaArchiveFilter;
+        archiveSelect.appendChild(o);
+      }
+      archiveSelect.disabled = !usable || _lsaPhase !== "idle";
+    }
   }
 
   function lsaSetCompanyFilter(company) {
     if (!["all", "Arizona Roofers", "Arizona Roof Pros"].includes(company)) company = "all";
     if (_lsaPhase !== "idle") { lsaPopulateFilterSelects(); return; }
     _lsaCompanyFilter = company;
+    lsaPersistFilters();
+    renderLsaQueue();
+  }
+
+  function lsaSetArchiveFilter(mode) {
+    if (!LSA_ARCHIVE_VALUES.includes(mode)) mode = "all";
+    if (_lsaPhase !== "idle") { lsaPopulateFilterSelects(); return; }
+    _lsaArchiveFilter = mode;
     lsaPersistFilters();
     renderLsaQueue();
   }
@@ -3218,9 +3268,11 @@
       const saved = (await chrome.storage.local.get([LSA_FILTERS_KEY]))?.[LSA_FILTERS_KEY] || {};
       _lsaCompanyFilter = ["all", "Arizona Roofers", "Arizona Roof Pros"].includes(saved.company) ? saved.company : "all";
       _lsaStatusFilter = LSA_STATUS_VALUES.includes(saved.status) ? saved.status : "dial";
+      _lsaArchiveFilter = LSA_ARCHIVE_VALUES.includes(saved.archive) ? saved.archive : "all";
     } catch (_) {
       _lsaCompanyFilter = "all";
       _lsaStatusFilter = "dial";
+      _lsaArchiveFilter = "all";
     }
     lsaPopulateFilterSelects();
     if (currentTab === "lsa") renderLsaQueue();
@@ -3248,6 +3300,7 @@
       !row.already_called &&
       lsaMatchesCompany(row) &&
       lsaMatchesStatus(row) &&
+      lsaMatchesArchive(row) &&
       lsaActionableForBucket(row)
     );
   }
@@ -4228,6 +4281,7 @@
     on("lsa-btn-no-phone-other", () => lsaHandleNoPhoneDisposition("Other"));
     document.getElementById("lsa-company-select")?.addEventListener("change", e => lsaSetCompanyFilter(e.target.value));
     document.getElementById("lsa-status-select")?.addEventListener("change", e => lsaSetStatusFilter(e.target.value));
+    document.getElementById("lsa-archive-select")?.addEventListener("change", e => lsaSetArchiveFilter(e.target.value));
 
     on("lsa-hangup-btn", () => {
       log("lsa: hangup clicked", "act", "lsa");

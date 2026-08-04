@@ -10573,38 +10573,86 @@ document.addEventListener('DOMContentLoaded', async () => {
         return changed;
     }
 
+    // A discarded or Memory-Saver-frozen tab still matches the URL query, but its
+    // renderer is paused: chrome.tabs.sendMessage to it NEVER settles and every
+    // caller hangs on "Loading…" forever with no error (2026-08-03). Prefer a tab
+    // that is actually awake, and the active one first.
+    // NB: a frozen tab cannot run its OWN timers either, so roofr-api.js's 15s
+    // AbortController is dead weight in this case — the popup-side deadline in
+    // reportsV2Send is the only thing that can break the wait.
+    function reportsV2TabAwake(tab) {
+        return !!tab?.url?.includes('app.roofr.com') && !tab.discarded && !tab.frozen && tab.status !== 'unloaded';
+    }
+
     async function reportsV2GetRoofrTab() {
         if (window.__targetRoofrTabId) {
             try {
                 const tab = await chrome.tabs.get(window.__targetRoofrTabId);
-                if (tab?.url?.includes('app.roofr.com')) return tab;
-            } catch (_) {
-                window.__targetRoofrTabId = null;
-            }
+                if (reportsV2TabAwake(tab)) return tab;
+            } catch (_) { /* tab is gone — fall through and re-resolve */ }
+            window.__targetRoofrTabId = null;
         }
         const query = { url: '*://app.roofr.com/*' };
         if (window.__targetWindowId) query.windowId = window.__targetWindowId;
         const tabs = await chrome.tabs.query(query);
         if (!tabs.length) throw new Error('Open a Roofr tab first');
-        window.__targetRoofrTabId = tabs[0].id;
-        return tabs[0];
+        const awake = tabs.filter(reportsV2TabAwake);
+        // Last resort is still a sleeping tab — reload it so a renderer exists to
+        // answer. Better a one-second wake than a permanent silent hang.
+        let pick = awake.find(tab => tab.active) || awake[0];
+        if (!pick) {
+            pick = tabs[0];
+            try {
+                await chrome.tabs.reload(pick.id);
+                await new Promise(resolve => setTimeout(resolve, 1500));
+            } catch (_) { /* the send timeout below reports it if this failed */ }
+        }
+        window.__targetRoofrTabId = pick.id;
+        return pick;
+    }
+
+    // roofr-api.js caps each fetch at 15s and getWithRetry may repeat it once, so a
+    // healthy read answers well inside 40s. Writes chain read→write→read (plus a
+    // reconcile retry), hence the much longer budget — timing a write out early
+    // would leave the caller unable to say whether it landed.
+    const REPORTS_V2_WRITE_TYPES = new Set(['ROOFR_API_SET_JOB_OWNER', 'ROOFR_API_ADD_ATTENDEE', 'ROOFR_API_SWAP_ATTENDEES']);
+    const REPORTS_V2_READ_TIMEOUT_MS = 40000;
+    const REPORTS_V2_WRITE_TIMEOUT_MS = 150000;
+
+    // chrome.tabs.sendMessage only rejects when the receiving end is missing at
+    // send time. If the tab's renderer is alive but paused (frozen background tab,
+    // crashed/hung page), the promise stays pending FOREVER — that is what left
+    // Reports stuck on "Loading <date>..." with no error. Nothing in a UI path may
+    // await unbounded.
+    function reportsV2Deadline(promise, ms, what) {
+        let timer;
+        return Promise.race([
+            promise,
+            new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error(
+                    `${what} timed out after ${Math.round(ms / 1000)}s — the Roofr tab never answered. Click that tab to wake it (or reload it), then try again.`
+                )), ms);
+            })
+        ]).finally(() => clearTimeout(timer));
     }
 
     async function reportsV2Send(message, forcedTabId) {
         // forcedTabId pins the whole order-chauffeur run to the tab it navigates —
         // re-resolving here could pick a DIFFERENT Roofr tab mid-run (throws if closed).
         const tab = forcedTabId ? await chrome.tabs.get(forcedTabId) : await reportsV2GetRoofrTab();
+        const budget = REPORTS_V2_WRITE_TYPES.has(message?.type) ? REPORTS_V2_WRITE_TIMEOUT_MS : REPORTS_V2_READ_TIMEOUT_MS;
+        const label = String(message?.type || 'Roofr request').replace(/^ROOFR_API_/, '');
         const injectAndRetry = async () => {
-            await chrome.scripting.executeScript({
+            await reportsV2Deadline(chrome.scripting.executeScript({
                 target: { tabId: tab.id },
                 files: ['roofr-api.js', 'reports-batch.js', 'content.js']
-            });
+            }), REPORTS_V2_READ_TIMEOUT_MS, 'Injecting the Roofr API client');
             await new Promise(resolve => setTimeout(resolve, 500));
-            return chrome.tabs.sendMessage(tab.id, message);
+            return reportsV2Deadline(chrome.tabs.sendMessage(tab.id, message), budget, label);
         };
         let response;
         try {
-            response = await chrome.tabs.sendMessage(tab.id, message);
+            response = await reportsV2Deadline(chrome.tabs.sendMessage(tab.id, message), budget, label);
         } catch (error) {
             if (!String(error?.message || error).match(/Receiving end does not exist|Could not establish connection/)) throw error;
             return injectAndRetry();
@@ -11010,11 +11058,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 4-name seed and paste-schedule rep resolution goes blind (17/31 names
             // unresolved on 2026-07-15). One request rebuilds the whole team.
             try {
+                reportsV2SetStatus(`Loading ${dateStr} — refreshing the rep directory…`);
                 const recentJobs = reportsV2ResponseData(await reportsV2Send({ type: 'ROOFR_API_LIST_RECENT_JOBS' }));
                 await reportsV2Harvest(recentJobs);
             } catch (_) { /* keep whatever the directory already has */ }
+            // One sequential detail fetch per sales event: a full day is ~17 of them
+            // at ~0.6s each. Without a counter the status sits unchanged for ~15s and
+            // reads as a hang, which is exactly how it got reported (2026-08-03).
             const detailed = [];
             for (const event of salesEvents) {
+                reportsV2SetStatus(`Loading ${dateStr} — event ${detailed.length + 1} of ${salesEvents.length}…`);
                 try {
                     const detail = await reportsV2ApiAdapter.getEvent(event.id);
                     detailed.push({ ...event, ...detail, job_id: detail?.job_id ?? event.job_id });

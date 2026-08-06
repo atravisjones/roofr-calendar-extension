@@ -1084,6 +1084,45 @@
           </div>
 
           <div class="divider"></div>
+          <div class="section-label">Service Area</div>
+          <div class="hint" style="margin-bottom: 12px;">
+            Warns the CSR when an address falls outside the area we are booking
+            <em>right now</em>, and shows a polite hold-off script. This is a
+            capacity pause, not a permanent boundary, so the script tells the
+            homeowner we expect to cover them again.
+            <br><br>
+            <strong>The boundaries themselves are drawn on a map at
+            <a href="https://speed-to-leads.vercel.app/service-area.html" target="_blank"
+               rel="noopener">speed-to-leads.vercel.app/service-area.html</a></strong>
+            and apply to every scanner within a minute of being published. The
+            hold-off script and the on/off switch live there too. The toggle below
+            only silences the warning on <em>this</em> Chrome profile.
+          </div>
+          <div class="toggle-group">
+            <div class="toggle-item">
+              <div class="toggle-info">
+                <p class="toggle-label">Out-of-Area Warning</p>
+                <p class="toggle-hint">Flag addresses we don't service and show the decline script</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="service_area_warning">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="group">
+            <label for="service_area_script">Hold-Off Script</label>
+            <input id="service_area_script" type="text" placeholder="What the CSR says to the homeowner" />
+            <p class="toggle-hint">
+              Shown in the warning with a Copy button. Leave blank to use the default.
+              Keep the "right now" framing and name the reason, so the homeowner hears
+              a temporary capacity issue rather than "you are outside our area."
+              Change the reason here when it stops being Phoenix volume.
+            </p>
+          </div>
+
+          <div class="divider"></div>
           <div class="section-label">Address Search Actions (Go Button)</div>
           <div class="toggle-group">
             <div class="toggle-item">

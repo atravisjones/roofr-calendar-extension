@@ -1094,6 +1094,102 @@
       box-shadow: 0 0 0 1px var(--warn);
     }
 
+    /* Ranked slot tiers (gold/silver/bronze): colored left edge only, slots
+       stay in time order. Fixed hex on purpose — theme variables shift with
+       themes.js and would wash the medal colors out. */
+    .block-item.slot-reco-gold,
+    .block-item.slot-reco-silver,
+    .block-item.slot-reco-bronze {
+      border-left-width: 4px;
+      border-left-style: solid;
+      padding-left: 7px;
+    }
+
+    .block-item.slot-reco-gold {
+      border-left-color: #c78300;
+      background: rgba(245, 158, 11, 0.10);
+    }
+
+    .block-item.slot-reco-silver {
+      border-left-color: #94a3b8;
+    }
+
+    .block-item.slot-reco-bronze {
+      border-left-color: #b45309;
+    }
+
+    body.dark-theme .block-item.slot-reco-gold {
+      border-left-color: #fbbf24;
+      background: rgba(251, 191, 36, 0.14);
+    }
+
+    body.dark-theme .block-item.slot-reco-silver {
+      border-left-color: #cbd5e1;
+    }
+
+    body.dark-theme .block-item.slot-reco-bronze {
+      border-left-color: #fdba74;
+    }
+
+    /* Day-header route cue: which days build a route, visible while collapsed. */
+    .badge.route-badge {
+      background: rgba(245, 158, 11, 0.15);
+      color: #92600a;
+      border: 1px solid rgba(199, 131, 0, 0.35);
+    }
+
+    body.dark-theme .badge.route-badge {
+      background: rgba(251, 191, 36, 0.18);
+      color: #fbbf24;
+      border-color: rgba(251, 191, 36, 0.4);
+    }
+
+    /* No-route day variant: best-availability recommendation (blue). */
+    .badge.route-badge.route-badge-open {
+      background: rgba(59, 130, 246, 0.12);
+      color: #1d4ed8;
+      border-color: rgba(59, 130, 246, 0.35);
+    }
+
+    body.dark-theme .badge.route-badge.route-badge-open {
+      background: rgba(96, 165, 250, 0.16);
+      color: #93c5fd;
+      border-color: rgba(96, 165, 250, 0.4);
+    }
+
+    /* Prev/next available-day arrows on each day-card header (reco mode). */
+    .day-nav-arrows {
+      display: flex;
+      gap: 4px;
+      margin-left: auto;
+      margin-right: 6px;
+    }
+
+    .reco-day-btn {
+      border: 1px solid var(--border);
+      background: var(--surface-hover);
+      color: var(--text-main);
+      border-radius: 6px;
+      padding: 1px 8px;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+
+    .reco-day-btn:hover {
+      background: var(--border);
+    }
+
+    /* Gold's single reason line: quiet, truncated, no box of its own. */
+    .block-item.slot-reco-gold .reco-reason {
+      margin-top: 2px;
+      padding: 0;
+      background: transparent;
+      border: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
     .block-header {
       display: flex;
       justify-content: space-between;
@@ -1543,6 +1639,11 @@
       justify-content: flex-end;
       align-items: center;
       gap: 12px;
+    }
+
+    /* Copy + Route sit left; totals stay right. */
+    .card-footer .card-cap {
+      margin-left: auto;
     }
 
     .card-cap {
@@ -2321,6 +2422,53 @@
     }
 
 
+    /* Out-of-service-area warning (see #serviceAreaBanner).
+       Deliberately loud: this fires while the CSR still has the homeowner on
+       the phone, and the cost of it being missed is a booked job nobody can
+       run. Uses --danger rather than --warn for that reason. */
+    .service-area-banner {
+      background: var(--danger-bg);
+      border: 1px solid var(--danger);
+      border-left: 4px solid var(--danger);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      margin-top: 8px;
+    }
+    .service-area-banner.hidden { display: none; }
+    .sab-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 6px;
+    }
+    .sab-icon { font-size: 0.95rem; line-height: 1; }
+    .sab-title {
+      color: var(--danger);
+      font-size: 0.85rem;
+      font-weight: 800;
+      letter-spacing: 0.01em;
+    }
+    .sab-where {
+      font-size: 0.75rem;
+      opacity: 0.75;
+      font-weight: 600;
+    }
+    .sab-script {
+      font-size: 0.82rem;
+      line-height: 1.45;
+      font-style: italic;
+      opacity: 0.95;
+      /* The CSR reads this aloud — keep it selectable for a manual copy too. */
+      user-select: text;
+    }
+    .sab-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .sab-btn { font-size: 0.75rem; padding: 3px 10px; }
+
     /* Setup Banner */
     .setup-banner {
       background: var(--warn-bg);
@@ -2999,6 +3147,20 @@
                   <div id="verified-addresses-container" class="suggestions-container hidden"></div>
                 </div>
                 <button id="addrGoBtn" class="btn">Go</button>
+              </div>
+              <!-- Out-of-service-area warning. Hidden unless checkServiceArea()
+                   can PROVE the address is outside the area we book. -->
+              <div id="serviceAreaBanner" class="service-area-banner hidden">
+                <div class="sab-head">
+                  <span class="sab-icon">⛔</span>
+                  <span class="sab-title">No crews out this way right now</span>
+                  <span id="sabWhere" class="sab-where"></span>
+                </div>
+                <div id="sabScript" class="sab-script"></div>
+                <div class="sab-actions">
+                  <button id="sabCopyBtn" class="btn ghost sab-btn" type="button">Copy script</button>
+                  <button id="sabDismissBtn" class="btn ghost sab-btn" type="button">Dismiss</button>
+                </div>
               </div>
             </div>
           </div>

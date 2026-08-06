@@ -2,6 +2,7 @@
 
 import { CONFIG, PEOPLE_DATA, syncPeopleDataFromRoster } from './config.js';
 import { THEMES, applyTheme } from './themes.js';
+import { fetchRepRoutingProfile, scoreRouteCandidates } from './routing.js';
 
 const SLOT_HOLDS_URL = 'https://roofr-search.vercel.app/api/slot-holds';
 const SLOT_HOLDS_INTERNAL_KEY = 'WSDnmjsudtcCEWvb_TKQKcyWS3TXtcjWqfuLMsnmT96XfqZF';
@@ -669,6 +670,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         recoAvailableDays: [], // Array of date strings with available slots
         allCandidatesForCity: [], // All candidates before day filtering
         recoBestPerDay: {}, // Map: dateStr -> best candidate for that day (for day-based navigation)
+        recoRankedPerDay: {}, // Map: dateStr -> up to top-3 ranked candidates (gold/silver/bronze render)
         regionOverrides: {}, // Store overrides mapping: "Event Title + Start Time" -> "PHX" | "NORTH" | "SOUTH"
         dayCutoffs: [], // Array of booleans for Mon-Sun indicating if day is cutoff
         ignoredEvents: {}, // Store ignored uncategorized events: "Event Title + Start Time" -> true
@@ -1553,6 +1555,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (addrInput) {
             addrInput.value = state.addressInput || "";
             updateAddressClearButton();
+            // Reopening the side panel restores the address here WITHOUT going
+            // through updateGoButtonState, so the banner has to be re-evaluated
+            // on this path too or a restored out-of-area address looks clean.
+            if (typeof updateServiceAreaWarning === 'function') updateServiceAreaWarning();
         }
         applyRegionFilter();
         populateVerifiedAddresses();
@@ -2351,6 +2357,31 @@ document.addEventListener('DOMContentLoaded', async () => {
         return dt.toISOString().slice(0, 10);
     }
 
+    /** Haversine distance in miles between two lat/lng points. */
+    function haversineMi(aLat, aLng, bLat, bLng) {
+        const R = 3958.8;
+        const dLat = (bLat - aLat) * Math.PI / 180;
+        const dLng = (bLng - aLng) * Math.PI / 180;
+        const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(aLat * Math.PI / 180) * Math.cos(bLat * Math.PI / 180) *
+            Math.sin(dLng / 2) * Math.sin(dLng / 2);
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    // Geographic stack radius. One radius rules both sides: within it a booked
+    // job is a stack to join (adjacent blocks) AND a conflict (same block is
+    // never recommended — no double bookings). 10 mi per Travis 2026-07-23
+    // (6 was too tight for how spread the valley calendar is).
+    const STACK_RADIUS_MI = 10;
+
+    function hasFiniteCoords(point) {
+        // null/'' coerce to numeric 0 — a missing coord must fall back to city
+        // matching, not measure from (0,0) and silently drop the event.
+        const lat = point?.lat, lng = point?.lng;
+        if (lat == null || lat === '' || lng == null || lng === '') return false;
+        return Number.isFinite(Number(lat)) && Number.isFinite(Number(lng));
+    }
+
     function roofrServerDateTimeToEventISO(value) {
         const raw = String(value || '').trim();
         if (!raw) return null;
@@ -3035,8 +3066,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.querySelectorAll(".block-item.suggested").forEach(el => {
             el.classList.remove("suggested");
         });
-        // Remove reco-reason from day cards
-        document.querySelectorAll(".day-card .reco-reason").forEach(el => {
+        // Remove reco-reason from day cards. Tier-managed reasons
+        // (data-slot-reco-reason) are owned by renderDays — leave them, or the
+        // no-op legacy highlightSuggested call after each reco run wipes them.
+        document.querySelectorAll(".day-card .reco-reason:not([data-slot-reco-reason])").forEach(el => {
             el.remove();
         });
         // Restore block-context elements and remove wrapper rows
@@ -3048,6 +3081,214 @@ document.addEventListener('DOMContentLoaded', async () => {
             row.remove();
         });
     }
+    /* ========= Tiered slot recommendations (gold/silver/bronze) =========
+       Quiet ranked render: the top-3 stack-building slots per day get a colored
+       left edge on their block row; gold also gets a soft tint + one reason line,
+       silver/bronze carry the reason as a hover tooltip. Painted only from
+       renderDays (every reco path funnels through renderUIFromState), cleared by
+       the same repaint. Medals require nearby jobs — never padded to three. */
+    const SHOW_TIERED_RECO = true;
+    // Route-fit engine comparison logging (see routing.js). Display stays on the
+    // radius engine until shadow results are validated.
+    const ROUTE_SHADOW = true;
+
+    function rankedCandidatesForDay(dateStr) {
+        return state.recoRankedPerDay?.[dateStr] || [];
+    }
+
+    function applyTieredRecommendationsForCard(card, rankedCandidates) {
+        if (!SHOW_TIERED_RECO || !card) return;
+        const list = rankedCandidates || [];
+        if (!list.length) return;
+
+        const blocks = CONFIG.blockWindowForDate(new Date(card.dataset.date + "T00:00"));
+        const labelFor = (key) => blocks.find(b => b.key === key)?.label || String(key || "");
+        // "11am-1pm" -> "11-1" (pill space is tight; the tooltip keeps the full reason)
+        const shortLabelFor = (key) => labelFor(key).replace(/\s+/g, "").replace(/am|pm/gi, "");
+        // Header pill (visible while collapsed): the customer's availability
+        // picks the day, so the CSR must see every day's recommended window
+        // without expanding each card.
+        const addHeaderPill = (extraClass, text, title) => {
+            const dateGroup = card.querySelector(".date-group");
+            if (!dateGroup || dateGroup.querySelector(".route-badge")) return;
+            const pill = document.createElement("span");
+            pill.className = `badge route-badge${extraClass ? ` ${extraClass}` : ""}`;
+            pill.textContent = text;
+            pill.title = title || "";
+            dateGroup.appendChild(pill);
+        };
+        const nearbyOf = (c) => Math.max(Number(c.stackSize) || 0, Number(c.nearbyCount) || 0);
+
+        // ◀ ▶ on the card header: jump to the previous/next available day from
+        // THIS day (collapse it, expand + scroll to the neighbor, wraps around).
+        const header = card.querySelector(".card-header");
+        if (header && !header.querySelector(".day-nav-arrows") && (state.recoAvailableDays || []).length > 1) {
+            const nav = document.createElement("span");
+            nav.className = "day-nav-arrows";
+            const mkBtn = (dir, glyph, title) => {
+                const b = document.createElement("button");
+                b.className = "reco-day-btn";
+                b.type = "button";
+                b.title = title;
+                b.textContent = glyph;
+                b.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    const days = state.recoAvailableDays || [];
+                    const idx = days.indexOf(card.dataset.date);
+                    if (idx !== -1) state.recoDayIndex = idx;
+                    if (dir > 0) handleNextRecommendation(); else handlePrevRecommendation();
+                });
+                return b;
+            };
+            nav.appendChild(mkBtn(-1, "◀", "Previous available day"));
+            nav.appendChild(mkBtn(1, "▶", "Next available day"));
+            header.appendChild(nav);
+        }
+
+        // EVERY day gets its 1-2-3 (Travis, 2026-07-23): gold/silver/bronze on
+        // the top three open slots — route-ranked when a stack exists,
+        // availability-ranked when it doesn't. The header pill carries the
+        // distinction (gold 📍 = route day, blue "Best" = capacity only).
+        const tiers = ["slot-reco-gold", "slot-reco-silver", "slot-reco-bronze"];
+        const awardedBlockKeys = new Set();
+        let tierIndex = 0;
+
+        for (const candidate of list) {
+            if (tierIndex === tiers.length) break;
+            if (!candidate.blockKey || awardedBlockKeys.has(candidate.blockKey)) continue;
+
+            const target = card.querySelector(`.block-item[data-block-key="${candidate.blockKey}"]`);
+            if (!target) continue;
+
+            awardedBlockKeys.add(candidate.blockKey);
+            target.classList.add(tiers[tierIndex]);
+
+            if (tierIndex === 0) {
+                const reasonDiv = document.createElement("div");
+                reasonDiv.className = "reco-reason";
+                reasonDiv.dataset.slotRecoReason = "true";
+                reasonDiv.textContent = candidate.reason || "Recommended slot";
+                target.appendChild(reasonDiv);
+
+                const nearbyJobs = nearbyOf(candidate);
+                if (nearbyJobs >= 1) {
+                    addHeaderPill("", `\u{1F4CD} ${nearbyJobs} · ${shortLabelFor(candidate.blockKey)}`, candidate.reason);
+                } else {
+                    addHeaderPill("route-badge-open", shortLabelFor(candidate.blockKey), candidate.reason);
+                }
+
+                // Per-day Google Maps route: this day's stack members in drive
+                // order with the searched address inserted at the gold slot.
+                // Lives in the footer next to Copy (header space is spoken for).
+                if (Array.isArray(candidate.stackMembers) && candidate.stackMembers.length) {
+                    const footerEl = card.querySelector(".card-footer");
+                    const copyBtn = footerEl?.querySelector(".copy-day-btn");
+                    if (copyBtn && !footerEl.querySelector(".route-map-btn")) {
+                        const mapsBtn = document.createElement("button");
+                        mapsBtn.className = "btn ghost route-map-btn";
+                        mapsBtn.type = "button";
+                        mapsBtn.style.fontSize = "11px";
+                        mapsBtn.textContent = "Maps";
+                        mapsBtn.title = "Open this day's stack route in Google Maps";
+                        mapsBtn.addEventListener("click", (e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            openStackRouteInMaps(candidate);
+                        });
+                        copyBtn.insertAdjacentElement("afterend", mapsBtn);
+                    }
+                }
+            } else if (candidate.reason) {
+                target.title = candidate.reason;
+            }
+
+            tierIndex++;
+        }
+    }
+
+
+    // Build the day's drive order (stack stops by appointment time, searched
+    // address inserted where the gold slot falls) and open it as a Google Maps
+    // directions route.
+    function openStackRouteInMaps(candidate) {
+        const stopOf = (m) => {
+            if (hasFiniteCoords(m)) return `${Number(m.lat)},${Number(m.lng)}`;
+            const addr = (m.address || String(m.title || "").split(" - ").pop() || "").trim();
+            return addr || null;
+        };
+        const timed = (candidate.stackMembers || [])
+            .map(m => ({ stop: stopOf(m), start: m.start }))
+            .filter(s => s.stop)
+            .sort((a, b) => String(a.start).localeCompare(String(b.start)));
+        const stops = timed.map(s => s.stop);
+
+        const pin = window.__selectedAddrCoords;
+        const lead = hasFiniteCoords(pin)
+            ? `${Number(pin.lat)},${Number(pin.lng)}`
+            : (state.addressInput || "").trim();
+        if (lead) {
+            const blocks = CONFIG.blockWindowForDate(new Date(candidate.dateStr + "T00:00"));
+            const goldBlock = blocks.find(b => b.key === candidate.blockKey);
+            let insertAt = stops.length;
+            if (goldBlock) {
+                const idx = timed.findIndex(s => new Date(s.start) > goldBlock.start);
+                if (idx !== -1) insertAt = idx;
+            }
+            stops.splice(insertAt, 0, lead);
+        }
+        if (stops.length < 2) { showToast("Not enough stops for a route"); return; }
+
+        const url = "https://www.google.com/maps/dir/" + stops.map(encodeURIComponent).join("/");
+        const createOpts = { url, active: true };
+        if (window.__targetWindowId) createOpts.windowId = window.__targetWindowId;
+        chrome.tabs.create(createOpts);
+    }
+
+    // Backtick answers a ringing CTM call from the side panel too (opt-in,
+    // ctm_backtick_answer — same behavior as the content-script listener).
+    {
+        let _backtickAnswerOn = false;
+        try {
+            chrome.storage.sync.get({ ctm_backtick_answer: true }, (v) => {
+                _backtickAnswerOn = v.ctm_backtick_answer === true;
+            });
+            chrome.storage.onChanged.addListener((ch, area) => {
+                if (area === "sync" && ch.ctm_backtick_answer) {
+                    _backtickAnswerOn = ch.ctm_backtick_answer.newValue === true;
+                }
+            });
+        } catch (_) {}
+        document.addEventListener("keydown", (e) => {
+            if (!_backtickAnswerOn) return;
+            if (e.key !== "`" || e.ctrlKey || e.altKey || e.metaKey) return;
+            const t = e.target;
+            const tag = (t?.tagName || "").toLowerCase();
+            if (tag === "input" || tag === "textarea" || tag === "select" || t?.isContentEditable) return;
+            try {
+                chrome.runtime.sendMessage({ type: "BACKTICK_ANSWER" })
+                    .then(r => console.log("[BacktickAnswer] →", JSON.stringify(r)))
+                    .catch(() => {});
+            } catch (_) {}
+        }, true);
+    }
+
+    // ← → keys tab between available days once a recommendation search is
+    // active (panel must have focus, i.e. the rep clicked into the scanner).
+    // Ignored while typing so inputs keep their caret keys.
+    document.addEventListener("keydown", (e) => {
+        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+        if ((state.recoAvailableDays || []).length <= 1) return;
+        // Scanner tab only — Reports/People/Dialer keep their native arrow keys.
+        if (!document.getElementById("sec-scanner")?.classList.contains("active")) return;
+        const t = e.target;
+        const tag = (t?.tagName || "").toLowerCase();
+        if (tag === "input" || tag === "textarea" || tag === "select" || t?.isContentEditable) return;
+        e.preventDefault();
+        if (e.key === "ArrowLeft") handlePrevRecommendation();
+        else handleNextRecommendation();
+    });
+
     // Recommended-slot callout disabled per request (slimming down the scanner):
     // address submit no longer highlights a "suggested" time block or draws the
     // "Recommendation:" box / prev-next day arrows. We still clear any stale highlight
@@ -3141,15 +3382,58 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    function setCardCollapsed(card, collapsed) {
+    function setCardCollapsed(card, collapsed, animate = false) {
         card.dataset.collapsed = collapsed;
         const toggle = card.querySelector(".toggle-btn[data-role='day']");
         if (toggle) toggle.innerHTML = collapsed ? "Expand" : "Collapse";
 
         const body = card.querySelector('.card-body');
         const footer = card.querySelector('.card-footer');
-        if (body) body.classList.toggle('hidden', collapsed);
-        if (footer) footer.classList.toggle('hidden', collapsed);
+        const parts = [body, footer].filter(Boolean);
+
+        // Animate only when asked (day-to-day ◀ ▶ navigation) — manual toggles
+        // and bulk renders stay instant.
+        if (!animate || !parts.length || typeof parts[0].animate !== 'function') {
+            if (body) body.classList.toggle('hidden', collapsed);
+            if (footer) footer.classList.toggle('hidden', collapsed);
+            return;
+        }
+
+        for (const el of parts) {
+            // Rapid ◀ ▶ can start a new animation before the old one finishes —
+            // cancel the prior one or its onfinish would re-hide an expanding card.
+            el.__collapseAnim?.cancel();
+            if (collapsed) {
+                if (el.classList.contains('hidden')) continue;
+                const h = el.scrollHeight;
+                el.style.overflow = 'hidden';
+                const anim = el.animate(
+                    [{ height: `${h}px`, opacity: 1 }, { height: '0px', opacity: 0 }],
+                    { duration: 200, easing: 'ease-in-out' }
+                );
+                el.__collapseAnim = anim;
+                anim.onfinish = () => {
+                    if (el.__collapseAnim !== anim) return;
+                    el.__collapseAnim = null;
+                    el.classList.add('hidden');
+                    el.style.overflow = '';
+                };
+            } else {
+                el.classList.remove('hidden');
+                const h = el.scrollHeight;
+                el.style.overflow = 'hidden';
+                const anim = el.animate(
+                    [{ height: '0px', opacity: 0 }, { height: `${h}px`, opacity: 1 }],
+                    { duration: 220, easing: 'ease-in-out' }
+                );
+                el.__collapseAnim = anim;
+                anim.onfinish = () => {
+                    if (el.__collapseAnim !== anim) return;
+                    el.__collapseAnim = null;
+                    el.style.overflow = '';
+                };
+            }
+        }
     }
 
     function areAllCardsCollapsed() { return document.querySelectorAll(".day-card").length > 0 && ![...document.querySelectorAll(".day-card")].some(c => c.dataset.collapsed === "false"); }
@@ -3258,7 +3542,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       <div class="date-title"><span class="day-name">${dayName}</span>, ${fullDate}</div>
       ${badgesHtml}
     </div>
-    <button class="btn ghost copy-day-btn" style="font-size:11px;">Copy</button>
   `;
         card.appendChild(header);
 
@@ -3648,7 +3931,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const footer = document.createElement('div');
         footer.className = 'card-footer';
         const totalJobsForDay = eventsForDay ? eventsForDay.length : 0;
-        footer.innerHTML = `<span class="card-cap">Total Cap: ${totals.capacity}</span><span class="card-booked">Booked: ${totalJobsForDay}</span>`;
+        // Copy lives down here (left of the totals) — the header needs its
+        // room for the date + badges + reco pill + day arrows.
+        footer.innerHTML = `<button class="btn ghost copy-day-btn" style="font-size:11px;">Copy</button><span class="card-cap">Total Cap: ${totals.capacity}</span><span class="card-booked">Booked: ${totalJobsForDay}</span>`;
         body.appendChild(footer);
 
         // (Removed: full-width "Copy Day" button at the bottom of the card — per request.
@@ -3656,8 +3941,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         card.appendChild(body);
 
-        // Copy button handler (in header)
-        header.querySelector('.copy-day-btn').addEventListener('click', async (e) => {
+        // Copy button handler (in footer)
+        footer.querySelector('.copy-day-btn').addEventListener('click', async (e) => {
             e.stopPropagation();
             const allDayEvents = (state.allEvents || []).filter(ev => localDayKey(ev.start) === dateStr);
             await copyToClipboard(buildCopyLinesForDay(dateStr, allDayEvents).join("\n"), e.currentTarget);
@@ -4047,6 +4332,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             card.classList.add(stripeIndex % 2 === 0 ? 'week-stripe-a' : 'week-stripe-b');
             daysWrap.appendChild(card);
         });
+
+        // Paint gold/silver/bronze tiers fresh on every render (innerHTML wipe
+        // above guarantees no stale classes survive a repaint).
+        if (SHOW_TIERED_RECO) {
+            daysWrap.querySelectorAll(".day-card").forEach(card => {
+                applyTieredRecommendationsForCard(card, rankedCandidatesForDay(card.dataset.date));
+            });
+        }
 
         let grandTotalBooked = (state.allEvents || []).length;
         footerTotal.textContent = `Total: ${grandTotalBooked} booked`;
@@ -4914,6 +5207,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     regionPills.forEach(t => t.addEventListener("click", () => {
         state.currentRegion = t.dataset.region || "PHX";
+        // Region change invalidates the tier ranking (capacity, regionCount and
+        // COMM handling all differ) — recompute for an active search, else clear.
+        if (state.addressInput && addrInput?.value?.trim()) {
+            state.recoRankedPerDay = {};
+            debouncedSaveState();
+            renderUIFromState();
+            runMainRecommendation();
+            return;
+        }
+        state.recoRankedPerDay = {};
+        state.recoBestPerDay = {};
+        state.recoAvailableDays = [];
+        state.allCandidatesForCity = [];
         debouncedSaveState();
         renderUIFromState();
     }));
@@ -5209,6 +5515,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     state.availability,
                     state.weekDays
                 ).catch(e => addLog(`API cache save failed: ${e.message}`, 'WARN'));
+
+                // Scan replaced week/events/availability — the old ranked tiers
+                // would paint stale slots on the new cards (forever, if no address
+                // is active to trigger the re-run below).
+                if (!state.addressInput) state.recoRankedPerDay = {};
 
                 addLog(`Scan complete. Extracted ${state.allEvents.length} events.`);
                 await debouncedSaveState();
@@ -6138,11 +6449,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         const candidates = [];
         const tomorrowISO = addDaysISO(phoenixTodayISO(), 1);
         const cityStr = targetCity.toUpperCase();
+        const targetCoords = window.__selectedAddrCoords;
+        const useGeo = hasFiniteCoords(targetCoords);
 
         // Region of an event for clustering: manual override wins, then GPS/city.
         const regionOfEvent = (e) => state.regionOverrides[`${e.title}|${e.start}`] || CONFIG.getRegionForEvent(e);
 
-        console.log('findBestSlotStacking debug:', { tomorrowISO, weekDays, currentRegion });
+        console.log('findBestSlotStacking debug:', { tomorrowISO, weekDays, currentRegion, useGeo, targetCoords });
 
         for (const dateStr of weekDays) {
             // Only recommend tomorrow or later (never today)
@@ -6168,11 +6481,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             // Commercial jobs belong to the separate commercial rep pool — they
-            // neither stack with nor cluster residential bookings.
+            // neither stack with nor cluster residential bookings. With a pinned
+            // address, membership = within STACK_RADIUS_MI of it; events whose
+            // source has no coords (DOM-scraped days) still match by city.
             const cityEvents = dailyEvents.filter(e => {
                 if (CONFIG.isCommercialEvent?.(e)) return false;
                 const c = CONFIG.getCityFromEvent(e);
-                return c && c.toUpperCase() === cityStr;
+                const cityMatches = !!(c && c.toUpperCase() === cityStr);
+                if (!useGeo || !hasFiniteCoords(e)) return cityMatches;
+                return haversineMi(
+                    Number(targetCoords.lat), Number(targetCoords.lng),
+                    Number(e.lat), Number(e.lng)
+                ) <= STACK_RADIUS_MI;
             });
             const stackSize = cityEvents.length;
 
@@ -6223,29 +6543,55 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // 3. Time
                     return a.idx - b.idx;
                 });
-                const best = validOptions[0];
-                let reason = "";
-
-                if (stackSize > 0) {
-                    const existingIndices = Array.from(usedBlocks).map(k => keyToIndex[k]);
-                    const bestIdx = best.idx;
-                    const above = existingIndices.some(i => i < bestIdx);
-                    const below = existingIndices.some(i => i > bestIdx);
-
-                    if (above && below) {
-                        reason = `There are ${stackSize} ${cityStr} jobs surrounding this time slot.`;
-                    } else if (above) {
-                        reason = `There are ${stackSize} ${cityStr} jobs scheduled before this time slot.`;
+                // Emit the day's top THREE slot options (gold/silver/bronze render),
+                // ranked by the sort above. dayRank 0 keeps today's best-per-day
+                // semantics everywhere downstream; ranks 1-2 exist only for tiers.
+                const existingIndices = Array.from(usedBlocks).map(k => keyToIndex[k]);
+                validOptions.slice(0, 3).forEach((opt, dayRank) => {
+                    let reason = "";
+                    if (stackSize > 0) {
+                        const above = existingIndices.some(i => i < opt.idx);
+                        const below = existingIndices.some(i => i > opt.idx);
+                        const stackLabel = useGeo
+                            ? `${stackSize} job${stackSize > 1 ? 's' : ''} within ~${STACK_RADIUS_MI} mi of this address`
+                            : `There are ${stackSize} ${cityStr} jobs`;
+                        if (above && below) {
+                            reason = `${stackLabel} surrounding this time slot.`;
+                        } else if (above) {
+                            reason = `${stackLabel} scheduled before this time slot.`;
+                        } else {
+                            reason = `${stackLabel} scheduled after this time slot.`;
+                        }
                     } else {
-                        reason = `There are ${stackSize} ${cityStr} jobs scheduled after this time slot.`;
+                        // No nearby jobs: talk about THE SLOT, not the day.
+                        // ("12 PHX appointments already scheduled" read as a
+                        // warning on the slot we were recommending.) regionCount
+                        // still feeds the cross-day sort below.
+                        reason = dayRank === 0
+                            ? `Most availability this day — ${opt.remaining} open in this slot.`
+                            : `${opt.remaining} open in this slot.`;
                     }
-                } else if (regionCount > 0) {
-                    reason = `${regionCount} ${currentRegion} appointment${regionCount > 1 ? 's' : ''} already scheduled this day.`;
-                } else {
-                    reason = `Start a new stack: High availability in this slot.`;
-                }
 
-                candidates.push({ dateStr, blockKey: best.key, stackSize, regionCount, reason, remaining: best.remaining });
+                    candidates.push({
+                        dateStr,
+                        blockKey: opt.key,
+                        dayRank,
+                        stackSize,
+                        nearbyCount: stackSize,
+                        radiusMi: useGeo ? STACK_RADIUS_MI : null,
+                        regionCount,
+                        reason,
+                        remaining: opt.remaining,
+                        // Rank-0 carries the day's stack members so the render
+                        // layer can draw the Google Maps route for the day.
+                        stackMembers: (dayRank === 0 && stackSize > 0)
+                            ? cityEvents.map(e => ({
+                                lat: e.lat, lng: e.lng, start: e.start,
+                                title: e.title, address: e.address || ''
+                            }))
+                            : undefined
+                    });
+                });
             }
         }
 
@@ -6254,41 +6600,53 @@ document.addEventListener('DOMContentLoaded', async () => {
         candidates.sort((a, b) => {
             if (b.stackSize !== a.stackSize) return b.stackSize - a.stackSize;
             if ((b.regionCount || 0) !== (a.regionCount || 0)) return (b.regionCount || 0) - (a.regionCount || 0);
-            return new Date(a.dateStr) - new Date(b.dateStr);
+            const dateDiff = new Date(a.dateStr) - new Date(b.dateStr);
+            if (dateDiff !== 0) return dateDiff;
+            return (a.dayRank || 0) - (b.dayRank || 0);
         });
 
         return candidates;
     }
 
     /**
-     * Groups all candidates by day and picks the BEST one per day.
-     * Used for day-based navigation where each day shows its single best recommendation.
+     * Groups all candidates by day and ranks them, keeping the top `limit`.
+     * The stacker's own dayRank (proximity > availability > time) is authoritative;
+     * candidates without one (smart-API / fallback paths) rank by the legacy
+     * stackSize > remaining > earlier-block criteria.
      * @param {Array} allCandidates - Array of candidate objects from findBestSlotStacking
-     * @returns {Object} Map of dateStr -> best candidate for that day
+     * @returns {Object} Map of dateStr -> ranked candidates (length <= limit)
      */
-    function computeBestPerDay(allCandidates) {
-        const bestPerDay = {};
-
-        // Group candidates by date
+    function computeRankedPerDay(allCandidates, limit = 3) {
         const byDate = {};
         for (const c of allCandidates) {
             if (!byDate[c.dateStr]) byDate[c.dateStr] = [];
             byDate[c.dateStr].push(c);
         }
 
-        // For each date, pick the BEST candidate
-        // Priority: stackSize (higher is better) > remaining capacity (higher is better) > earlier block
         // Block keys are ordinal (B1..Bn — storm weeks have B5), so sort by their number.
         const keyOrder = (k) => parseInt(String(k || "").slice(1), 10) || 0;
         for (const [dateStr, candidates] of Object.entries(byDate)) {
             candidates.sort((a, b) => {
+                if (a.dayRank != null && b.dayRank != null) return a.dayRank - b.dayRank;
                 if (b.stackSize !== a.stackSize) return b.stackSize - a.stackSize;
                 if ((b.remaining || 0) !== (a.remaining || 0)) return (b.remaining || 0) - (a.remaining || 0);
                 return keyOrder(a.blockKey) - keyOrder(b.blockKey);
             });
-            bestPerDay[dateStr] = candidates[0];
+            byDate[dateStr] = candidates.slice(0, limit);
         }
 
+        return byDate;
+    }
+
+    /**
+     * dateStr -> single best candidate (rank 0). Kept for day-based navigation.
+     */
+    function computeBestPerDay(allCandidates, rankedPerDay = null) {
+        const ranked = rankedPerDay || computeRankedPerDay(allCandidates);
+        const bestPerDay = {};
+        for (const [dateStr, candidates] of Object.entries(ranked)) {
+            if (candidates.length) bestPerDay[dateStr] = candidates[0];
+        }
         return bestPerDay;
     }
 
@@ -6354,6 +6712,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         await sendFindCommand({ type: 'CLEAR_HIGHLIGHT' });
         await sendFindCommand({ type: 'HIGHLIGHT_CITY', city: primaryCity });
 
+        if (!hasFiniteCoords(window.__selectedAddrCoords)) {
+            const pinQuery = state.addressInput || '';
+            const pin = await resolveAddressCoordsForReco(pinQuery);
+            // Same stale-query guard as runMainRecommendation.
+            if (pin && (state.addressInput || '') === pinQuery) window.__selectedAddrCoords = pin;
+        }
+
         // Try to get smart recommendations from the Routing API first
         const address = state.addressInput || primaryCity;
         const smartRecs = await getSmartRecommendations(address, [], state.weekDays, 'normal');
@@ -6384,6 +6749,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     dateStr: rec.date,
                     blockKey,
                     stackSize: 0,
+                    nearbyCount: Number(rec.nearbyCount) || 0,
+                    radiusMi: Number.isFinite(Number(rec.radiusMi)) ? Number(rec.radiusMi) : null,
                     reason,
                     remaining: rec.remaining || 1,
                     repName: rec.repName,
@@ -6402,12 +6769,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Fallback: if no city-based candidates, find slots with highest availability
         if (candidates.length === 0) {
-            candidates = findHighestAvailabilitySlots(state.weekDays, state.allEvents, state.availability, state.currentRegion);
+            candidates = findHighestAvailabilitySlots(state.weekDays, state.allEvents, state.availability, state.currentRegion, primaryCity);
             addLog(`Using ${candidates.length} highest-availability fallback recommendations`);
         }
 
         state.recoCandidates = candidates;
         state.recoIndex = 0;
+        state.recoRankedPerDay = computeRankedPerDay(candidates);
+        console.log('[tiers] per-day (city path):', Object.fromEntries(Object.entries(state.recoRankedPerDay)
+            .map(([d, cs]) => [d, cs.map(c => `${c.blockKey}:stack${c.stackSize ?? 0}:left${c.remaining ?? '?'}`).join(', ')])));
 
         debouncedSaveState();
         renderUIFromState();
@@ -6447,6 +6817,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                         });
                         state.recoCandidates = nextCandidates;
                         state.recoIndex = 0;
+                        // Rebuild ALL reco maps from this dataset — mixing next-week
+                        // candidates with the prior week's recoAvailableDays/BestPerDay
+                        // left day navigation pointing at days that don't exist here.
+                        // (Cards still show the current window; next-week tiers render
+                        // once the CSR navigates the calendar there and rescans.)
+                        state.allCandidatesForCity = nextCandidates;
+                        state.recoAvailableDays = [...new Set(nextCandidates.map(c => c.dateStr))].sort();
+                        state.recoDayIndex = 0;
+                        state.recoRankedPerDay = computeRankedPerDay(nextCandidates);
+                        state.recoBestPerDay = computeBestPerDay(nextCandidates, state.recoRankedPerDay);
                         debouncedSaveState();
                         renderUIFromState();
                         showToast(`Found ${nextCandidates.length} options in next week (cached)`);
@@ -6460,9 +6840,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Find the slot with highest availability for each day (fallback when no city matches)
-    function findHighestAvailabilitySlots(weekDays, allEvents, availability, currentRegion) {
+    function findHighestAvailabilitySlots(weekDays, allEvents, availability, currentRegion, targetCity = null) {
         const candidates = [];
         const tomorrowISO = addDaysISO(phoenixTodayISO(), 1);
+        const cityStr = targetCity ? String(targetCity).toUpperCase() : null;
 
         for (const dateStr of weekDays) {
             // Only recommend tomorrow or later
@@ -6473,10 +6854,30 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // Find the block with highest remaining capacity
             const blocks = CONFIG.blockWindowForDate(new Date(dateStr + "T00:00"));
+
+            // Same no-double-booking rule as the stacker: a block holding a job
+            // within STACK_RADIUS_MI (city-match when coords are missing) is
+            // never a recommendation.
+            const conflictBlocks = new Set();
+            const tgt = window.__selectedAddrCoords;
+            const useGeo = hasFiniteCoords(tgt);
+            if (cityStr || useGeo) {
+                dailyEvents.forEach(ev => {
+                    if (CONFIG.isCommercialEvent?.(ev)) return;
+                    const c = CONFIG.getCityFromEvent(ev);
+                    const cityMatches = !!(c && cityStr && c.toUpperCase() === cityStr);
+                    const isNear = (useGeo && hasFiniteCoords(ev))
+                        ? haversineMi(Number(tgt.lat), Number(tgt.lng), Number(ev.lat), Number(ev.lng)) <= STACK_RADIUS_MI
+                        : cityMatches;
+                    if (isNear) occupiedKeysFor(ev, blocks).forEach(k => conflictBlocks.add(k));
+                });
+            }
+
             let bestBlock = null;
             let bestRemaining = -Infinity;
 
             blocks.forEach(b => {
+                if (conflictBlocks.has(b.key)) return;
                 const remaining = totals.perBlockRemaining[b.key] ?? 0;
                 if (remaining > bestRemaining) {
                     bestRemaining = remaining;
@@ -6489,6 +6890,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     dateStr,
                     blockKey: bestBlock,
                     stackSize: 0,
+                    nearbyCount: 0,
+                    radiusMi: null,
                     reason: `Highest availability: ${bestRemaining} spots open`,
                     remaining: bestRemaining
                 });
@@ -6516,7 +6919,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const currentDay = state.recoAvailableDays[state.recoDayIndex];
         const currentCard = document.querySelector(`.day-card[data-date="${currentDay}"]`);
         if (currentCard) {
-            setCardCollapsed(currentCard, true);
+            setCardCollapsed(currentCard, true, true);
             clearAllSuggested();
         }
 
@@ -6541,12 +6944,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Expand and highlight the new day's card
         const nextCard = document.querySelector(`.day-card[data-date="${nextDay}"]`);
         if (nextCard) {
-            setCardCollapsed(nextCard, false);
+            setCardCollapsed(nextCard, false, true);
             if (reco) {
                 highlightSuggested(nextCard, reco.blockKey, reco.reason);
             }
-            // Use instant scroll to prevent flash of unhighlighted content during smooth scroll
-            nextCard.scrollIntoView({ behavior: 'instant', block: 'center' });
+            // Glide over after the open/close animations settle so the target
+            // position is measured on final heights.
+            setTimeout(() => nextCard.scrollIntoView({ behavior: 'smooth', block: 'center' }), 240);
         }
     }
 
@@ -6562,7 +6966,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const currentDay = state.recoAvailableDays[state.recoDayIndex];
         const currentCard = document.querySelector(`.day-card[data-date="${currentDay}"]`);
         if (currentCard) {
-            setCardCollapsed(currentCard, true);
+            setCardCollapsed(currentCard, true, true);
             clearAllSuggested();
         }
 
@@ -6587,12 +6991,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Expand and highlight the new day's card
         const prevCard = document.querySelector(`.day-card[data-date="${prevDay}"]`);
         if (prevCard) {
-            setCardCollapsed(prevCard, false);
+            setCardCollapsed(prevCard, false, true);
             if (reco) {
                 highlightSuggested(prevCard, reco.blockKey, reco.reason);
             }
-            // Use instant scroll to prevent flash of unhighlighted content during smooth scroll
-            prevCard.scrollIntoView({ behavior: 'instant', block: 'center' });
+            // Glide over after the open/close animations settle so the target
+            // position is measured on final heights.
+            setTimeout(() => prevCard.scrollIntoView({ behavior: 'smooth', block: 'center' }), 240);
         }
     }
 
@@ -6690,6 +7095,61 @@ document.addEventListener('DOMContentLoaded', async () => {
         return { candidates: sorted, needsWeekChange: null };
     }
 
+    // GPS stacking needs a pin. Only an autocomplete PICK sets one — a typed or
+    // pasted address silently falls back to exact title-city stacking, where a
+    // Gilbert job two miles away counts for nothing (seen live 2026-07-23:
+    // "2 MESA jobs" gold with blue everywhere else). Resolve the pin ourselves:
+    // Roofr catalog first (free), then geocode via the speed-to-lead proxy.
+    async function resolveAddressCoordsForReco(text) {
+        const q = String(text || '').trim();
+        if (!/^\d+\s+\S/.test(q)) return null; // city/name/phone searches have no pin
+
+        try {
+            const norm = _normalizeAddress(toTitleCase(q));
+            if (norm && Array.isArray(_roofrDataCache)) {
+                for (const job of _roofrDataCache) {
+                    const jn = _normalizeAddress(job.Address || '');
+                    if (!jn) continue;
+                    // EXACT normalized match only — prefix matching pinned wrong
+                    // properties (unit/ZIP/house-number ambiguity), which poisons
+                    // stack membership and conflict exclusion. Near-misses geocode.
+                    if (jn === norm) {
+                        const lat = parseFloat(job.Latitude), lng = parseFloat(job.Longitude);
+                        if (!isNaN(lat) && !isNaN(lng)) {
+                            addLog('Reco pin: matched searched address to Roofr catalog.');
+                            return { lat, lng };
+                        }
+                    }
+                }
+            }
+        } catch (e) { /* fall through to geocode */ }
+
+        try {
+            const qResp = await fetch(
+                `https://speed-to-leads.vercel.app/api/address-autocomplete?q=${encodeURIComponent(q)}`,
+                { headers: { 'X-Dialer-Client': 'roofr-extension' } }
+            );
+            if (qResp.ok) {
+                const qData = await qResp.json();
+                const placeId = qData?.suggestions?.[0]?.placeId;
+                if (placeId) {
+                    const dResp = await fetch(
+                        `https://speed-to-leads.vercel.app/api/address-autocomplete?placeId=${encodeURIComponent(placeId)}`,
+                        { headers: { 'X-Dialer-Client': 'roofr-extension' } }
+                    );
+                    if (dResp.ok) {
+                        const d = await dResp.json();
+                        if (d?.success && d.lat != null && d.lng != null) {
+                            addLog('Reco pin: geocoded searched address.');
+                            return { lat: +d.lat, lng: +d.lng };
+                        }
+                    }
+                }
+            }
+        } catch (e) { /* no pin — engine keeps its city fallback */ }
+        return null;
+    }
+
     // Run recommendation directly with selected priority
     let _recoRunning = false;
     let _recoQueued = false;
@@ -6768,6 +7228,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         await sendFindCommand({ type: 'CLEAR_HIGHLIGHT' });
         await sendFindCommand({ type: 'HIGHLIGHT_CITY', city: primaryCity });
 
+        if (!hasFiniteCoords(window.__selectedAddrCoords)) {
+            const pin = await resolveAddressCoordsForReco(text);
+            // An input edit mid-resolve means this pin belongs to an old query —
+            // applying it would geo-rank address B from address A's coordinates.
+            if (pin && (addrInput?.value?.trim() || "") === text) window.__selectedAddrCoords = pin;
+        }
+
         const allCandidates = findBestSlotStacking(
             primaryCity, state.weekDays, state.allEvents, state.availability, state.currentRegion
         );
@@ -6802,7 +7269,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Get all high-availability slots to allow cycling through other days
         const allAvailabilitySlots = findHighestAvailabilitySlots(
-            state.weekDays, state.allEvents, state.availability, state.currentRegion
+            state.weekDays, state.allEvents, state.availability, state.currentRegion, primaryCity
         );
 
         // Combine: city matches first, then add availability slots that aren't already covered
@@ -6818,8 +7285,46 @@ document.addEventListener('DOMContentLoaded', async () => {
         state.recoAvailableDays = [...new Set(state.allCandidatesForCity.map(c => c.dateStr))].sort();
         state.recoDayIndex = 0; // Start with first available day
 
-        // Compute the best recommendation for each day (for day-based navigation)
-        state.recoBestPerDay = computeBestPerDay(state.allCandidatesForCity);
+        // Per-day top-3 for the gold/silver/bronze render + best-of-day alias
+        // for the existing day-based navigation.
+        state.recoRankedPerDay = computeRankedPerDay(state.allCandidatesForCity);
+        state.recoBestPerDay = computeBestPerDay(state.allCandidatesForCity, state.recoRankedPerDay);
+        console.log('[tiers] per-day (main):', Object.fromEntries(Object.entries(state.recoRankedPerDay)
+            .map(([d, cs]) => [d, cs.map(c => `${c.blockKey}:stack${c.stackSize ?? 0}:left${c.remaining ?? '?'}`).join(', ')])));
+
+        // SHADOW MODE (route-fit engine, Phase 1): score per-rep cheapest-insertion
+        // candidates alongside the radius engine and log the comparison. Renders
+        // nothing — flip to live only after the shadow logs look right.
+        if (ROUTE_SHADOW && hasFiniteCoords(window.__selectedAddrCoords)) {
+            const leadPoint = {
+                lat: Number(window.__selectedAddrCoords.lat),
+                lng: Number(window.__selectedAddrCoords.lng)
+            };
+            fetchRepRoutingProfile().then(profile => {
+                const t0 = performance.now();
+                const { candidatesByDay, stats } = scoreRouteCandidates({
+                    leadPoint,
+                    weekDays: state.weekDays,
+                    allEvents: state.allEvents,
+                    availability: state.availability,
+                    currentRegion: state.currentRegion,
+                    profile,
+                    todayISO: phoenixTodayISO()
+                });
+                const compare = {};
+                for (const [d, routeCs] of Object.entries(candidatesByDay)) {
+                    const radius = (state.recoRankedPerDay?.[d] || [])[0];
+                    const route = routeCs[0];
+                    compare[d] = {
+                        radius: radius ? `${radius.blockKey} (${radius.stackSize ? 'stack' + radius.stackSize : 'cap'})` : '—',
+                        route: route ? `${route.blockKey} (${route.basis === 'rep-route' ? `${route.repName} +${route.marginalMinutes}m ${route.quality}` : 'cap'})` : '—',
+                        agree: radius && route ? (radius.blockKey === route.blockKey ? 'Y' : 'N') : '—'
+                    };
+                }
+                console.log(`[route-shadow] scored in ${(performance.now() - t0).toFixed(1)}ms`, stats);
+                console.table(compare);
+            }).catch(e => console.log('[route-shadow] failed:', e.message));
+        }
 
         // Start with the best candidate from the first available day
         const firstDay = state.recoAvailableDays[0];
@@ -6863,11 +7368,188 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Update Go button state - always shows "Go" now (clear is separate × button)
+    /* ========= Service Area Warning =========
+       Up-north bookings were turned off 2026-08-05 except Prescott + a radius.
+       This WARNS, it does not block: the rare legitimate exception (existing
+       customer, commercial, a rep who lives up there) still needs to book, and
+       a hard block would just get worked around where nobody can see it.
+       Every hit is logged so the "should we staff a northern rep?" question
+       has real numbers behind it later. */
+    const SERVICE_AREA_DEFAULTS = {
+        service_area_warning: true,
+        service_area_script: "Thanks so much for reaching out. I'm looking at your address now, and unfortunately we don't have any crews available out your way right now. Our teams are tied up with the volume here in the Phoenix area. That does change, so I'll keep your information on file and reach back out as soon as we're covering your area again. I'm sorry I couldn't be more help today."
+    };
+    let _serviceAreaCfg = { ...SERVICE_AREA_DEFAULTS };
+    let _serviceAreaDismissed = '';        // address the CSR explicitly dismissed
+    const _serviceAreaLogged = new Set();  // log each address once per session, not once per keystroke
+
+    async function loadServiceAreaSettings() {
+        try {
+            _serviceAreaCfg = await chrome.storage.sync.get(SERVICE_AREA_DEFAULTS);
+        } catch (_) {
+            _serviceAreaCfg = { ...SERVICE_AREA_DEFAULTS };
+        }
+    }
+
+    // Boundaries drawn at speed-to-leads.vercel.app/service-area.html. Fetched
+    // once per panel open and cached, so a coverage change reaches the floor
+    // without an extension release.
+    //
+    // The fallback chain matters more than the fetch: cached copy first, then
+    // the shapes bundled in config.js. A dead network must never silently drop
+    // the boundaries and open up the whole state.
+    const SERVICE_AREA_GEO_URL = 'https://speed-to-leads.vercel.app/api/service-area';
+    const SERVICE_AREA_GEO_TTL_MS = 5 * 60 * 1000;
+    let _serviceAreaGeo = null;
+
+    async function loadServiceAreaGeo() {
+        try {
+            const cached = (await chrome.storage.local.get({ service_area_geo: null })).service_area_geo;
+            if (cached?.polygons) _serviceAreaGeo = cached;   // usable immediately, refreshed below
+            if (cached?.fetchedAt && Date.now() - cached.fetchedAt < SERVICE_AREA_GEO_TTL_MS) return;
+        } catch (_) { /* fall through to the fetch */ }
+
+        try {
+            const resp = await fetch(SERVICE_AREA_GEO_URL, {
+                cache: 'no-store',
+                headers: { 'X-Dialer-Client': 'roofr-extension' },
+                signal: AbortSignal.timeout(8000)
+            });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const d = await resp.json();
+            if (!d?.success || !d.service_polygons || !Object.keys(d.service_polygons).length) {
+                throw new Error('bad payload');
+            }
+            _serviceAreaGeo = {
+                polygons: d.service_polygons,
+                areaEnabled: d.area_enabled || {},
+                precedence: Array.isArray(d.precedence) ? d.precedence : null,
+                bufferMi: Number.isFinite(Number(d.buffer_mi)) ? Number(d.buffer_mi) : null,
+                enabled: d.enabled !== false,
+                title: d.hold_off_title || '',
+                script: d.hold_off_script || '',
+                areaScripts: d.area_scripts || {},
+                fetchedAt: Date.now()
+            };
+            await chrome.storage.local.set({ service_area_geo: _serviceAreaGeo });
+        } catch (e) {
+            // Keep whatever we had. config.js still has bundled shapes.
+            addLog(`Service area: using ${_serviceAreaGeo ? 'cached' : 'built-in'} boundaries (${e.message})`, 'WARN');
+        }
+    }
+
+    function logServiceAreaDecline(address, verdict) {
+        const key = address.toUpperCase();
+        if (_serviceAreaLogged.has(key)) return;
+        _serviceAreaLogged.add(key);
+        (async () => {
+            try {
+                const who = await chrome.storage.sync.get({ ctm_csr: '', ctm_display_name: '', scanner_name: '' });
+                const pin = window.__selectedAddrCoords;
+                await fetch('https://speed-to-leads.vercel.app/api/service-area-log', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Dialer-Client': 'roofr-extension' },
+                    body: JSON.stringify({
+                        address,
+                        city: verdict.city,
+                        lat: pin?.lat ?? null,
+                        lng: pin?.lng ?? null,
+                        miles: verdict.miles,
+                        reason: verdict.reason,
+                        csr: who.ctm_csr || who.ctm_display_name || who.scanner_name || '',
+                        source: 'scanner',
+                        version: chrome.runtime.getManifest?.()?.version || ''
+                    })
+                });
+            } catch (_) {
+                // Fire-and-forget. A logging failure must never reach a CSR mid-call.
+            }
+        })();
+    }
+
+    function updateServiceAreaWarning() {
+        const banner = document.getElementById('serviceAreaBanner');
+        if (!banner) return;
+        const hide = () => banner.classList.add('hidden');
+
+        // Either switch turns it off: the local setting, or the company-wide
+        // flag published from the editor.
+        if (!_serviceAreaCfg.service_area_warning) return hide();
+        if (_serviceAreaGeo && _serviceAreaGeo.enabled === false) return hide();
+
+        const address = (addrInput?.value || state.addressInput || '').trim();
+        if (!address) { _serviceAreaDismissed = ''; return hide(); }
+        if (_serviceAreaDismissed === address.toUpperCase()) return hide();
+
+        const verdict = CONFIG.checkServiceArea(address, window.__selectedAddrCoords, {
+            polygons: _serviceAreaGeo?.polygons,
+            areaEnabled: _serviceAreaGeo?.areaEnabled,
+            precedence: _serviceAreaGeo?.precedence,
+            bufferMi: _serviceAreaGeo?.bufferMi
+        });
+        // checkServiceArea only returns false when it can PROVE the address is
+        // outside. Unknown addresses stay silent — a false "we don't cover you"
+        // throws away a real job.
+        if (verdict.serviced) return hide();
+
+        const where = document.getElementById('sabWhere');
+        if (where) {
+            where.textContent = verdict.miles != null
+                ? `${verdict.city ? verdict.city + ', ' : ''}${verdict.miles} mi outside the area`
+                : (verdict.city || '');
+        }
+        // Wording resolves nearest-region override → company default → the
+        // local setting → the built-in. A region only overrides if someone
+        // deliberately wrote different words for it.
+        const override = _serviceAreaGeo?.areaScripts?.[verdict.nearestArea] || {};
+        const titleEl = document.querySelector('#serviceAreaBanner .sab-title');
+        if (titleEl) {
+            titleEl.textContent = (override.title || '').trim()
+                || (_serviceAreaGeo?.title || '').trim()
+                || "No crews out this way right now";
+        }
+        const scriptEl = document.getElementById('sabScript');
+        if (scriptEl) {
+            scriptEl.textContent = (override.script || '').trim()
+                || (_serviceAreaGeo?.script || '').trim()
+                || (_serviceAreaCfg.service_area_script || '').trim()
+                || SERVICE_AREA_DEFAULTS.service_area_script;
+        }
+        banner.classList.remove('hidden');
+        logServiceAreaDecline(address, verdict);
+    }
+
+    document.getElementById('sabCopyBtn')?.addEventListener('click', async () => {
+        const btn = document.getElementById('sabCopyBtn');
+        const text = document.getElementById('sabScript')?.textContent || '';
+        try {
+            await navigator.clipboard.writeText(text);
+            if (btn) { btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy script'; }, 1500); }
+        } catch (_) {
+            if (btn) btn.textContent = 'Copy failed';
+        }
+    });
+    document.getElementById('sabDismissBtn')?.addEventListener('click', () => {
+        _serviceAreaDismissed = (addrInput?.value || state.addressInput || '').trim().toUpperCase();
+        document.getElementById('serviceAreaBanner')?.classList.add('hidden');
+    });
+
+    // Toggling the setting in Options should take effect on the open panel,
+    // not on the next reopen.
+    chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'sync') return;
+        if (!Object.keys(changes).some(k => k.startsWith('service_area_'))) return;
+        loadServiceAreaSettings().then(updateServiceAreaWarning);
+    });
+
+    Promise.all([loadServiceAreaSettings(), loadServiceAreaGeo()]).then(updateServiceAreaWarning);
+
     function updateGoButtonState() {
         if (!addrGoBtn) return;
         // Go button always stays as "Go"
         addrGoBtn.textContent = 'Go';
         addrGoBtn.classList.remove('secondary');
+        updateServiceAreaWarning();
     }
 
     // Clear address and highlights
@@ -6880,6 +7562,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         state.recoAvailableDays = []; // Clear available days
         state.allCandidatesForCity = []; // Clear all candidates
         state.recoBestPerDay = {}; // Clear per-day recommendations
+        state.recoRankedPerDay = {}; // Clear per-day tier ranking
+        // Stale pin would silently geo-rank the NEXT search from the old address.
+        window.__selectedAddrCoords = null;
         state.earliestAvailableByCity = {}; // Clear stored earliest dates when clearing address
         if (addrInput) addrInput.value = "";
         updateAddressClearButton();

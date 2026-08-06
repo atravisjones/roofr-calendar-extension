@@ -1,10 +1,11 @@
 {
-  "version": "3.2.28",
+  "version": "3.2.29",
   "minimum_chrome_version": "116",
-  "release_date": "2026-08-04T20:02:54.570Z",
+  "release_date": "2026-08-06T01:10:11.420Z",
   "changelog": [
-    "Reports: Load no longer hangs forever on 'Loading <date>...' when the Roofr tab is asleep — it now times out with an error telling you to wake the tab, prefers an awake tab, and shows 'event 5 of 17' progress while it works"
+    "Service area: addresses outside the area we're booking right now raise a warning on the address bar, with a polite hold-off script and a Copy button. It warns, it does not block, so you can still book if you know something the map doesn't",
+    "Service area boundaries are drawn on a map at speed-to-leads.vercel.app/service-area.html and reach every scanner within a minute. The script and the on/off switch live there too. Options has a per-profile switch to silence the warning"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.28/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.28"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.29/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.29"
 }

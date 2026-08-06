@@ -74,6 +74,9 @@ const fields = [
   "search_google_earth",
   "search_gemini",
   "search_roofr",
+  // Service area (up-north bookings off except Prescott, 2026-08-05)
+  "service_area_warning",
+  "service_area_script",
 
   // Phone search toggles
   "phone_search_enabled",
@@ -249,6 +252,10 @@ const defaults = {
   find_regex_enabled: false,
   find_show_counter: true,
   find_show_navigation: true,
+
+  // Service area — turn the whole warning off here once reps cover up north.
+  service_area_warning: true,
+  service_area_script: "Thanks so much for reaching out. I'm looking at your address now, and unfortunately we don't have any crews available out your way right now. Our teams are tied up with the volume here in the Phoenix area. That does change, so I'll keep your information on file and reach back out as soon as we're covering your area again. I'm sorry I couldn't be more help today.",
 
   // Data
   dynamic_city_learning: true,

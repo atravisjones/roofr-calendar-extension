@@ -22,6 +22,7 @@ module.exports = {
     'options.html',
     'options.js',
     'config.js',
+    'routing.js',
     'themes.js',
     'metadata.json',
     'batch-dashboard.html',

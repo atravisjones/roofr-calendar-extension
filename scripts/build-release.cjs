@@ -37,6 +37,7 @@ const filesToInclude = [
     'options.html',
     'options.js',
     'config.js',
+    'routing.js',
     'themes.js',
     'metadata.json'
 ];

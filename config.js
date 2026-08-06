@@ -685,7 +685,241 @@ export const CONFIG = {
       if (this.REQUIRED_NORTH_CITIES.has(C)) return 'NORTH';
       return null;
   },
-  
+
+  // ==========================================================================
+  // SERVICE AREA (2026-08-05) — up-north bookings are off except Prescott.
+  //
+  // This is a POLICY layer and is deliberately separate from the REGION_LAT_*
+  // bands above: those drive calendar filtering and rep routing, and moving
+  // them would silently reshuffle every region view. Policy changes; geography
+  // doesn't. Reversed wholesale by the `service_area_warning` setting.
+  // ==========================================================================
+
+  // Sits just ABOVE the 34.07 routing line on purpose. Black Canyon City is at
+  // 34.0714 — a hair north of the routing band, but an I-17 job we do service.
+  // 34.10 keeps BCC in; the nearest genuinely-northern town (Congress, 34.16)
+  // still falls outside.
+  SERVICE_AREA_LAT_CUTOFF: 34.10,
+
+  SERVICE_AREA_PRESCOTT: { lat: 34.5400, lng: -112.4685 },
+  SERVICE_AREA_RADIUS_MI_DEFAULT: 30,
+
+  // The two driving routes between the Phoenix service area and Prescott, as
+  // polylines following I-17/SR-69 and US-60/SR-89. A rep making that drive
+  // passes these towns anyway, so a stop along the way is nearly free — and
+  // without this the rule produces donut holes: Congress sits 34 mi from
+  // Prescott and would be declined even though Wickenburg below it and
+  // Yarnell 8 miles above it on the same highway are both serviced.
+  SERVICE_AREA_CORRIDORS: [
+    // I-17 north out of Anthem, then west on SR-69 into Prescott
+    [[33.87, -112.15], [34.07, -112.15], [34.19, -112.15], [34.31, -112.12],
+     [34.40, -112.24], [34.53, -112.24], [34.61, -112.32], [34.54, -112.47]],
+    // US-60 to Wickenburg, then SR-89 north through Congress and Yarnell
+    [[33.97, -112.73], [34.16, -112.85], [34.22, -112.75], [34.28, -112.73],
+     [34.42, -112.72], [34.40, -112.55], [34.54, -112.47]],
+  ],
+  SERVICE_AREA_CORRIDOR_MI_DEFAULT: 12,
+
+  // Serviced regardless of the radius. Required because the ring is measured
+  // per-ADDRESS, not per-city: Cottonwood's center is 29.5 mi out but its far
+  // edge is ~33, so on the radius alone two houses on the same street would
+  // get different answers. Named towns get one consistent answer.
+  // Every name here must ALSO be inside the radius, or the two paths disagree
+  // and the same address answers differently depending on whether the CSR
+  // clicked a suggestion (coords) or typed it (name). test-service-area.mjs
+  // asserts that; don't add a name without checking the distance.
+  SERVICE_AREA_ALLOWED_NORTH_CITIES: new Set([
+    "PRESCOTT", "PRESCOTT VALLEY", "PRESCOTT VLY", "CHINO VALLEY",
+    "DEWEY", "DEWEY-HUMBOLDT", "HUMBOLDT", "MAYER", "WILHOIT", "SKULL VALLEY",
+    "CLARKDALE", "COTTONWOOD",
+    // 23-27 mi out — inside the ring, so the name path has to agree.
+    "PAULDEN", "PEEPLES VALLEY", "YARNELL", "JEROME", "CORDES LAKES",
+    // On the driving corridors rather than inside the ring.
+    "CONGRESS", "CORDES JUNCTION", "SPRING VALLEY", "BUMBLE BEE", "KIRKLAND"
+  ]),
+
+  // Known-not-serviced. Only consulted when we have NO coordinates — with
+  // coordinates the latitude + ring decide, and this list can't drift out of
+  // sync with them.
+  SERVICE_AREA_BLOCKED_CITIES: new Set([
+    // Verde Valley
+    "SEDONA", "VILLAGE OF OAK CREEK", "OAK CREEK", "CAMP VERDE", "RIMROCK",
+    "LAKE MONTEZUMA", "CORNVILLE",
+    // Rim country
+    "PAYSON", "STAR VALLEY", "PINE", "STRAWBERRY", "CHRISTOPHER CREEK",
+    // West of the corridors
+    "BAGDAD",
+    // Northern AZ
+    "FLAGSTAFF", "MUNDS PARK", "PARKS", "WILLIAMS",
+    "ASH FORK", "SELIGMAN", "PAGE", "TUBA CITY", "KAYENTA", "FREDONIA",
+    "WINSLOW", "HOLBROOK", "SHOW LOW", "PINETOP", "LAKESIDE", "SNOWFLAKE",
+    "HEBER", "OVERGAARD",
+    // West
+    "KINGMAN", "BULLHEAD CITY", "LAKE HAVASU CITY"
+  ]),
+
+  /**
+   * Shortest distance in miles from a point to any of the driving corridors.
+   * Projects to a local flat plane first — at Arizona's scale over ~80 miles
+   * the error is well under a mile, and this runs on every keystroke-committed
+   * address, so it stays cheap.
+   */
+  serviceAreaCorridorMiles(lat, lng) {
+    const MI_PER_DEG_LAT = 69.0;
+    const miPerDegLng = 69.172 * Math.cos(lat * Math.PI / 180);
+    const px = lng * miPerDegLng, py = lat * MI_PER_DEG_LAT;
+    let best = Infinity;
+
+    for (const line of this.SERVICE_AREA_CORRIDORS) {
+      for (let i = 0; i < line.length - 1; i++) {
+        const ax = line[i][1] * miPerDegLng,     ay = line[i][0] * MI_PER_DEG_LAT;
+        const bx = line[i + 1][1] * miPerDegLng, by = line[i + 1][0] * MI_PER_DEG_LAT;
+        const dx = bx - ax, dy = by - ay;
+        const len2 = dx * dx + dy * dy;
+        // Clamp to the segment so we measure to the road, not its extension.
+        const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+        const cx = ax + t * dx, cy = ay + t * dy;
+        const d = Math.hypot(px - cx, py - cy);
+        if (d < best) best = d;
+      }
+    }
+    return best;
+  },
+
+  /** Great-circle distance in miles. */
+  serviceAreaMiles(lat, lng, from) {
+    const R = 3958.8, rad = (d) => d * Math.PI / 180;
+    const dLat = rad(lat - from.lat), dLng = rad(lng - from.lng);
+    const a = Math.sin(dLat / 2) ** 2 +
+              Math.cos(rad(from.lat)) * Math.cos(rad(lat)) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  },
+
+  // Longest name first so "PRESCOTT VALLEY" is tested before "PRESCOTT" and
+  // "VILLAGE OF OAK CREEK" before "OAK CREEK".
+  _serviceAreaNames: null,
+  serviceAreaCityFromText(text) {
+    if (!this._serviceAreaNames) {
+      this._serviceAreaNames = [
+        ...this.SERVICE_AREA_ALLOWED_NORTH_CITIES,
+        ...this.SERVICE_AREA_BLOCKED_CITIES
+      ].sort((a, b) => b.length - a.length);
+    }
+    const T = String(text || "").toUpperCase();
+    if (!T) return null;
+    for (const name of this._serviceAreaNames) {
+      // Escape the hyphen in DEWEY-HUMBOLDT; \b behaves around it correctly.
+      if (new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(T)) return name;
+    }
+    return null;
+  },
+
+  // ==========================================================================
+  // POLYGON SERVICE AREA (2026-08-05, second pass)
+  //
+  // Replaces the latitude cutoff + Prescott ring + corridor polylines with
+  // shapes drawn on a map at /service-area.html and stored server-side, so
+  // coverage changes without an extension release. The bundled shapes below
+  // are the FALLBACK used when the server can't be reached — never let a dead
+  // network silently open up the whole state.
+  // ==========================================================================
+  SERVICE_AREA_POLYGONS: {
+    North: [[34.95,-112.65],[34.95,-111.98],[34.35,-111.95],[34.10,-111.95],[34.10,-112.99],[34.45,-112.95]],
+    Phoenix: [[34.10,-112.99],[34.10,-111.22],[33.28,-111.22],[33.00,-111.20],[32.70,-111.32],[32.55,-111.55],[32.55,-112.30],[32.85,-112.99]],
+    South: [[32.75,-111.45],[32.75,-110.62],[32.05,-110.68],[31.90,-110.70],[31.83,-110.99],[31.83,-111.20],[32.20,-111.45]]
+  },
+  // Overlap only decides which area gets NAMED — inside any shape still books.
+  // Phoenix first because it is the largest crew pool.
+  SERVICE_AREA_PRECEDENCE: ['Phoenix', 'North', 'South'],
+  SERVICE_AREA_ENABLED_AREAS: { North: true, Phoenix: true, South: true },
+  // Grace band OUTSIDE every polygon that still books. A hand-drawn boundary is
+  // not a survey line: without this, a house a few hundred feet past it reads
+  // exactly like Flagstaff and the CSR reads a decline script to a real job.
+  SERVICE_AREA_BUFFER_MI_DEFAULT: 2,
+
+  pointInPolygon(lat, lng, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const yi = poly[i][0], xi = poly[i][1], yj = poly[j][0], xj = poly[j][1];
+      if ((yi > lat) !== (yj > lat) && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  },
+
+  /** Shortest distance in miles from a point to a polygon's edge. */
+  milesToPolygonEdge(lat, lng, poly) {
+    const MI_LAT = 69.0, miLng = 69.172 * Math.cos(lat * Math.PI / 180);
+    const px = lng * miLng, py = lat * MI_LAT;
+    let best = Infinity;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const ax = poly[j][1] * miLng, ay = poly[j][0] * MI_LAT;
+      const bx = poly[i][1] * miLng, by = poly[i][0] * MI_LAT;
+      const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+      const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+      const d = Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+      if (d < best) best = d;
+    }
+    return best;
+  },
+
+  /**
+   * Is this address inside the area we currently book?
+   *
+   * Returns { serviced, reason, city, area, edge, miles }.
+   *   area  — which service area claims it (precedence decides overlaps)
+   *   edge  — true when it only qualified via the buffer, i.e. just outside
+   *           the drawn line. Still bookable; worth a manager's eye.
+   *
+   * `serviced` is TRUE whenever we cannot prove otherwise. A false "we don't
+   * cover you" turns away a real job; staying quiet costs nothing. Callers
+   * must treat an unknown address as serviced.
+   */
+  checkServiceArea(address, coords, opts) {
+    const polys = opts?.polygons || this.SERVICE_AREA_POLYGONS;
+    const enabled = opts?.areaEnabled || this.SERVICE_AREA_ENABLED_AREAS;
+    const buffer = Number.isFinite(Number(opts?.bufferMi)) && Number(opts.bufferMi) >= 0
+      ? Number(opts.bufferMi) : this.SERVICE_AREA_BUFFER_MI_DEFAULT;
+    const order = opts?.precedence || this.SERVICE_AREA_PRECEDENCE;
+    const city = this.serviceAreaCityFromText(address);
+
+    const lat = parseFloat(coords?.lat), lng = parseFloat(coords?.lng);
+    const usable = Number.isFinite(lat) && Number.isFinite(lng) &&
+                   lat >= 31 && lat <= 37 && lng >= -115 && lng <= -109;
+
+    if (usable) {
+      // Precedence first, then any area not listed in it, so a newly added
+      // area still works before anyone updates the order.
+      const keys = [...order.filter(k => polys[k]), ...Object.keys(polys).filter(k => !order.includes(k))]
+        .filter(k => enabled[k] !== false);
+
+      for (const k of keys) {
+        if (this.pointInPolygon(lat, lng, polys[k])) {
+          return { serviced: true, reason: 'inside-area', city, area: k, edge: false, miles: null };
+        }
+      }
+      // Nothing contains it — is it close enough to count?
+      let nearest = null, nearestMi = Infinity;
+      for (const k of keys) {
+        const d = this.milesToPolygonEdge(lat, lng, polys[k]);
+        if (d < nearestMi) { nearestMi = d; nearest = k; }
+      }
+      if (nearest !== null && nearestMi <= buffer) {
+        return { serviced: true, reason: 'inside-buffer', city, area: nearest, edge: true, nearestArea: nearest, miles: Math.round(nearestMi * 10) / 10 };
+      }
+      // nearestArea is carried even when declined: it is the key for per-region
+      // hold-off wording. A declined address is outside every area, so the
+      // nearest one is the only meaningful region to speak about.
+      return { serviced: false, reason: 'outside-area', city, area: null, edge: false, nearestArea: nearest, miles: Math.round(nearestMi) };
+    }
+
+    // No usable coordinates — name match only, against the explicit list.
+    if (city && this.SERVICE_AREA_BLOCKED_CITIES.has(city)) {
+      return { serviced: false, reason: 'blocked-city', city, area: null, edge: false, miles: null };
+    }
+    return { serviced: true, reason: 'unknown', city, area: null, edge: false, miles: null };
+  },
+
+
   sumMaps(a, b) {
     if (!a) return b;
     if (!b) return a;

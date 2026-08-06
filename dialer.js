@@ -44,7 +44,13 @@
   const WRAPUP_INTERACTION_RESET_MS = 60000; // restart full 60s if rep types/selects
   const QUIET_START_HOUR = 8;             // 8am AZ
   const QUIET_END_HOUR = 21;              // 9pm AZ
-  const MAX_ATTEMPTS = 7;                 // 7 attempts then auto-Lost (matches server AUTO_LOST_THRESHOLD)
+  // Attempt cap before auto-Lost (matches server AUTO_LOST_THRESHOLD in
+  // sheet-dispositions.js — keep in sync): 10 attempts for leads received in
+  // the last 6 months, 7 for older leads and rows with unparseable dates.
+  const maxAttemptsFor = (leadDate) => {
+    const t = leadDate ? new Date(leadDate).getTime() : NaN;
+    return (!isNaN(t) && (Date.now() - t) <= 183 * 24 * 60 * 60 * 1000) ? 10 : 7;
+  };
   const POLL_BRIDGE_MS = 5000;
   const MIN_GAP_MS = 3 * 60 * 60 * 1000;  // 3 hours between consecutive calls to the same lead
   const BUSY_STUCK_MS = 20 * 60 * 1000;   // failsafe: treat the softphone-busy flag as stale after 20 min
@@ -788,7 +794,7 @@
     const attemptRange = {
       "new": [0, 0],
       "followup": [1, 3],
-      "persistent": [4, 7],
+      "persistent": [4, 999],
       "all": [0, 999],
     }[filterAttemptPreset] || [0, 999];
 
@@ -831,11 +837,12 @@
         continue;
       }
 
-      // 7+ attempts → cadence exhausted. Never-connected leads auto-Lost.
-      // Follow-Up means we actually reached the customer, so it's never
-      // auto-Lost (matches the server's no-connect rule) — just dropped
-      // from the auto-dial queue for manual handling.
-      if (attempts >= MAX_ATTEMPTS) {
+      // Attempt cap hit (10 within 6 months, else 7) → cadence exhausted.
+      // Never-connected leads auto-Lost. Follow-Up means we actually reached
+      // the customer, so it's never auto-Lost (matches the server's
+      // no-connect rule) — just dropped from the auto-dial queue for manual
+      // handling.
+      if (attempts >= maxAttemptsFor(l.date)) {
         if (!statusLower.includes("follow")) autoLostLeads.push(l);
         continue;
       }
@@ -897,9 +904,9 @@
 
     // Fire off auto-Lost saves in background (don't block queue load)
     if (autoLostLeads.length > 0) {
-      log(`auto-disposing ${autoLostLeads.length} leads as Lost (7+ attempts, never contacted)`, "warn", "auto");
+      log(`auto-disposing ${autoLostLeads.length} leads as Lost (attempt cap hit, never contacted)`, "warn", "auto");
       autoLostLeads.forEach(lead => {
-        saveDisposition(lead.phone10 || lead.phone, "Lost", "never contacted — auto-disposed after 7 attempts", lead).catch(() => {});
+        saveDisposition(lead.phone10 || lead.phone, "Lost", "never contacted — auto-disposed at attempt cap", lead).catch(() => {});
       });
     }
     out.sort((a, b) => {
@@ -962,9 +969,9 @@
   // rep can see exactly when the callback is due ("5/28/2026 1:32 PM"). The
   // double-tap saves once with +2 attempts, so attemptsAfter === 2 IS the
   // first touch — it must still schedule the same-day 3-hour callback.
-  // Attempts 3 through MAX_ATTEMPTS-1: tomorrow, date only.
-  function computeNextContactDate(attemptsAfterCall) {
-    if (attemptsAfterCall >= MAX_ATTEMPTS) return null;
+  // Attempts 3 through the lead's cap minus 1: tomorrow, date only.
+  function computeNextContactDate(attemptsAfterCall, leadDate) {
+    if (attemptsAfterCall >= maxAttemptsFor(leadDate)) return null;
     if (attemptsAfterCall <= 2) return azDateTimePlusHours(3);
     return azDatePlus(1);
   }
@@ -1343,7 +1350,7 @@
       if (isAttempt && ld) {
         const prior = parseInt(ld.attemptCount) || 0;
         const attemptsAfter = prior + attemptIncrement;
-        nextContactDate = computeNextContactDate(attemptsAfter);
+        nextContactDate = computeNextContactDate(attemptsAfter, ld.date);
       }
 
       const body = { phone, rowIndex: ld?.rowIndex, status, rep: repName, notes, attemptIncrement };

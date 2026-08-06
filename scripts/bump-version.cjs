@@ -92,6 +92,13 @@ if (fs.existsSync(updatesXmlPath)) {
         /(<updatecheck\b[^>]*\bversion=['"])[\d.]+(['"])/,
         `$1${newVersion}$2`
     );
+    // Keep the codebase pinned to the versioned release URL. A releases/latest
+    // codebase can disagree with the advertised version (two queued CI runs can
+    // publish out of order), and Chrome installs NOTHING on a mismatch.
+    xmlContent = xmlContent.replace(
+        /\/download\/v[\d.]+\//,
+        `/download/v${newVersion}/`
+    );
     fs.writeFileSync(updatesXmlPath, xmlContent);
     console.log(`Updated updates.xml: ${newVersion}`);
 }

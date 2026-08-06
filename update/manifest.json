@@ -1,11 +1,12 @@
 {
-  "version": "3.2.30",
+  "version": "3.2.31",
   "minimum_chrome_version": "116",
-  "release_date": "2026-08-06T16:37:54.073Z",
+  "release_date": "2026-08-06T17:04:14.017Z",
   "changelog": [
+    "Hold-off script line breaks written in the editor now show in the banner (was collapsing to one paragraph)",
     "Service area: addresses outside the area we're booking right now raise a warning on the address bar, with a polite hold-off script and a Copy button. It warns, it does not block, so you can still book if you know something the map doesn't",
     "Service area boundaries are drawn on a map at speed-to-leads.vercel.app/service-area.html and reach every scanner within a minute. The script and the on/off switch live there too. Options has a per-profile switch to silence the warning"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.30/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.30"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.31/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.31"
 }

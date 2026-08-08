@@ -152,6 +152,16 @@
   const LSA_ARCHIVED_PAGE = 500;
   const LSA_ARCHIVED_MAX_PAGES = 12;   // 6000 threads — a runaway-loop backstop
   const LSA_ARCHIVED_KEY = "lsaArchivedSnapshot";
+  // Form Leads sheet presence — LSA phone leads ingest into the Speed to Lead
+  // sheet (2026-08-08) and run its 10-attempt cadence THERE. A lead whose
+  // number already has a sheet row is being worked in that dialer, so this
+  // queue files it under Done instead of offering the same homeowner to a
+  // second rep from a second system. Fail-open like the archived filter: no
+  // snapshot, or one past max-age, hides nothing.
+  let _lsaSheetPhones = new Set();
+  let _lsaSheetFetchedAt = 0;
+  const LSA_SHEET_TTL_MS = 120000;        // 2 min — the GET is CDN-shared, cheap
+  const LSA_SHEET_MAX_AGE_MS = 1800000;   // 30 min — same trust rule as archived
 
   // Reload the last snapshot on panel open. Same max-age rule as a live pull,
   // so a stale one is discarded rather than silently suppressing work.
@@ -1118,6 +1128,7 @@
         const [data] = await Promise.all([
           lsaWrite({ action: "feed", rep: repName || "Unknown", include_done: true }),
           lsaRefreshArchived(),
+          lsaRefreshSheetPhones(),
         ]);
         if (data.error) {
           log(`fetch LSA leads failed: ${data.error}`, "err", "lsa");
@@ -3185,6 +3196,37 @@
     return !!cid && _lsaArchived.has(cid);
   }
 
+  function lsaSheetUsable() {
+    return _lsaSheetFetchedAt > 0
+      && (Date.now() - _lsaSheetFetchedAt) <= LSA_SHEET_MAX_AGE_MS;
+  }
+
+  // In the Speed to Lead sheet dialer? Matched on the dialable number — the
+  // sheet ingest keys rows the same way, and twins share the phone, so ONE
+  // sheet row correctly suppresses BOTH brand copies here.
+  function lsaInSheetDialer(row) {
+    if (!lsaSheetUsable()) return false;      // stale snapshot must not hide work
+    const digits = lsaDialDigits(row);
+    return digits.length === 10 && _lsaSheetPhones.has(digits);
+  }
+
+  async function lsaRefreshSheetPhones(force = false) {
+    if (!force && (Date.now() - _lsaSheetFetchedAt) < LSA_SHEET_TTL_MS) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/sheet-dispositions`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      const phones = new Set(Object.keys(data?.leads || {}));
+      // Same guard as the archived pull: an empty list against a previously
+      // populated set means the call half-failed, not that the sheet emptied.
+      if (!phones.size && _lsaSheetPhones.size) throw new Error("empty sheet lead list");
+      _lsaSheetPhones = phones;
+      _lsaSheetFetchedAt = Date.now();
+    } catch (e) {
+      log(`lsa: sheet-presence pull failed (${e?.message || e}) — dialer overlap filter off until it recovers`, "err", "lsa");
+    }
+  }
+
   function lsaArchivedAt(row) {
     return _lsaArchivedAt.get(String(row?.client_id || "").trim()) || null;
   }
@@ -3195,6 +3237,10 @@
     // bucket: the server has no read path for archived state, so its lsa_bucket
     // will happily say "message" for a thread archived three weeks ago.
     if (lsaIsArchived(row)) return "done";
+    // Already has a Form Leads sheet row = being worked in the Speed to Lead
+    // dialer. Tested before the served bucket for the same reason as archived:
+    // the server computes lsa_bucket without knowing about the sheet.
+    if (lsaInSheetDialer(row)) return "done";
     const served = String(row?.lsa_bucket || "").trim().toLowerCase();
     if (served === "dial" || served === "message" || served === "done") return served;
     const status = String(row?.lead_status || "").trim().toUpperCase();
@@ -3242,9 +3288,10 @@
     const statuses = [
       ["dial", "📞 Call"],
       ["message", "💬 Message"],
-      // Not "Booked/Lost" — a lead lands here on a Roofr job alone, which is
-      // neither of those. The label has to cover all three reasons.
-      ["done", "✓ Done (booked, lost, or in Roofr)"],
+      // Not "Booked/Lost" — a lead lands here on a Roofr job alone, or because
+      // it moved into the Speed to Lead sheet dialer. The label has to cover
+      // every reason or it misfiles leads in the reader's head.
+      ["done", "✓ Done (booked, lost, Roofr, or sheet dialer)"],
       ["all", "All"],
     ];
     // Counts must reflect what the queue will actually RENDER, so they apply the

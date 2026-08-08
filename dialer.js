@@ -486,6 +486,7 @@
     const phaseLabel = {
       dialing: "dialing", ringing: "ringing",
       connected: "connected", wrapup: "wrap-up", failed: "failed",
+      "lt-review": "reading LeadTruffle thread",
     }[phase] || phase;
     // Big red "DOUBLE TAP!" banner during the 2nd ring of a double-tap so the
     // rep knows immediately this is the second of two and what disposition is held.
@@ -506,10 +507,18 @@
         <span>Last: ${escapeHtml(currentLead.lastContactDate || "never")}</span>
       </div>
       <div class="call-actions">
-        <button id="hangup-btn" class="danger hangup-big" title="Hang up (Esc)">☎ Hangup <span style="opacity:.7;font-weight:600;">· Esc</span></button>
+        ${phase === "lt-review"
+          ? `<button id="lt-dial-btn" class="hangup-big" style="background:#065f46;border-color:#065f46;" title="Done reading — place the call">📞 Dial now</button>
+             <button id="lt-thread-btn" title="Re-open the LeadTruffle conversation">🍄 Thread</button>`
+          : `<button id="hangup-btn" class="danger hangup-big" title="Hang up (Esc)">☎ Hangup <span style="opacity:.7;font-weight:600;">· Esc</span></button>`}
       </div>
     `;
-    $("hangup-btn").onclick = onHangupClick;
+    if (phase === "lt-review") {
+      $("lt-dial-btn").onclick = () => dialCurrentLead();
+      $("lt-thread-btn").onclick = () => { if (currentLead?.ltUrl) lsaOpenConversationTab(currentLead.ltUrl); };
+    } else {
+      $("hangup-btn").onclick = onHangupClick;
+    }
     updateCallTimer();
   }
 
@@ -540,6 +549,8 @@
     "AZROOFCO WEBSITE":                    { label: "SEO",  cls: "src-seo" },
     "AZROOFCO GOOGLE SEARCH ADS":          { label: "ADS",  cls: "src-ads" },
     "GAF":                                 { label: "GAF",  cls: "src-gaf" },
+    "Arizona Roofers LSA Messages":        { label: "LSA",  cls: "src-ads" },
+    "Roof Pro LSA Messages":               { label: "LSA",  cls: "src-ads" },
   };
   function sourcePillHtml(source) {
     const src = (source || "").trim();
@@ -1511,6 +1522,29 @@
     renderCurrent();
     renderQueue();
 
+    // LSA leads: pause the auto-dialer for a LeadTruffle catch-up first. The
+    // row is already claimed + heartbeating, so no other rep can grab it while
+    // this one reads the thread. Dialing resumes on the rep's click — never
+    // automatically; the whole point of the hold is reading before ringing.
+    if (lead.ltUrl) {
+      _currentDialAt = null;        // no stale call timer during the review
+      stopCallTimer();
+      setPhase("lt-review");
+      log(`⏸ LSA lead ${leadTag(lead)} — LeadTruffle review before dial`, "act", "dial");
+      lsaOpenConversationTab(lead.ltUrl);
+      return;
+    }
+
+    await dialCurrentLead();
+  }
+
+  // The actual dial execution — E.164 + caller-ID lookup through the CTM dial
+  // command + ring-timeout safety. Split out of advanceToNext so the LSA
+  // review hold can trigger it from the "Dial now" button.
+  async function dialCurrentLead() {
+    const lead = currentLead;
+    if (!lead || mode !== "running") return;
+
     const e164 = toE164(lead.phone);
     if (!e164) {
       log(`bad phone format: ${lead.phone}`, "err", "dial");
@@ -2047,6 +2081,9 @@
   };
 
   function onHangupClick() {
+    // Esc during the LeadTruffle review hold: there is no call to hang up, and
+    // firing onCallEnded would open a wrap-up for a call that never happened.
+    if (phase === "lt-review") return;
     log(`☎ HANGUP clicked for ${leadTag(currentLead)}`, "act", "ui");
     // Fire-and-forget the hangup command — CTM takes a moment to actually end
     // the call and emit ctm:end-activity. Don't wait; surface the wrap-up

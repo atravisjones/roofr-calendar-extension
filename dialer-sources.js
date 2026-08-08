@@ -29,6 +29,10 @@
     "AZROOFCO GOOGLE SEARCH ADS":          { number: "+16027045620", name: "Google Search Ads Forms" },
     "NCT":                                 { number: "+16025079610", name: "NCT Media" },
     "GAF":                                 MAIN_LINE,
+    // LSA leads ingested from LeadTruffle (2026-08-08) — call back from the
+    // matching brand's LSA Messages line.
+    "Arizona Roofers LSA Messages":        { number: "+16027557576", name: "Arizona Roofers LSA Messages" },
+    "Roof Pro LSA Messages":               { number: "+16026710260", name: "AZ Roof Pro LSA Messages" },
 
     // ── Roofr job lead_source labels (Welcome Calls dialer) ──
     // LSA leads arrive as Google LSA *messages* → call back from the matching LSA Messages line.

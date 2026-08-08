@@ -1,11 +1,11 @@
 {
-  "version": "3.2.32",
+  "version": "3.2.33",
   "minimum_chrome_version": "116",
-  "release_date": "2026-08-08T16:18:46.087Z",
+  "release_date": "2026-08-08T18:16:03.440Z",
   "changelog": [
-    "LSA leads with a phone number now flow into the Speed to Lead dialer (Form Leads tab) — call attempts, cadence, and auto-Lost all track there, and dialing one opens its LeadTruffle thread",
-    "LSA tab: leads already being worked in the Speed to Lead dialer file under Done, so the same homeowner can't get called from two queues"
+    "Leads tab: the auto-dialer pauses on LSA leads — the LeadTruffle conversation opens so you can read the thread first, and the call only goes out when you click Dial now",
+    "LSA leads dial out from the matching brand's LSA Messages caller ID and show an LSA pill in the queue"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.32/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.32"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.33/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.33"
 }

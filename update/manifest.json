@@ -1,11 +1,10 @@
 {
-  "version": "3.2.34",
+  "version": "3.2.35",
   "minimum_chrome_version": "116",
-  "release_date": "2026-08-10T18:28:39.310Z",
+  "release_date": "2026-08-10T19:22:04.481Z",
   "changelog": [
-    "LSA disposition notes now appear in the LeadTruffle Notes panel — the old writeback landed in a field the app never displays, so notes seemed to vanish",
-    "Auto-disposed LSA leads (7 attempts, no contact) leave a visible LeadTruffle note explaining why the thread closed"
+    "Skip button on the LSA review hold — release a lead you shouldn't call (already handled, colleague working it) without logging an attempt; it won't re-serve this session but stays available to other reps"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.34/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.34"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.35/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.35"
 }

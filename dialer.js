@@ -278,6 +278,10 @@
   let sessionLimit = 25;          // max calls per Start session (5-100)
   let sessionCount = 0;           // calls placed since current Start
   const removedThisSession = new Set();  // rowIndex values the rep X'd from the queue
+  // Rows skipped from the LT review hold. Session-only (cleared on Start) so a
+  // skipped lead comes back for other reps immediately and for this rep next
+  // session — unlike removedThisSession, which persists across Start/Stop.
+  const ltSkippedThisSession = new Set();
   // ── Queue filters ──
   let filterSources = new Set();         // empty = all sources pass
   let filterAttemptPreset = "all";       // "new" | "followup" | "persistent" | "all"
@@ -513,12 +517,14 @@
       <div class="call-actions">
         ${phase === "lt-review"
           ? `<button id="lt-dial-btn" class="hangup-big" style="background:#065f46;border-color:#065f46;" title="Done reading — place the call">📞 Dial now</button>
+             <button id="lt-skip-btn" title="Not one to call — release it and move on, no attempt logged">⏭ Skip</button>
              <button id="lt-thread-btn" title="Re-open the LeadTruffle conversation">🍄 Thread</button>`
           : `<button id="hangup-btn" class="danger hangup-big" title="Hang up (Esc)">☎ Hangup <span style="opacity:.7;font-weight:600;">· Esc</span></button>`}
       </div>
     `;
     if (phase === "lt-review") {
       $("lt-dial-btn").onclick = () => dialCurrentLead();
+      $("lt-skip-btn").onclick = () => skipLtReviewLead();
       $("lt-thread-btn").onclick = () => { if (currentLead?.ltUrl) lsaOpenConversationTab(currentLead.ltUrl); };
     } else {
       $("hangup-btn").onclick = onHangupClick;
@@ -828,6 +834,8 @@
 
       // Rep X'd this row out of the current session — skip entirely
       if (l.rowIndex && removedThisSession.has(l.rowIndex)) continue;
+      // Rep read the LT thread and skipped — released for others, not re-served here
+      if (l.rowIndex && ltSkippedThisSession.has(l.rowIndex)) continue;
 
       // TEST MODE: only test rows pass; bypass gaps, exclusions, auto-Lost
       if (testMode) {
@@ -1617,6 +1625,26 @@
     }, RING_TIMEOUT_MS);
   }
 
+  // Skip out of the LT review hold: release the claim, log nothing, burn no
+  // attempt, and move on exactly like a completed wrap-up does. The skipped
+  // row stays out of THIS session's queue only — another rep can claim it
+  // immediately, and it reappears for this rep on the next Start.
+  async function skipLtReviewLead() {
+    const lead = currentLead;
+    if (!lead || phase !== "lt-review" || mode !== "running") return;
+    // One-shot guard before the awaited release: classifyAndSort filters this
+    // set, so an immediate re-fetch can't hand the same row straight back.
+    if (lead.rowIndex) ltSkippedThisSession.add(lead.rowIndex);
+    clearTimeout(ringTimeoutId);
+    stopCallTimer();
+    _currentDialAt = null;
+    connectedThisCall = false;
+    currentLead = null;
+    log(`lt-review: skipped ${leadTag(lead)} — released, no attempt`, "act", "dial");
+    await releaseLead(lead.phone, lead.rowIndex);
+    if (mode === "running") advanceAfterPause();
+  }
+
   async function onCallEnded({ source }) {
     clearTimeout(ringTimeoutId);
     stopCallTimer();
@@ -2067,6 +2095,7 @@
     const ready = await ensureCtmTab();
     if (!ready) return;
     sessionCount = 0; // per-run pacing cap counter; the Done list is daily (kept)
+    ltSkippedThisSession.clear(); // skips are per-session, unlike removedThisSession below
     rollDailyIfNeeded(); // clears the Done list only if the AZ day rolled over
     renderCompleted();
     // NOTE: do NOT clear removedThisSession here — user-removed leads should stay

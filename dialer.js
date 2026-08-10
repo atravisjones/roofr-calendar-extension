@@ -30,6 +30,10 @@
   const LSA_CALLS_URL = `${API_BASE}/api/roofr-lsa-calls`;
   const LEADTRUFFLE_OUTCOME_URL = `${API_BASE}/api/leadtruffle-outcome`;
   const LEADTRUFFLE_STATUS_URL = "https://dm6wvhamqhvjwra3y5egnanooe0gdtzf.lambda-url.us-west-2.on.aws/trpc/updateLeadStatus?batch=1";
+  // The pub API's `notes` field writes an internal leadNotes blob the app never
+  // renders anywhere (and each write REPLACES the last) — the notes CSRs can
+  // actually see live in a separate per-client notes entity, private-tRPC only.
+  const LEADTRUFFLE_CLIENT_NOTE_URL = "https://dm6wvhamqhvjwra3y5egnanooe0gdtzf.lambda-url.us-west-2.on.aws/trpc/createClientNote?batch=1";
   // Archived state is INVISIBLE to the backend: LeadTruffle's public API accepts
   // `archived` as a write field but never returns it, and there is no archive
   // webhook event. The app's own tRPC is the only read path, and it authenticates
@@ -1388,6 +1392,15 @@
       const data = await r.json();
       if (data.updated) {
         log(`disposition saved ✓ ${phone} → ${status}`, "ok", "wrap");
+        // LSA sheet rows: mirror the disposition into the visible LT Notes
+        // panel (the server's pub-API writeback only reaches leadNotes, which
+        // no screen renders). Only after updated:true — a failed sheet save
+        // must not leave a misleading note on the thread.
+        let ltClientId = "";
+        try { ltClientId = new URL(ld?.ltUrl || "").searchParams.get("clientId") || ""; } catch (_) {}
+        if (ltClientId) {
+          void ltPostClientNote(ltClientId, `${repName || "Unknown"} logged "${status}" via dialer${notes ? ` — ${notes}` : ""}`);
+        }
         stopLockHeartbeat(); // server cleared the lock with the disposition
       } else {
         log(`disposition save failed: ${data.error || "?"}`, "err", "wrap");
@@ -3182,6 +3195,37 @@
     }
   }
 
+  // Post a note the team can SEE into the conversation's Notes panel. Fire-and-
+  // forget: the sheet/server logs stay the system of record, so a missing tab,
+  // missing token, or HTTP error only warns — it must never block a disposition.
+  async function ltPostClientNote(clientId, text) {
+    const cid = String(clientId || "").trim();
+    if (!cid || !text) return;
+    try {
+      const token = await lsaLeadTruffleToken();
+      const response = await fetch(LEADTRUFFLE_CLIENT_NOTE_URL, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ 0: { clientId: cid, body: text } }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (data?.[0]?.result?.data?.success !== true) throw new Error("note write not confirmed");
+      log(`lsa: LT note posted (client ${cid.slice(0, 8)}…)`, "ok", "lsa");
+    } catch (e) {
+      const msg = e?.message || "unknown error";
+      const why = msg === "LeadTruffle tab not found"
+        ? "open a LeadTruffle tab"
+        : msg === "authToken unavailable"
+          ? "sign in to LeadTruffle"
+          : msg;
+      log(`lsa: LT visible note skipped (${why})`, "warn", "lsa");
+    }
+  }
+
   // LT phone wins; google_phone10 (real consumer number from the Google Ads
   // API sweep, Roofers account only for now) makes otherwise phone-less
   // leads dialable. The LT writeback stays keyed on lead.phone/lead_id —
@@ -4226,6 +4270,7 @@
     const note = `auto-disposed after ${n} call attempts — no contact`;
     log(`lsa: auto-Lost after ${n} calls — ${lsaDisplayName(lead) || leadId}`, "warn", "lsa");
     lsaWrite({ action: "log", lead_id: leadId, rep, disposition: "Unqualified", note }).catch(() => {});
+    void ltPostClientNote(lead.client_id, `Dialer auto-disposed "Unqualified" after ${n} call attempts — no contact`);
     fetch(LEADTRUFFLE_OUTCOME_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" },
@@ -4261,6 +4306,10 @@
         log(`lsa: outcome log failed for ${lead.name || leadId}: ${result.error}`, "err", "lsa");
       }
     });
+
+    // The visible Notes-panel entry rides the CSR's own LT session; the pub-API
+    // outcome post below still handles archive/status but its note is invisible.
+    void ltPostClientNote(lead.client_id, `${rep} logged "${disposition}" via dialer${note ? ` — ${note}` : ""}`);
 
     // LeadTruffle notification is intentionally fire-and-forget.
     fetch(LEADTRUFFLE_OUTCOME_URL, {

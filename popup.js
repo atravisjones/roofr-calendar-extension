@@ -656,6 +656,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     let state = {
         currentRegion: "PHX",
+        // True after a manual region-pill click: the address-derived auto-switch
+        // in runMainRecommendation must NOT snap the region back. Cleared by the
+        // next explicit search (Go / Enter) so a fresh address auto-switches again.
+        regionPinned: false,
         allEvents: [],
         parsedJobs: [],
         availability: { PHX: null, SOUTH: null, NORTH: null, COMM: null, ALL: null },
@@ -5207,6 +5211,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     regionPills.forEach(t => t.addEventListener("click", () => {
         state.currentRegion = t.dataset.region || "PHX";
+        // Manual pill click wins over the address-derived region until the next
+        // explicit search — without this, the reco re-run below snaps the pill
+        // back to the address's region and COMM/other regions are unreachable.
+        state.regionPinned = true;
         // Region change invalidates the tier ranking (capacity, regionCount and
         // COMM handling all differ) — recompute for an active search, else clear.
         if (state.addressInput && addrInput?.value?.trim()) {
@@ -6706,6 +6714,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function runAddressRecommendationForCity(primaryCity) {
         const region = CONFIG.getRegionForCity(primaryCity);
+        // Explicit city click — switching to its region is the point, so it
+        // also releases any manual region pin.
+        state.regionPinned = false;
         if (region) state.currentRegion = region;
         state.highlightedCity = primaryCity;
 
@@ -7218,7 +7229,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             // If user skipped, still continue but without region filtering
         }
 
-        if (region) state.currentRegion = region;
+        // Auto-switch to the address's region — unless the user manually pinned
+        // a region pill (e.g. flipped to COMM to check commercial availability).
+        if (region && !state.regionPinned) state.currentRegion = region;
         state.highlightedCity = primaryCity;
         state.addressInput = text; // Save address to state so it persists
 
@@ -7575,9 +7588,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     if (addrGoBtn) {
-        addrGoBtn.addEventListener("click", async () => {
+        // researchOnly (right-click Go): APN/owner/property intel into the Research
+        // dock only — no recommendation run, no Roofr/Earth/Gemini tabs.
+        const runGoFlow = async (researchOnly = false) => {
             const inputValue = addrInput?.value?.trim();
             if (!inputValue) return;
+
+            // Research needs a street address — phone/name/city inputs have no parcel.
+            if (researchOnly && (!/\d/.test(inputValue) || detectPhoneNumber(inputValue))) {
+                showToast("Research-only needs a street address");
+                return;
+            }
 
             // Suppress + collapse the suggestion dropdown for the whole search so a
             // late, in-flight fetch from typing can't flash it open mid-run.
@@ -7592,7 +7613,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             try {
             // If user selected a known job from DB suggestion, open it directly
-            if (window.__selectedRoofrJobLink && window.__selectedRoofrJob) {
+            if (!researchOnly && window.__selectedRoofrJobLink && window.__selectedRoofrJob) {
                 const url = window.__selectedRoofrJobLink;
                 const jobInfo = window.__selectedRoofrJob;
                 addLog(`Go: opening known job directly — ${jobInfo.Customer || ''}`);
@@ -7608,7 +7629,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Check if input is an exact insurance claim number (before phone — some claims are all-digits).
             // Only an EXACT normalized match short-circuits, so partial digit overlap with phones is unaffected.
             const qClaim = inputValue.toLowerCase().replace(/[^a-z0-9]/g, '');
-            if (qClaim.length >= 4 && _roofrDataCache && _roofrDataCache.length) {
+            if (!researchOnly && qClaim.length >= 4 && _roofrDataCache && _roofrDataCache.length) {
                 const claimMatch = _roofrDataCache.find(job => {
                     const jc = String(job['Claim #'] || '').toLowerCase().replace(/[^a-z0-9]/g, '');
                     return jc && jc === qClaim;
@@ -7688,9 +7709,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Not a phone or name - treat as address
             const hasAddress = inputValue;
             if (hasAddress) {
-                // Go mode - always run recommendation
-                await runMainRecommendation();
-                updateGoButtonState();
+                // Go mode - always run recommendation (skipped for research-only)
+                if (!researchOnly) {
+                    // Fresh search → release any manual region pin so the address
+                    // auto-switches to its own region again.
+                    state.regionPinned = false;
+                    await runMainRecommendation();
+                    updateGoButtonState();
+                }
 
                 // Get the verified address from the input
                 const verifiedAddress = addrInput?.value?.trim();
@@ -7726,6 +7752,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                             }
                         } else {
                             addLog('Could not determine city for APN lookup');
+                        }
+
+                        // Research-only: the dock card (added below) is the whole product —
+                        // surface success/failure since no tabs will open to signal activity.
+                        if (researchOnly) {
+                            if (apnResult && apnResult.success) {
+                                showToast('Property research added');
+                            } else {
+                                showToast(`No parcel match — ${(apnResult && apnResult.error) || 'research unavailable'}`);
+                            }
                         }
 
                         // Build the message to send to Gemini (address + APN + owner + property data)
@@ -7924,7 +7960,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         }
 
                         // Find or create Google Earth tab in target window (reuse existing if found)
-                        if (settings.search_google_earth !== false) {
+                        if (!researchOnly && settings.search_google_earth !== false) {
                         // Always search Google Earth by ADDRESS TEXT (Travis pref 2026-07-20).
                         // Even when a real county parcel gives us rooftop coordinates, the address
                         // search reads better and lets Google's own geocoder place the pin. This also
@@ -7988,7 +8024,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         } // end search_google_earth check
 
                         // Find or create Gemini Gem tab in target window (reuse existing Arizona Roofers Note Assistant gem)
-                        if (settings.search_gemini !== false) {
+                        if (!researchOnly && settings.search_gemini !== false) {
                         const geminiGemBaseUrl = 'https://gemini.google.com/gem/70a0cb5e71a1';
                         const geminiQueryOpts = { url: "*://gemini.google.com/gem/70a0cb5e71a1*" };
                         if (window.__targetWindowId) geminiQueryOpts.windowId = window.__targetWindowId;
@@ -8266,7 +8302,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         addLog(`Current window ID: ${currentWindowId}`);
 
                         // Roofr job search — shortcut if user selected a known job from database
-                        if (window.__selectedRoofrJobLink) {
+                        if (!researchOnly && window.__selectedRoofrJobLink) {
                             const directUrl = window.__selectedRoofrJobLink;
                             const jobInfo = window.__selectedRoofrJob;
                             addLog(`Opening known job directly: ${jobInfo?.Customer || ''} — ${directUrl}`);
@@ -8281,7 +8317,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                             window.__selectedRoofrJobInputValue = null;
 
                         // Fall back to DOM search if no known job selected
-                        } else if (settings.search_roofr !== false) {
+                        } else if (!researchOnly && settings.search_roofr !== false) {
                         // Extract street address for search, INCLUDING any unit/lot. Roofr's search indexes
                         // the job NAME (verified live: searching "Vader" returns that job), and every unit in
                         // a complex shares the SAME base address — so searching WITH the unit is what finds the
@@ -9153,6 +9189,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             } else {
                 // No address - just run recommendation
+                state.regionPinned = false;
                 await runMainRecommendation();
                 updateGoButtonState();
             }
@@ -9165,7 +9202,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // just shows an empty white panel until the user clicks away.
                 if (verifiedAddressesList) verifiedAddressesList.classList.add('hidden');
             }
+        };
+
+        addrGoBtn.addEventListener("click", () => runGoFlow(false));
+        // Right-click Go = research only: no Roofr/Earth/Gemini tabs.
+        addrGoBtn.addEventListener("contextmenu", (e) => {
+            e.preventDefault();
+            runGoFlow(true);
         });
+        addrGoBtn.title = "Search — opens Roofr, Earth & Gemini tabs\nRight-click: property research only (no tabs)";
     }
 
     if (addrInput) {
@@ -9336,6 +9381,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 // It's an address - run recommendation
+                // Enter = fresh search → release any manual region pin.
+                state.regionPinned = false;
                 await runMainRecommendation();
                 updateGoButtonState();
             }

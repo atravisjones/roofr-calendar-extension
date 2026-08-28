@@ -1,11 +1,11 @@
 {
-  "version": "3.2.43",
+  "version": "3.2.44",
   "minimum_chrome_version": "116",
-  "release_date": "2026-08-28T23:24:41.407Z",
+  "release_date": "2026-08-28T23:32:35.904Z",
   "changelog": [
     "Right-click Go = property research only — APN/owner/property card lands in the Research dock with no Roofr/Earth/Gemini tabs and no recommendation run",
     "Region pills stay toggleable during an address search — searching still auto-switches to the address's region, but a manual pill click (e.g. COMM) now sticks until the next search instead of snapping back"
   ],
-  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.43/roofr-calendar-scraper.crx",
-  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.43"
+  "download_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/download/v3.2.44/roofr-calendar-scraper.crx",
+  "release_notes_url": "https://github.com/atravisjones/roofr-calendar-extension/releases/tag/v3.2.44"
 }

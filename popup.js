@@ -5308,12 +5308,31 @@ document.addEventListener('DOMContentLoaded', async () => {
             chrome.windows.create({ url: chrome.runtime.getURL(`dialer.html?tab=${queueTab}`), type: 'popup', width: 480, height: 760 });
         }
     }
-    // Clone the chip group once so the marquee's -50% translate loops
-    // seamlessly. Counts and clicks address chips by data-queue, so the clone
-    // stays in lockstep automatically (querySelectorAll hits both copies).
+    // The marquee track is TWO identical halves (translateX(-50%) loops
+    // seamlessly); each half repeats the chip group enough times to span the
+    // strip, so even a single remaining pill carousels itself continuously.
+    // Rebuilt whenever the set of visible pills changes or the panel resizes —
+    // plain count updates land in place via querySelectorAll across all copies.
     const todoTrack = document.getElementById('todo-track');
     const todoGroup = todoTrack?.querySelector('.todo-group');
-    if (todoTrack && todoGroup) todoTrack.appendChild(todoGroup.cloneNode(true));
+    const TODO_DRIFT_PX_PER_S = 25;
+    let todoTrackSig = '';
+    function rebuildTodoTrack() {
+        if (!todoStrip || !todoTrack || !todoGroup) return;
+        const visible = [...todoGroup.querySelectorAll('.todo-chip:not(.done)')].map(chip => chip.dataset.queue);
+        todoStrip.classList.toggle('empty', !visible.length);
+        if (!visible.length) { todoTrackSig = ''; return; }
+        const stripWidth = todoStrip.clientWidth || 0;
+        const groupWidth = todoGroup.scrollWidth || 1;
+        const perHalf = Math.max(1, Math.ceil(stripWidth / groupWidth));
+        const sig = `${visible.join(',')}|${perHalf}`;
+        if (sig === todoTrackSig) return;
+        todoTrackSig = sig;
+        [...todoTrack.children].forEach((el, i) => { if (i > 0) el.remove(); });
+        for (let i = 1; i < perHalf * 2; i++) todoTrack.appendChild(todoGroup.cloneNode(true));
+        todoTrack.style.animationDuration = `${Math.max(8, Math.round((groupWidth * perHalf) / TODO_DRIFT_PX_PER_S))}s`;
+    }
+    window.addEventListener('resize', rebuildTodoTrack);
     todoStrip?.addEventListener('click', (event) => {
         const chip = event.target.closest('.todo-chip');
         if (chip?.dataset.queue) openDialerQueue(chip.dataset.queue);
@@ -5332,8 +5351,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             chip.classList.toggle('alert', value > 0);
             chip.classList.toggle('done', !(value > 0)); // 0 = pill drops off the strip
         });
-        // Everything cleared (or nothing known yet) → no strip at all.
-        todoStrip.classList.toggle('empty', !todoStrip.querySelector('.todo-chip:not(.done)'));
+        rebuildTodoTrack();
     });
 
     /* ========= Sticky Header Scroll Logic with Hysteresis ========= */
@@ -10999,6 +11017,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         userPrefs.showTodoStrip = e.target.checked;
         saveUserPrefs(); applyUserPrefs();
         if (chrome.storage && chrome.storage.sync) chrome.storage.sync.set({ show_todo_strip: e.target.checked });
+        // Widths measured while hidden are 0 — force a fresh marquee layout.
+        todoTrackSig = '';
+        rebuildTodoTrack();
     });
     if (settingShowPeople) settingShowPeople.addEventListener('change', (e) => {
         userPrefs.showPeopleTab = e.target.checked;

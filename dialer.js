@@ -2297,7 +2297,11 @@
       if (data.success && Array.isArray(data.jobs)) updateRescheduledBadge(data.jobs.length);
     } catch (_) {}
   })();
-  // Prime the LSA badge once on load.
+  // Prime the LSA badge once on load — count with the SAME filters the LSA tab
+  // itself uses (lsaVisibleRows), not just "no called flag": the raw feed
+  // carries hundreds of historical non-actionable rows, so the old count
+  // showed 400+ at load and then collapsed to the real number the moment the
+  // tab loaded its queue (reported 2026-08-28).
   (async () => {
     const data = await lsaWrite({ action: "feed", rep: repName || "Unknown", include_done: true });
     if (data.error) return;
@@ -2306,11 +2310,9 @@
       : Array.isArray(data.leads)
         ? data.leads
         : [];
-    updateLsaBadge(rows.filter(row =>
-      !row.called &&
-      !row.called_at &&
-      !row.already_called
-    ).length);
+    if (!_lsaAll.length) _lsaAll = rows;
+    if (currentTab === "lsa" && _lsaPhase === "idle") renderLsaQueue();
+    else updateLsaBadge(lsaVisibleRows().length);
   })();
 
   // LSA queue live-refresh. The LeadTruffle webhook lands new leads (and

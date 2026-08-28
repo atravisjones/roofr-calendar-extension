@@ -5285,6 +5285,40 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     mainTabs.forEach(btn => btn.addEventListener("click", () => activateMainTab(btn.getAttribute("data-target"))));
 
+    // ===== Scanner to-do strip =====
+    // Queue shortcuts above the scanner. Counts stream up from the dialer
+    // iframe (AD_QUEUE_COUNTS) — it already fetches every queue at load for its
+    // own tab badges. Clicking jumps to that queue on the Dialer section; when
+    // the Dialer tab is pref-hidden, the dialer opens as its own window instead
+    // (dialer.html?tab= deep link).
+    const todoStrip = document.getElementById('todo-strip');
+    function openDialerQueue(queueTab) {
+        const frame = document.getElementById('dialer-iframe');
+        if (userPrefs.showDialerTab !== false && frame?.contentWindow) {
+            activateMainTab('sec-dialer');
+            try { frame.contentWindow.postMessage({ type: 'AD_SWITCH_TAB', tab: queueTab }, '*'); } catch (_) {}
+        } else {
+            chrome.windows.create({ url: chrome.runtime.getURL(`dialer.html?tab=${queueTab}`), type: 'popup', width: 480, height: 760 });
+        }
+    }
+    todoStrip?.querySelectorAll('.todo-chip').forEach(chip => {
+        chip.addEventListener('click', () => openDialerQueue(chip.dataset.queue));
+    });
+    window.addEventListener('message', (event) => {
+        if (event.origin !== location.origin) return; // counts come only from our own dialer iframe
+        const msg = event.data;
+        if (!msg || msg.type !== 'AD_QUEUE_COUNTS' || !msg.counts || !todoStrip) return;
+        todoStrip.querySelectorAll('.todo-chip').forEach(chip => {
+            const value = msg.counts[chip.dataset.queue];
+            if (value === null || value === undefined) return; // unknown — keep the last count shown
+            const badge = chip.querySelector('.todo-count');
+            if (!badge) return;
+            badge.hidden = false;
+            badge.textContent = String(value);
+            badge.classList.toggle('zero', !value);
+        });
+    });
+
     /* ========= Sticky Header Scroll Logic with Hysteresis ========= */
     let isShrunk = false;
     window.addEventListener("scroll", () => {

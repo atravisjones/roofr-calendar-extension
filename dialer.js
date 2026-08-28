@@ -595,6 +595,7 @@
   }
 
   function renderQueue() {
+    broadcastQueueCounts(); // queue[] is already current here — surfaces the leads count
     if (currentTab === "lsa") { renderLsaQueue(); return; }
     if (currentTab === "welcome") { renderWelcomeQueue(); return; }
     if (currentTab === "rescheduled") { renderRescheduledQueue(); return; }
@@ -790,6 +791,31 @@
     if (!badge) return;
     if (n > 0) { badge.textContent = n; badge.style.display = ""; }
     else { badge.textContent = ""; badge.style.display = "none"; }
+    broadcastQueueCounts();
+  }
+
+  // Mirror the tab badges up to the host popup's scanner to-do strip. The
+  // leads queue has no badge — its count is only trustworthy while the leads
+  // tab is the one loaded, so it's null (= "keep what you had") otherwise.
+  function broadcastQueueCounts() {
+    if (window === window.parent) return; // standalone dialer window — no host
+    const readBadge = (id) => {
+      const n = parseInt(document.getElementById(id)?.textContent || "", 10);
+      return Number.isFinite(n) ? n : 0;
+    };
+    try {
+      window.parent.postMessage({
+        type: "AD_QUEUE_COUNTS",
+        counts: {
+          // Tier 1 = uncontacted (attempts=0) — the strip's "Uncontacted" chip.
+          leads: currentTab === "leads" ? queue.filter(l => l._tier === 1).length : null,
+          missed: readBadge("missed-badge"),
+          rescheduled: readBadge("rescheduled-badge"),
+          lsa: readBadge("lsa-badge"),
+          welcome: readBadge("welcome-badge"),
+        },
+      }, "*");
+    } catch (_) {}
   }
 
   // ── Sort + filter the queue ──
@@ -2812,6 +2838,14 @@
   window.addEventListener("message", (e) => {
     const msg = e.data;
     if (!msg || typeof msg !== "object") return;
+    // The scanner's to-do strip asks for a specific queue. Extension-origin
+    // only, and switchTab's own mid-call guard still applies — a running call
+    // refuses the switch.
+    if (msg.type === "AD_SWITCH_TAB") {
+      if (e.origin !== location.origin) return;
+      if (["leads", "missed", "rescheduled", "lsa", "welcome"].includes(msg.tab)) switchTab(msg.tab);
+      return;
+    }
     if (msg.type === "AD_TAB_ACTIVE") {
       const active = !!msg.active;
       if (!active && mode === "running") {
@@ -3037,6 +3071,7 @@
       b.textContent = "";
       b.style.display = "none";
     }
+    broadcastQueueCounts();
   }
 
   function lsaLeadId(lead) {
@@ -4535,6 +4570,7 @@
     if (!b) return;
     if (n > 0) { b.textContent = n; b.style.display = ""; }
     else { b.textContent = ""; b.style.display = "none"; }
+    broadcastQueueCounts();
   }
 
   // Jobs already arrive newest-reschedule-first from the API. Two filters stack:
@@ -5042,7 +5078,8 @@
   function updateWelcomeBadge(n) {
     const b = document.getElementById("welcome-badge");
     if (!b) return;
-    if (n > 0) { b.textContent = String(n); b.style.display = ""; } else { b.style.display = "none"; }
+    if (n > 0) { b.textContent = String(n); b.style.display = ""; } else { b.textContent = ""; b.style.display = "none"; }
+    broadcastQueueCounts();
   }
 
   function wcFilteredJobs() {
@@ -5426,5 +5463,13 @@
     });
   }
 
-  init();
+  init().then(() => {
+    // Deep link: dialer.html?tab=missed — used when the scanner to-do strip
+    // opens the dialer as its own window (Dialer tab hidden by prefs). Applied
+    // only after init so the first fetch runs with rep identity + filters set.
+    try {
+      const wantedTab = new URLSearchParams(location.search).get("tab");
+      if (["leads", "missed", "rescheduled", "lsa", "welcome"].includes(wantedTab)) switchTab(wantedTab);
+    } catch (_) {}
+  });
 })();

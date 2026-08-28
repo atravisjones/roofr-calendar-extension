@@ -420,6 +420,55 @@
       transition: all 0.15s;
     }
 
+    /* To-do strip: horizontally scrollable queue shortcuts above the scanner */
+    .todo-strip {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      padding-bottom: 2px;
+    }
+
+    .todo-strip::-webkit-scrollbar {
+      display: none;
+    }
+
+    .todo-chip {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+
+    .todo-chip:hover {
+      background: var(--surface-hover);
+      border-color: var(--primary);
+    }
+
+    .todo-count {
+      background: #ef4444;
+      color: #fff;
+      border-radius: 999px;
+      padding: 1px 7px;
+      font-size: 0.72rem;
+      font-weight: 800;
+    }
+
+    .todo-count.zero {
+      background: var(--border);
+      color: var(--text-muted);
+    }
+
     .region-pill:hover {
       background: var(--surface-hover);
       color: var(--text-main);
@@ -3124,6 +3173,14 @@
 
         <!-- Scanner Toolbar (Unique Container) -->
         <div id="scanner-toolbar">
+          <!-- To-do strip: live queue shortcuts into the dialer -->
+          <div id="todo-strip" class="todo-strip">
+            <button class="todo-chip" data-queue="missed" title="Missed calls queue">📵 Missed<span class="todo-count" hidden></span></button>
+            <button class="todo-chip" data-queue="leads" title="Uncontacted leads (dialer Leads tab)">🆕 Uncontacted<span class="todo-count" hidden></span></button>
+            <button class="todo-chip" data-queue="lsa" title="LSA leads queue">⚡ LSA<span class="todo-count" hidden></span></button>
+            <button class="todo-chip" data-queue="rescheduled" title="Needs-rescheduled queue">📅 Resched<span class="todo-count" hidden></span></button>
+            <button class="todo-chip" data-queue="welcome" title="Welcome calls queue">👋 Welcome<span class="todo-count" hidden></span></button>
+          </div>
           <!-- Filters Row -->
           <div class="actions-bar filters-row">
             <div class="region-pills">

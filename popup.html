@@ -420,13 +420,18 @@
       transition: all 0.15s;
     }
 
-    /* To-do strip: horizontally scrollable queue shortcuts above the scanner */
+    /* To-do strip: horizontally scrollable queue shortcuts at the top of the
+       sticky header, above the Scan/settings row and nav tabs */
     .todo-strip {
       display: flex;
       gap: 6px;
       overflow-x: auto;
       scrollbar-width: none;
-      padding-bottom: 2px;
+      margin-bottom: 8px;
+    }
+
+    #sticky-header.shrink .todo-strip {
+      margin-bottom: 4px;
     }
 
     .todo-strip::-webkit-scrollbar {
@@ -3085,6 +3090,15 @@
 
     <!-- Sticky Header -->
     <div id="sticky-header">
+      <!-- To-do strip: live queue shortcuts into the dialer. Sits above the
+           whole panel — every section, not just the scanner. -->
+      <div id="todo-strip" class="todo-strip">
+        <button class="todo-chip" data-queue="missed" title="Missed calls queue">📵 Missed<span class="todo-count" hidden></span></button>
+        <button class="todo-chip" data-queue="leads" title="Uncontacted leads (dialer Leads tab)">🆕 Uncontacted<span class="todo-count" hidden></span></button>
+        <button class="todo-chip" data-queue="lsa" title="LSA leads queue">⚡ LSA<span class="todo-count" hidden></span></button>
+        <button class="todo-chip" data-queue="rescheduled" title="Needs-rescheduled queue">📅 Resched<span class="todo-count" hidden></span></button>
+        <button class="todo-chip" data-queue="welcome" title="Welcome calls queue">👋 Welcome<span class="todo-count" hidden></span></button>
+      </div>
       <div class="controls-row">
 
         <!-- Top Row: Actions & Tabs -->
@@ -3173,14 +3187,6 @@
 
         <!-- Scanner Toolbar (Unique Container) -->
         <div id="scanner-toolbar">
-          <!-- To-do strip: live queue shortcuts into the dialer -->
-          <div id="todo-strip" class="todo-strip">
-            <button class="todo-chip" data-queue="missed" title="Missed calls queue">📵 Missed<span class="todo-count" hidden></span></button>
-            <button class="todo-chip" data-queue="leads" title="Uncontacted leads (dialer Leads tab)">🆕 Uncontacted<span class="todo-count" hidden></span></button>
-            <button class="todo-chip" data-queue="lsa" title="LSA leads queue">⚡ LSA<span class="todo-count" hidden></span></button>
-            <button class="todo-chip" data-queue="rescheduled" title="Needs-rescheduled queue">📅 Resched<span class="todo-count" hidden></span></button>
-            <button class="todo-chip" data-queue="welcome" title="Welcome calls queue">👋 Welcome<span class="todo-count" hidden></span></button>
-          </div>
           <!-- Filters Row -->
           <div class="actions-bar filters-row">
             <div class="region-pills">

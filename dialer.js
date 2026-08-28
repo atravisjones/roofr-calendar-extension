@@ -2297,12 +2297,13 @@
       if (data.success && Array.isArray(data.jobs)) updateRescheduledBadge(data.jobs.length);
     } catch (_) {}
   })();
-  // Prime the LSA badge once on load — count with the SAME filters the LSA tab
-  // itself uses (lsaVisibleRows), not just "no called flag": the raw feed
-  // carries hundreds of historical non-actionable rows, so the old count
-  // showed 400+ at load and then collapsed to the real number the moment the
-  // tab loaded its queue (reported 2026-08-28).
-  (async () => {
+  // Prime the LSA badge once AFTER init — called from the init().then() tail.
+  // Two lessons baked in (2026-08-28): the feed is per-rep, so asking before
+  // resolveRepName runs (i.e. as "Unknown") returns the whole company book —
+  // the pill showed 568; and the count must use the SAME filters the LSA tab
+  // itself shows (lsaVisibleRows), not just "no called flag".
+  async function primeLsaBadge() {
+    if (currentTab === "lsa") return; // the tab's own fetch owns the badge
     const data = await lsaWrite({ action: "feed", rep: repName || "Unknown", include_done: true });
     if (data.error) return;
     const rows = Array.isArray(data.rows)
@@ -2311,9 +2312,8 @@
         ? data.leads
         : [];
     if (!_lsaAll.length) _lsaAll = rows;
-    if (currentTab === "lsa" && _lsaPhase === "idle") renderLsaQueue();
-    else updateLsaBadge(lsaVisibleRows().length);
-  })();
+    if (currentTab !== "lsa") updateLsaBadge(lsaVisibleRows().length);
+  }
 
   // LSA queue live-refresh. The LeadTruffle webhook lands new leads (and
   // clears booked/lost ones) in seconds, but the panel only shows them on
@@ -5477,5 +5477,6 @@
       const wantedTab = new URLSearchParams(location.search).get("tab");
       if (["leads", "missed", "rescheduled", "lsa", "welcome"].includes(wantedTab)) switchTab(wantedTab);
     } catch (_) {}
+    primeLsaBadge();
   });
 })();

@@ -11657,11 +11657,26 @@ document.addEventListener('DOMContentLoaded', async () => {
             error: ['report check failed', 'var(--danger)']
         };
         const entry = map[info.status];
-        if (!entry) return '';
-        const pin = info.pinFlag && info.status === 'needs'
-            ? ' <span style="color: var(--danger); font-weight: 700;">⚠ pin</span>'
-            : '';
-        return `<span style="font-size: 0.66rem; font-weight: 650; color: ${entry[1]}; white-space: nowrap;">${entry[0]}${pin}</span>`;
+        const parts = [];
+        if (entry) {
+            const pin = info.pinFlag && info.status === 'needs'
+                ? ' <span style="color: var(--danger); font-weight: 700;">⚠ pin</span>'
+                : '';
+            parts.push(`<span style="font-size: 0.66rem; font-weight: 650; color: ${entry[1]}; white-space: nowrap;">${entry[0]}${pin}</span>`);
+        }
+        if (info.commercial) {
+            const irvingMap = {
+                pending: ['🏢 → Irving on assign', 'var(--warn)'],
+                dry_run: ['🏢 Irving dry-run', 'var(--warn)'],
+                added: ['🏢 Irving ✓', 'var(--success)'],
+                already: ['🏢 Irving already on', 'var(--success)'],
+                failed: ['🏢 Irving ✗', 'var(--danger)'],
+                no_id: ['🏢 Irving: no id', 'var(--danger)']
+            };
+            const [label, color] = irvingMap[info.irving || 'pending'] || irvingMap.pending;
+            parts.push(`<span style="font-size: 0.66rem; font-weight: 650; color: ${color}; white-space: nowrap;">${label}</span>`);
+        }
+        return parts.join(' ');
     }
 
     function reportsV2Chip(text, color) {
@@ -11686,10 +11701,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             reportsV2Chip(`${assigned.length}/${eligible.length} reps set`, assigned.length >= eligible.length ? 'var(--success)' : 'var(--warn)')
         ];
         if (ineligible) chips.push(reportsV2Chip(`${ineligible} n/a`, 'var(--text-muted)'));
+        const commercial = jobs.filter(job => job.commercial).length;
         if (jobs.length) {
             if (needs) chips.push(reportsV2Chip(`${needs} need reports`, 'var(--warn)'));
             if (done) chips.push(reportsV2Chip(`${done} reports ok`, 'var(--success)'));
             if (paint) chips.push(reportsV2Chip(`${paint} paint`, 'var(--text-muted)'));
+            if (commercial) chips.push(reportsV2Chip(`${commercial} commercial → Irving`, 'var(--primary)'));
         }
         reportsV2Summary.style.display = 'flex';
         reportsV2Summary.innerHTML = chips.join('');
@@ -11699,8 +11716,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (reportsV2AssignBtn) {
             const assignable = reportsV2Events.filter(event =>
                 reportsV2StructuralEligibility(event).eligible && reportsV2Selections[String(event.id)]).length;
-            reportsV2AssignBtn.disabled = reportsV2Running || Boolean(reportsV2OrderState) || !assignable;
-            reportsV2AssignBtn.textContent = assignable ? `Assign reps (${assignable})` : 'Assign reps';
+            // Commercial events need no dropdown pick — the Irving pass alone is
+            // reason enough to run Assign on a commercial-only day.
+            const commercialPending = reportsV2CommercialEvents().length;
+            reportsV2AssignBtn.disabled = reportsV2Running || Boolean(reportsV2OrderState) || (!assignable && !commercialPending);
+            reportsV2AssignBtn.textContent = assignable
+                ? `Assign reps (${assignable})`
+                : (commercialPending ? `Assign Irving (${commercialPending})` : 'Assign reps');
         }
         if (reportsV2OrderBtn) {
             const needs = reportsV2OrderQueueJobs().length;
@@ -11860,11 +11882,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const titleText = `${event?.title || ''} ${job?.name || ''}`;
                 const address = job?.address?.formatted_address || job?.address?.address || '';
                 const pinFlag = REPORTS_V2_PIN_FLAG.test(`${titleText} ${address}`);
+                // jobs.tags carrying "Commercial" is the source of truth (verified
+                // live 2026-08-28: /api/job/{id} returns tags as [{name}]); the
+                // "[Commercial]" title marker is a fallback for untagged strays.
+                const commercial = (Array.isArray(job?.tags) ? job.tags : [])
+                    .some(tag => /commercial/i.test(String(tag?.name ?? tag ?? '')))
+                    || /\[\s*commercial\s*\]/i.test(titleText);
                 let status = 'needs';
                 if (/paint/i.test(titleText)) status = 'paint';
                 else if ((job?.reports || []).length) status = 'delivered';
                 else if ((job?.measurementQueues || []).length) status = 'processing';
-                reportsV2JobReports[jobId] = { status, pinFlag, address };
+                reportsV2JobReports[jobId] = { status, pinFlag, address, commercial };
             } catch (error) {
                 reportsV2JobReports[jobId] = { status: 'error', error: error.message };
             }
@@ -12047,6 +12075,82 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    // ===== Commercial → Irving auto-assign =====
+    // Every commercial-tagged job in the loaded day gets Irving Lopez ADDED to its
+    // sales event(s) during the Assign run, independent of the per-event rep
+    // dropdown. addAttendee is add-only (zero-removal guard in roofr-api.js) and
+    // no-ops when he is already an attendee, so existing reps and ride-alongs are
+    // never touched. Job owner is deliberately left alone.
+    const REPORTS_V2_COMMERCIAL_REP = { name: 'Irving Lopez', fallbackId: '596692' }; // uid verified live 2026-08-28
+
+    function reportsV2CommercialRepId() {
+        const resolved = reportsV2ResolveRepId(REPORTS_V2_COMMERCIAL_REP.name);
+        if (resolved) return String(resolved);
+        // Directory can be cold (fresh install) — trust the verified constant
+        // unless the directory says that id belongs to someone else entirely.
+        const cachedName = reportsV2Directory[REPORTS_V2_COMMERCIAL_REP.fallbackId]?.name;
+        if (cachedName && !/irving/i.test(cachedName)) return null;
+        return REPORTS_V2_COMMERCIAL_REP.fallbackId;
+    }
+
+    function reportsV2CommercialEvents() {
+        return reportsV2Events.filter(event => {
+            const info = reportsV2JobReports[String(event?.job_id ?? '')];
+            if (!info?.commercial) return false;
+            if (event.status === 'cancelled' || event.all_day_event || event.parent_id || event.recurring_rule) return false;
+            return reportsV2SalesEvent(event);
+        });
+    }
+
+    // A job can have several events in the day but its chip is per-job — merge
+    // worst-state-wins so one failed event can never hide behind a later success.
+    const REPORTS_V2_IRVING_RANK = { already: 1, added: 2, dry_run: 3, no_id: 4, failed: 5 };
+    function reportsV2MergeIrving(info, next) {
+        if ((REPORTS_V2_IRVING_RANK[next] || 0) >= (REPORTS_V2_IRVING_RANK[info.irving] || 0)) info.irving = next;
+    }
+
+    async function reportsV2AssignCommercialRep(dryRun) {
+        const targets = reportsV2CommercialEvents();
+        if (!targets.length) return;
+        // Fresh merge base each run — otherwise a past failure outranks this
+        // run's success and the chip can never recover.
+        for (const event of targets) delete reportsV2JobReports[String(event.job_id)].irving;
+        const irvingId = reportsV2CommercialRepId();
+        const tally = { added: 0, already: 0, failed: 0 };
+        for (const event of targets) {
+            const info = reportsV2JobReports[String(event.job_id)];
+            if (!irvingId) {
+                reportsV2MergeIrving(info, 'no_id');
+            } else if (dryRun) {
+                reportsV2MergeIrving(info, 'dry_run');
+            } else {
+                reportsV2SetStatus(`Commercial → adding Irving: ${event.title || event.id}…`);
+                try {
+                    const result = await reportsV2ApiAdapter.addAttendee(event.id, irvingId, event.job_id);
+                    if (result?.alreadyCorrect) { reportsV2MergeIrving(info, 'already'); tally.already += 1; }
+                    else if (result?.verified) { reportsV2MergeIrving(info, 'added'); tally.added += 1; }
+                    else { reportsV2MergeIrving(info, 'failed'); tally.failed += 1; }
+                } catch (_) {
+                    reportsV2MergeIrving(info, 'failed');
+                    tally.failed += 1;
+                }
+            }
+            reportsV2RefreshReportChips(event.job_id);
+        }
+        reportsV2RenderSummary();
+        if (!irvingId) {
+            reportsV2SetStatus("Commercial: couldn't resolve Irving's Roofr id — no attendees written", 'error');
+        } else if (dryRun) {
+            reportsV2SetStatus(`Commercial dry-run: would add Irving to ${targets.length} event(s)`, 'warning');
+        } else {
+            const bits = [];
+            if (tally.added) bits.push(`${tally.added} added`);
+            if (tally.already) bits.push(`${tally.already} already on`);
+            if (tally.failed) bits.push(`${tally.failed} FAILED`);
+            reportsV2SetStatus(`Commercial → Irving: ${bits.join(', ') || 'nothing to do'}`, tally.failed ? 'error' : 'success');
+        }
+    }
+
     async function reportsV2AssignAll() {
         reportsV2LiveOutcomes = {};
         reportsV2Preflight();
@@ -12055,6 +12159,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             dryRun: reportsV2DryRun?.checked === true,
             maxWrites: reportsV2WriteCap?.value === 'unlimited' ? null : Number(reportsV2WriteCap?.value || 1)
         });
+        // A tripped safety (ambiguous write, write cap) stops the Irving pass too —
+        // don't keep writing past whatever made the batch bail.
+        const finalState = await window.RoofrReportsBatch.loadState().catch(() => null);
+        if (finalState?.stoppedReason) {
+            reportsV2SetStatus(`Stopped: ${finalState.stoppedReason} — commercial → Irving pass skipped`, 'warning');
+        } else {
+            await reportsV2AssignCommercialRep(reportsV2DryRun?.checked === true);
+        }
         reportsV2RenderQueue();
     }
 
@@ -12097,11 +12209,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function reportsV2MakeUnits() {
         const rosterIds = reportsV2RosterUserIds();
-        return reportsV2Events.map(event => window.RoofrReportsBatch.createWorkUnit(
-            event,
-            reportsV2Selections[String(event.id)] || null,
-            rosterIds
-        ));
+        const commercialRepId = reportsV2CommercialRepId();
+        return reportsV2Events.map(event => {
+            // On commercial jobs Irving is pinned: even if he's in the pasted
+            // roster, assigning a different rep must never swap him out.
+            const commercial = reportsV2JobReports[String(event?.job_id ?? '')]?.commercial;
+            const removable = commercial && commercialRepId
+                ? rosterIds.filter(id => id !== String(commercialRepId))
+                : rosterIds;
+            return window.RoofrReportsBatch.createWorkUnit(
+                event,
+                reportsV2Selections[String(event.id)] || null,
+                removable
+            );
+        });
     }
 
     // Attendee ids currently on a LOADED event (detail shape or day-list shape).
@@ -12174,12 +12295,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             const swapText = stale.length ? ` (swapping out: ${stale.join(', ')})` : '';
             return `event:${unit.eventId} job:${unit.jobId} -> ${repName}${swapText}`;
         };
+        const commercialTargets = reportsV2CommercialEvents();
         reportsV2PreflightSummary.style.display = 'block';
         reportsV2PreflightSummary.textContent = [
             `Planned writes: ${planned.length}`,
             ...planned.map(describe),
             `Skipped: ${skipped.length}`,
-            ...skipped.map(unit => `event:${unit.eventId} (${unit.error?.reason || 'unknown'})`)
+            ...skipped.map(unit => `event:${unit.eventId} (${unit.error?.reason || 'unknown'})`),
+            ...(commercialTargets.length ? [
+                `Commercial → Irving (add-only): ${commercialTargets.length}`,
+                ...commercialTargets.map(event => `event:${event.id} job:${event.job_id} -> +${REPORTS_V2_COMMERCIAL_REP.name}`)
+            ] : [])
         ].join('\n');
         reportsV2ExecuteBtn.disabled = false;
     }

@@ -420,13 +420,11 @@
       transition: all 0.15s;
     }
 
-    /* To-do strip: horizontally scrollable queue shortcuts at the top of the
-       sticky header, above the Scan/settings row and nav tabs */
+    /* To-do strip: endless slow marquee of remaining queues at the top of the
+       sticky header. Track = two identical copies of .todo-group; the loop
+       translates -50% so the second copy lands exactly where the first began. */
     .todo-strip {
-      display: flex;
-      gap: 6px;
-      overflow-x: auto;
-      scrollbar-width: none;
+      overflow: hidden;
       margin-bottom: 8px;
     }
 
@@ -434,7 +432,39 @@
       margin-bottom: 4px;
     }
 
-    .todo-strip::-webkit-scrollbar {
+    .todo-strip.empty {
+      display: none;
+    }
+
+    .todo-track {
+      display: flex;
+      width: max-content;
+      animation: todo-marquee 28s linear infinite;
+    }
+
+    .todo-strip:hover .todo-track {
+      animation-play-state: paused;
+    }
+
+    @keyframes todo-marquee {
+      from { transform: translateX(0); }
+      to { transform: translateX(-50%); }
+    }
+
+    body.no-animations .todo-track {
+      animation: none;
+    }
+
+    /* Gap lives INSIDE each group (padding-right) so the track is exactly two
+       group-widths and the -50% loop is seamless. */
+    .todo-group {
+      display: flex;
+      gap: 6px;
+      padding-right: 6px;
+      flex: 0 0 auto;
+    }
+
+    .todo-chip.done {
       display: none;
     }
 
@@ -3109,14 +3139,18 @@
 
     <!-- Sticky Header -->
     <div id="sticky-header">
-      <!-- To-do strip: live queue shortcuts into the dialer. Sits above the
-           whole panel — every section, not just the scanner. -->
-      <div id="todo-strip" class="todo-strip">
-        <button class="todo-chip" data-queue="missed" title="Missed calls queue">📵 Missed<span class="todo-count" hidden></span></button>
-        <button class="todo-chip" data-queue="leads" title="Uncontacted leads (dialer Leads tab)">🆕 Uncontacted<span class="todo-count" hidden></span></button>
-        <button class="todo-chip" data-queue="lsa" title="LSA calls queue">⚡ LSA Calls<span class="todo-count" hidden></span></button>
-        <button class="todo-chip" data-queue="rescheduled" title="Needs-rescheduled queue">📅 Needs Resched<span class="todo-count" hidden></span></button>
-        <button class="todo-chip" data-queue="welcome" title="Welcome calls queue">👋 Welcome<span class="todo-count" hidden></span></button>
+      <!-- To-do strip: endless slow marquee of the queues that still have work.
+           Zero-count pills drop out; empty strip hides itself. The second copy
+           of the group (needed for the seamless loop) is cloned in popup.js. -->
+      <div id="todo-strip" class="todo-strip empty">
+        <div id="todo-track" class="todo-track">
+          <div class="todo-group">
+            <button class="todo-chip done" data-queue="missed" title="Missed calls queue">📵 Missed<span class="todo-count" hidden></span></button>
+            <button class="todo-chip done" data-queue="leads" title="Uncontacted leads (dialer Leads tab)">🆕 Uncontacted<span class="todo-count" hidden></span></button>
+            <button class="todo-chip done" data-queue="lsa" title="LSA calls queue">⚡ LSA Calls<span class="todo-count" hidden></span></button>
+            <button class="todo-chip done" data-queue="rescheduled" title="Needs-rescheduled queue">📅 Needs Resched<span class="todo-count" hidden></span></button>
+          </div>
+        </div>
       </div>
       <div class="controls-row">
 

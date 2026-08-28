@@ -5308,8 +5308,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             chrome.windows.create({ url: chrome.runtime.getURL(`dialer.html?tab=${queueTab}`), type: 'popup', width: 480, height: 760 });
         }
     }
-    todoStrip?.querySelectorAll('.todo-chip').forEach(chip => {
-        chip.addEventListener('click', () => openDialerQueue(chip.dataset.queue));
+    // Clone the chip group once so the marquee's -50% translate loops
+    // seamlessly. Counts and clicks address chips by data-queue, so the clone
+    // stays in lockstep automatically (querySelectorAll hits both copies).
+    const todoTrack = document.getElementById('todo-track');
+    const todoGroup = todoTrack?.querySelector('.todo-group');
+    if (todoTrack && todoGroup) todoTrack.appendChild(todoGroup.cloneNode(true));
+    todoStrip?.addEventListener('click', (event) => {
+        const chip = event.target.closest('.todo-chip');
+        if (chip?.dataset.queue) openDialerQueue(chip.dataset.queue);
     });
     window.addEventListener('message', (event) => {
         if (event.origin !== location.origin) return; // counts come only from our own dialer iframe
@@ -5322,9 +5329,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!badge) return;
             badge.hidden = false;
             badge.textContent = String(value);
-            badge.classList.toggle('zero', !value);
             chip.classList.toggle('alert', value > 0);
+            chip.classList.toggle('done', !(value > 0)); // 0 = pill drops off the strip
         });
+        // Everything cleared (or nothing known yet) → no strip at all.
+        todoStrip.classList.toggle('empty', !todoStrip.querySelector('.todo-chip:not(.done)'));
     });
 
     /* ========= Sticky Header Scroll Logic with Hysteresis ========= */

@@ -5323,6 +5323,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             badge.hidden = false;
             badge.textContent = String(value);
             badge.classList.toggle('zero', !value);
+            chip.classList.toggle('alert', value > 0);
         });
     });
 

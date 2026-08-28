@@ -474,6 +474,25 @@
       color: var(--text-muted);
     }
 
+    /* Anything with work left pulses red until the queue is cleared */
+    @keyframes todo-pulse {
+      0%, 100% {
+        box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5);
+      }
+      50% {
+        box-shadow: 0 0 0 5px rgba(239, 68, 68, 0);
+      }
+    }
+
+    .todo-chip.alert {
+      border-color: #ef4444;
+      animation: todo-pulse 1.5s ease-in-out infinite;
+    }
+
+    body.no-animations .todo-chip.alert {
+      animation: none;
+    }
+
     .region-pill:hover {
       background: var(--surface-hover);
       color: var(--text-main);
@@ -3095,8 +3114,8 @@
       <div id="todo-strip" class="todo-strip">
         <button class="todo-chip" data-queue="missed" title="Missed calls queue">📵 Missed<span class="todo-count" hidden></span></button>
         <button class="todo-chip" data-queue="leads" title="Uncontacted leads (dialer Leads tab)">🆕 Uncontacted<span class="todo-count" hidden></span></button>
-        <button class="todo-chip" data-queue="lsa" title="LSA leads queue">⚡ LSA<span class="todo-count" hidden></span></button>
-        <button class="todo-chip" data-queue="rescheduled" title="Needs-rescheduled queue">📅 Resched<span class="todo-count" hidden></span></button>
+        <button class="todo-chip" data-queue="lsa" title="LSA calls queue">⚡ LSA Calls<span class="todo-count" hidden></span></button>
+        <button class="todo-chip" data-queue="rescheduled" title="Needs-rescheduled queue">📅 Needs Resched<span class="todo-count" hidden></span></button>
         <button class="todo-chip" data-queue="welcome" title="Welcome calls queue">👋 Welcome<span class="todo-count" hidden></span></button>
       </div>
       <div class="controls-row">

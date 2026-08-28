@@ -2217,6 +2217,10 @@
     log(`switched to ${{ leads: "Leads", missed: "Missed Calls", rescheduled: "Rescheduled", lsa: "LSA Leads", welcome: "Welcome Calls" }[tab] || tab} tab`, "info", "ui");
     renderQueue();
     fetchLeads({ force: true });
+    // Mirror the queue-selector dropdown immediately — it otherwise only syncs
+    // on menu-open or the 30s interval, so programmatic switches (to-do strip)
+    // left the label showing the OLD queue.
+    syncQueueSelector();
   }
   document.getElementById("tab-leads")?.addEventListener("click", () => switchTab("leads"));
   document.getElementById("tab-missed")?.addEventListener("click", () => switchTab("missed"));

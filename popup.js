@@ -538,6 +538,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const settingIdlePopup = document.getElementById("setting-idle-popup");
     const settingDefaultRegion = document.getElementById("setting-default-region");
     const settingShowDialer = document.getElementById("setting-show-dialer");
+    const settingShowTodoStrip = document.getElementById("setting-show-todo-strip");
     const scanProfileSelect = document.getElementById("scan-profile-select");
     const scanViewSelect = document.getElementById("scan-view-select");
     const settingScanProfile = document.getElementById("setting-scan-profile");
@@ -1220,6 +1221,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         showPeopleTab: true,
         showClipboardTab: true,
         showReportsTab: false, // Hidden by default
+        showTodoStrip: true,   // Queue-shortcut chips at the top of the panel
         showQuickNotes: true,
         showFindBar: true,
         // Footer tools
@@ -5297,6 +5299,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (userPrefs.showDialerTab !== false && frame?.contentWindow) {
             activateMainTab('sec-dialer');
             try { frame.contentWindow.postMessage({ type: 'AD_SWITCH_TAB', tab: queueTab }, '*'); } catch (_) {}
+            // Re-send once — switchTab no-ops when already on the queue, so this
+            // only papers over a first message lost to iframe startup timing.
+            setTimeout(() => {
+                try { frame.contentWindow.postMessage({ type: 'AD_SWITCH_TAB', tab: queueTab }, '*'); } catch (_) {}
+            }, 700);
         } else {
             chrome.windows.create({ url: chrome.runtime.getURL(`dialer.html?tab=${queueTab}`), type: 'popup', width: 480, height: 760 });
         }
@@ -10713,11 +10720,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (settingShowPeople) settingShowPeople.checked = userPrefs.showPeopleTab;
         if (settingShowClipboard) settingShowClipboard.checked = userPrefs.showClipboardTab;
         if (settingShowReports) settingShowReports.checked = userPrefs.showReportsTab;
+        if (settingShowTodoStrip) settingShowTodoStrip.checked = userPrefs.showTodoStrip !== false;
+        const todoStripEl = document.getElementById('todo-strip');
+        if (todoStripEl) todoStripEl.style.display = userPrefs.showTodoStrip === false ? 'none' : '';
 
         // Sync with options page settings if available
         chrome.storage.sync.get([
             // Tab visibility
-            'show_dialer', 'show_people', 'show_clipboard', 'show_reports',
+            'show_dialer', 'show_people', 'show_clipboard', 'show_reports', 'show_todo_strip',
             // Scan
             'scan_profile', 'scan_view',
             // Appearance
@@ -10788,6 +10798,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result.show_people !== undefined) userPrefs.showPeopleTab = result.show_people;
             if (result.show_clipboard !== undefined) userPrefs.showClipboardTab = result.show_clipboard;
             if (result.show_reports !== undefined) userPrefs.showReportsTab = result.show_reports;
+            if (result.show_todo_strip !== undefined) userPrefs.showTodoStrip = result.show_todo_strip;
 
             // Footer tools - sync from options page
             if (result.footer_show_find !== undefined) userPrefs.showFindBar = result.footer_show_find;
@@ -10801,6 +10812,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (settingShowPeople) settingShowPeople.checked = userPrefs.showPeopleTab;
             if (settingShowClipboard) settingShowClipboard.checked = userPrefs.showClipboardTab;
             if (settingShowReports) settingShowReports.checked = userPrefs.showReportsTab;
+            if (settingShowTodoStrip) settingShowTodoStrip.checked = userPrefs.showTodoStrip !== false;
+            const todoStripSynced = document.getElementById('todo-strip');
+            if (todoStripSynced) todoStripSynced.style.display = userPrefs.showTodoStrip === false ? 'none' : '';
 
             // Update tab visibility - tabs are visible by default, only hide if explicitly false
             const dialerTabBtn = document.querySelector('.nav-tab[data-target="sec-dialer"]');
@@ -10970,6 +10984,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!e.target.checked && document.querySelector('.nav-tab[data-target="sec-dialer"].active')) {
             document.querySelector('.nav-tab[data-target="sec-scanner"]').click();
         }
+    });
+    if (settingShowTodoStrip) settingShowTodoStrip.addEventListener('change', (e) => {
+        userPrefs.showTodoStrip = e.target.checked;
+        saveUserPrefs(); applyUserPrefs();
+        if (chrome.storage && chrome.storage.sync) chrome.storage.sync.set({ show_todo_strip: e.target.checked });
     });
     if (settingShowPeople) settingShowPeople.addEventListener('change', (e) => {
         userPrefs.showPeopleTab = e.target.checked;

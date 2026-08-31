@@ -501,13 +501,15 @@
     const doubleTapBanner = isInDoubleTap
       ? `<div class="double-tap-banner">★ DOUBLE TAP! ★<span class="sub">2nd ring · held: ${escapeHtml(doubleTapPriorStatus || "Attempted")}</span></div>`
       : "";
+    const _cur = splitReferral(currentLead.name);
     els.current.innerHTML = `
       ${doubleTapBanner}
       <div style="display:flex;align-items:center;gap:8px;">
         <div class="phase ${phase}">${phaseLabel}</div>
         <span id="call-timer" style="font-size:13px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums;"></span>
       </div>
-      <div class="lead-name">${escapeHtml(currentLead.name || "(no name)")}</div>
+      <div class="lead-name">${_cur.referrer ? `<span style="font-size:13px;font-weight:600;color:var(--muted);">Customer: </span>` : ""}${escapeHtml(_cur.customer || "(no name)")}</div>
+      ${_cur.referrer ? `<div class="lead-referrer" style="font-size:14px;font-weight:600;margin-top:2px;">🤝 <span style="color:var(--muted);font-size:13px;">Referrer: </span>${escapeHtml(_cur.referrer)}</div>` : ""}
       <div class="lead-phone">${escapeHtml(currentLead.phone)}</div>
       <div class="lead-meta">
         <span>Source: ${escapeHtml(currentLead.source || "—")}</span>
@@ -627,14 +629,21 @@
       const calledHtml = (lead.backend === "missed-calls" && lead.time)
         ? `<div class="row3" style="font-size:11px;color:var(--muted);margin-top:2px;">📞 Called ${escapeHtml(formatCalledTime(lead.time))}</div>`
         : "";
-      const nameInner = escapeHtml(lead.name || "(no name)");
+      // Referral rows show the CUSTOMER here and the referrer on its own line
+      // below; copy-to-clipboard must hand over the customer alone, never the
+      // combined string (it gets pasted into Roofr).
+      const { customer: leadCustomer, referrer: leadReferrer } = splitReferral(lead.name);
+      const nameInner = escapeHtml(leadCustomer || "(no name)");
       const nameHtml = lead.jobUrl
-        ? `<a class="name copyable job-link" data-copy="${escapeHtml(lead.name || "")}" href="${escapeHtml(lead.jobUrl)}" target="_blank" rel="noopener" title="Open Roofr job card${lead.jobStage ? " — " + escapeHtml(lead.jobStage) : ""}">${nameInner} 🔗</a>`
-        : `<strong class="name copyable" data-copy="${escapeHtml(lead.name || "")}">${nameInner}</strong>`;
+        ? `<a class="name copyable job-link" data-copy="${escapeHtml(leadCustomer || "")}" href="${escapeHtml(lead.jobUrl)}" target="_blank" rel="noopener" title="Open Roofr job card${lead.jobStage ? " — " + escapeHtml(lead.jobStage) : ""}">${nameInner} 🔗</a>`
+        : `<strong class="name copyable" data-copy="${escapeHtml(leadCustomer || "")}">${nameInner}</strong>`;
+      const referrerHtml = leadReferrer
+        ? `<div class="row3" style="font-size:11px;color:var(--muted);margin-top:2px;line-height:1.3;">🤝 Referrer: <strong style="color:var(--text);">${escapeHtml(leadReferrer)}</strong></div>`
+        : "";
       leftEl.innerHTML = `
         <div class="row1"><span class="tier t${tier}">${tierLabel}</span>${nameHtml}</div>
         <div class="row2"><a class="phone-link copyable" data-copy="${escapeHtml(lead.phone)}" data-ctm-digits="${escapeHtml(lead.phone10 || (lead.phone || '').replace(/\D/g,'').slice(-10))}" href="https://app.calltrackingmetrics.com/calls/desk#filter=${escapeHtml(lead.phone10 || (lead.phone || '').replace(/\D/g,'').slice(-10))}" title="Click to open CTM filtered to this number">${escapeHtml(lead.phone)}</a> ${sourcePillHtml(lead.source)}${statusPillHtml(lead.status)}${doubleTapBadge}</div>
-        ${calledHtml}${noteHtml}
+        ${referrerHtml}${calledHtml}${noteHtml}
       `;
       const metaEl = document.createElement("span");
       metaEl.className = "meta";
@@ -665,6 +674,18 @@
   function escapeHtml(s) {
     return String(s ?? "").replace(/[&<>"']/g, c =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  }
+
+  // ReferPro rows land in column B as "Customer > Referrer" (sync-form-leads).
+  // Split them so the CSR reads two labeled lines instead of one mashed string —
+  // on a referral call the referrer's name IS the opener. Leads without the
+  // separator are untouched, so every other source renders exactly as before.
+  function splitReferral(name) {
+    const s = String(name || "");
+    const i = s.indexOf(" > ");
+    return i === -1
+      ? { customer: s, referrer: "" }
+      : { customer: s.slice(0, i).trim(), referrer: s.slice(i + 3).trim() };
   }
 
   // ── Missed Calls queue builder ──

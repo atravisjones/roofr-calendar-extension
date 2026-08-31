@@ -676,6 +676,16 @@
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   }
 
+  // Explicit Main Line caller ID — the safe fallback whenever a lead's source
+  // has no entry in dialer-sources.js. Never leave the softphone unset: CTM
+  // holds the last-used number, so "no mapping" means "borrow the previous
+  // call's caller ID" rather than anything sensible.
+  function mainLineOutbound() {
+    try {
+      return (window.DialerSources || {}).lookupOutbound?.("Arizona Roofers Main Line") || null;
+    } catch (_) { return null; }
+  }
+
   // ReferPro rows land in column B as "Customer > Referrer" (sync-form-leads).
   // Split them so the CSR reads two labeled lines instead of one mashed string —
   // on a referral call the referrer's name IS the opener. Leads without the
@@ -1636,7 +1646,12 @@
     if (outbound) {
       log(`source "${lead.source || '(blank)'}" → outbound ${outbound.name} ${outbound.number}`, "info", "src");
     } else {
-      log(`no outbound mapping for source "${lead.source}" — using CTM default`, "warn", "src");
+      // "CTM default" is a lie: with nothing set, the softphone keeps whatever
+      // number the PREVIOUS call used, so an unmapped source silently borrows
+      // another channel's caller ID (a ReferPro lead dialed out on the LSA
+      // Messages line 2026-08-31). Pin the Main Line instead.
+      outbound = mainLineOutbound();
+      log(`no outbound mapping for source "${lead.source}" — falling back to Main Line`, "warn", "src");
     }
     // Sheet Missed Call rows: the note's CALL BACK FROM number beats the
     // generic source lookup (it's the exact tracking number they dialed).
@@ -2001,6 +2016,7 @@
     }
     let outbound = null;
     try { outbound = (window.DialerSources || {}).lookupOutbound?.(lead.source); } catch (_) {}
+    if (!outbound) outbound = mainLineOutbound();   // never inherit the last call's number
     // Sheet Missed Call rows: honor the note's CALL BACK FROM number here too.
     const dtNoteFrom = missedCallNoteFrom(lead);
     if (dtNoteFrom) outbound = { number: dtNoteFrom, name: lead.source || "Missed Call" };

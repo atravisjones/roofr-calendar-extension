@@ -57,6 +57,11 @@
     // note ("CALL BACK FROM …", parsed in dialer.js) — this entry is only the
     // fallback when that note is missing or unparseable.
     "Missed Call":                         MAIN_LINE,
+    // Referrals have no marketing tracking number of their own — the customer
+    // was handed to us by a person, so the main brand line is the right caller
+    // ID. Without this entry the call inherits CTM's last-used number (a
+    // ReferPro lead went out on the LSA Messages line 2026-08-31).
+    "ReferPro":                            MAIN_LINE,
     "Self Gen":                            MAIN_LINE,
     "Door knocking":                       MAIN_LINE,
     "Town Of Gilbert":                     MAIN_LINE,

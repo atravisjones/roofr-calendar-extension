@@ -284,6 +284,11 @@
   const ltSkippedThisSession = new Set();
   // ── Queue filters ──
   let filterSources = new Set();         // empty = all sources pass
+  // Every source seen the last time filter prefs were saved. The source filter
+  // is an ALLOWLIST synced across a rep's devices, so a source invented later
+  // can never be in it — without this, adding a new lead source silently hides
+  // every one of its leads from anyone who ever ticked a filter box.
+  let knownSources = new Set();
   let filterAttemptPreset = "all";       // "new" | "followup" | "persistent" | "all"
   let allKnownSources = [];              // rebuilt from fetched data
   const completedThisSession = [];       // {phone, name, status, attempts} — the rolling DAILY "Done" list (persisted, resets at AZ midnight)
@@ -876,6 +881,7 @@
       if (src && !EXCLUDE_SOURCES.has(src.toLowerCase())) sourcesInData.add(src);
     }
     allKnownSources = Array.from(sourcesInData).sort();
+    absorbNewSources(sourcesInData);
     rebuildSourceCheckboxes();
 
     // Attempt preset ranges
@@ -2666,18 +2672,41 @@
     try {
       chrome.storage.sync.set({
         dialer_filter_sources: Array.from(filterSources),
+        dialer_filter_known_sources: Array.from(knownSources),
         dialer_filter_attempts: filterAttemptPreset,
       });
     } catch (_) {}
   }
 
+  // A lead source that didn't exist when the rep saved their filter must never
+  // be hidden by it — that reads as "the lead never arrived" (ReferPro leads
+  // went missing this way, 2026-08-31). Any source new since the last save is
+  // opted IN. First run after this shipped has no baseline, so everything
+  // currently present is opted in once, which un-hides the sources added
+  // before the fix; the rep's filter is theirs to re-narrow.
+  function absorbNewSources(sourcesInData) {
+    if (!filterSources.size) { knownSources = new Set(sourcesInData); return; }
+    const added = [...sourcesInData].filter(s => !knownSources.has(s) && !filterSources.has(s));
+    if (added.length) {
+      added.forEach(s => filterSources.add(s));
+      log(`new lead source${added.length > 1 ? "s" : ""} auto-included in your filter: ${added.join(", ")}`,
+          "warn", "queue");
+    }
+    knownSources = new Set(sourcesInData);
+    if (added.length) saveFilterPrefs();
+  }
+
   async function loadFilterPrefs() {
     try {
       const s = await chrome.storage.sync.get([
-        "dialer_filter_sources", "dialer_filter_attempts", "dialer_filters_open",
+        "dialer_filter_sources", "dialer_filter_known_sources",
+        "dialer_filter_attempts", "dialer_filters_open",
       ]);
       if (Array.isArray(s.dialer_filter_sources) && s.dialer_filter_sources.length > 0) {
         filterSources = new Set(s.dialer_filter_sources);
+      }
+      if (Array.isArray(s.dialer_filter_known_sources)) {
+        knownSources = new Set(s.dialer_filter_known_sources);
       }
       if (s.dialer_filter_attempts && s.dialer_filter_attempts !== "all") {
         filterAttemptPreset = s.dialer_filter_attempts;

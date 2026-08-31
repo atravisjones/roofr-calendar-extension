@@ -1585,6 +1585,16 @@
     await dialCurrentLead();
   }
 
+  // Sheet "Missed Call" rows (missed-call watchdog) embed the exact tracking
+  // number the customer dialed in the W-column lead notes:
+  //   "CALL BACK FROM (480) 790-6153 (source)".
+  // The callback must present that caller ID — source attribution plus
+  // Roofers/Roof Pro brand separation (never cross the brands).
+  function missedCallNoteFrom(lead) {
+    const m = /CALL BACK FROM\s*\((\d{3})\)\s*(\d{3})-(\d{4})/i.exec(lead?.leadNotes || "");
+    return m ? `+1${m[1]}${m[2]}${m[3]}` : null;
+  }
+
   // The actual dial execution — E.164 + caller-ID lookup through the CTM dial
   // command + ring-timeout safety. Split out of advanceToNext so the LSA
   // review hold can trigger it from the "Dial now" button.
@@ -1606,6 +1616,13 @@
       log(`source "${lead.source || '(blank)'}" → outbound ${outbound.name} ${outbound.number}`, "info", "src");
     } else {
       log(`no outbound mapping for source "${lead.source}" — using CTM default`, "warn", "src");
+    }
+    // Sheet Missed Call rows: the note's CALL BACK FROM number beats the
+    // generic source lookup (it's the exact tracking number they dialed).
+    const noteFrom = missedCallNoteFrom(lead);
+    if (noteFrom) {
+      outbound = { number: noteFrom, name: lead.source || "Missed Call" };
+      log(`CALL BACK FROM note → outbound ${noteFrom}`, "info", "src");
     }
     // Missed-call leads carry a server-resolved outbound number (matched to the
     // tracking number they originally dialed, Main Line fallback). Prefer it.
@@ -1963,6 +1980,9 @@
     }
     let outbound = null;
     try { outbound = (window.DialerSources || {}).lookupOutbound?.(lead.source); } catch (_) {}
+    // Sheet Missed Call rows: honor the note's CALL BACK FROM number here too.
+    const dtNoteFrom = missedCallNoteFrom(lead);
+    if (dtNoteFrom) outbound = { number: dtNoteFrom, name: lead.source || "Missed Call" };
     // Missed-call leads carry a server-resolved outbound (the tracking number
     // they dialed). Honor it on the 2nd double-tap too, like the primary path.
     if (lead.fromNumber) outbound = { number: lead.fromNumber, name: lead.source || "Missed Call" };

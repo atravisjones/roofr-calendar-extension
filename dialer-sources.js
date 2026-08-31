@@ -53,6 +53,10 @@
     "Arizona Roofers Main Line":           MAIN_LINE,
 
     // ── No dedicated tracking number → Main Line caller ID ──
+    // Missed-call watchdog rows: the exact number lives in the lead's W-column
+    // note ("CALL BACK FROM …", parsed in dialer.js) — this entry is only the
+    // fallback when that note is missing or unparseable.
+    "Missed Call":                         MAIN_LINE,
     "Self Gen":                            MAIN_LINE,
     "Door knocking":                       MAIN_LINE,
     "Town Of Gilbert":                     MAIN_LINE,

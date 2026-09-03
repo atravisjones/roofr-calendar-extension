@@ -11745,6 +11745,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (entry) {
             const pin = info.pinFlag && info.status === 'needs'
                 ? ' <span style="color: var(--danger); font-weight: 700;">⚠ pin</span>'
+                    + (info.unitMismatch ? ' <span style="color: var(--danger); font-weight: 700;">form≠card</span>' : '')
+                    + (info.unitDropped ? ' <span style="color: var(--danger); font-weight: 700;">unit dropped</span>' : '')
                 : '';
             parts.push(`<span style="font-size: 0.66rem; font-weight: 650; color: ${entry[1]}; white-space: nowrap;">${entry[0]}${pin}</span>`);
         }
@@ -11936,7 +11938,78 @@ document.addEventListener('DOMContentLoaded', async () => {
     // the Roofr tab to each needing job's "Confirm roof location" step and STOPS —
     // pin verification and the purchase click stay with the human, always.
     const REPORTS_V2_PIN_FLAG = /\b(lot|unit|space|spc|apt|trlr)\b|#\s*\d/i;
+    // Complex keywords in the job Details (intake note's Subdivision line etc.)
+    // flag the job even when nobody typed a unit anywhere. Added 2026-09-03 after
+    // the Fukuda job (11180707): header address had no unit, note said Unit 1,
+    // customer's form + booking call both said Unit 14, materials went to Unit 1.
+    // Plurals matter: the Fukuda card said "CITRUS ACRES CONDOS". No bare "RV" —
+    // "RV gate" is common prose in notes.
+    const REPORTS_V2_COMPLEX_FLAG = /\b(CONDOS?|CONDOMINIUMS?|TOWNHOMES?|TOWNHOUSES?|VILLAS?|APARTMENTS?|MOBILE HOMES?|TRAILER PARK|MHP|RV PARK)\b/i;
+    // Details is free prose ("a lot of debris"), so unlike the title/address test
+    // it needs a designator FOLLOWED by an identifier: "Unit 14", "Lot 7", "#3".
+    // Identifier = a number (optionally letter-suffixed/prefixed) or a lone letter,
+    // so "lot of debris" / "Space Needle Way" don't match but "Unit 14", "Apt 3B",
+    // "Lot 12", "Unit A", "#7" do.
+    const REPORTS_V2_DETAILS_UNIT_FLAG = /\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot|trlr|trailer)\s*#?\s*(?:[a-z]?-?\d+[a-z]?|[a-z])\b|#\s*\d/i;
+    const REPORTS_V2_CONTEXT_URL = 'https://speed-to-leads.vercel.app/api/lead-context';
     const REPORTS_V2_ORDER_LANES = 3;
+
+    function reportsV2ExtractUnit(value) {
+        const text = String(value ?? '');
+        const match = text.match(/\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot|trlr|trailer|rm|room)\s*#?\s*(?:[a-z]?-?\d+[a-z]?|[a-z])\b/i)
+            || text.match(/#\s*(?:[a-z]?-?\d+[a-z]?|[a-z])\b/i);
+        return match ? match[0].replace(/\s+/g, ' ').trim() : null;
+    }
+
+    function reportsV2NormalizeUnit(value) {
+        return String(value ?? '').toLowerCase().trim()
+            .replace(/^(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot|trlr|trailer|rm|room)?\s*#?\s*/i, '')
+            .replace(/^0+(?=\d)/, '');
+    }
+
+    // Best-effort: customer's typed form address + the CTM call that booked the
+    // appointment. Any failure → null; report ordering never depends on it.
+    async function reportsV2FetchLeadContext(phone, jobId) {
+        const digits = String(phone ?? '').replace(/\D/g, '');
+        if (digits.length < 10 || !jobId) return null;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 3500);
+        try {
+            const response = await fetch(`${REPORTS_V2_CONTEXT_URL}?phone=${encodeURIComponent(digits)}&job_id=${encodeURIComponent(jobId)}`, {
+                headers: { 'X-Dialer-Client': 'roofr-extension' },
+                cache: 'no-store',
+                signal: controller.signal
+            });
+            if (!response.ok) return null;
+            const data = await response.json();
+            return data?.ok ? data : null;
+        } catch (_) {
+            return null;
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    // Only ever link into CTM itself — an API response must not be able to hand
+    // the popup a javascript:/data:/foreign URL.
+    function reportsV2SafeCtmUrl(value) {
+        const text = String(value ?? '');
+        return /^https:\/\/app\.calltrackingmetrics\.com\//i.test(text) ? text : '';
+    }
+
+    function reportsV2LocalDateTime(value) {
+        if (!value) return '';
+        try {
+            return new Intl.DateTimeFormat('en-US', {
+                timeZone: 'America/Phoenix', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit'
+            }).format(new Date(value));
+        } catch (_) { return ''; }
+    }
+
+    function reportsV2Duration(value) {
+        const seconds = Math.max(0, Number(value) || 0);
+        return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+    }
 
     function reportsV2UniqueJobs() {
         const seen = new Map();
@@ -11965,7 +12038,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const job = await reportsV2ApiAdapter.getJob(jobId);
                 const titleText = `${event?.title || ''} ${job?.name || ''}`;
                 const address = job?.address?.formatted_address || job?.address?.address || '';
-                const pinFlag = REPORTS_V2_PIN_FLAG.test(`${titleText} ${address}`);
+                // Three sources, not one: the Fukuda header had no unit at all — the
+                // unit only existed in the Details note and on the customer's form.
+                const details = String(job?.details || '');
+                const addressLine2 = String(job?.address?.address_line_2 || '');
+                const unitInTitleOrAddress = REPORTS_V2_PIN_FLAG.test(`${titleText} ${address} ${addressLine2}`);
+                const unitInDetails = REPORTS_V2_DETAILS_UNIT_FLAG.test(details);
+                const complex = details.match(REPORTS_V2_COMPLEX_FLAG);
+                const pinFlag = unitInTitleOrAddress || unitInDetails || !!complex;
+                const pinReason = unitInTitleOrAddress ? 'unit in title/address'
+                    : unitInDetails ? 'unit in details'
+                    : complex ? `complex: ${complex[1].toUpperCase()}` : null;
+                const detailsUnit = reportsV2ExtractUnit(details);
+                const cardUnit = reportsV2ExtractUnit(addressLine2) || reportsV2ExtractUnit(address) || detailsUnit;
                 // jobs.tags carrying "Commercial" is the source of truth (verified
                 // live 2026-08-28: /api/job/{id} returns tags as [{name}]); the
                 // "[Commercial]" title marker is a fallback for untagged strays.
@@ -11976,7 +12061,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (/paint/i.test(titleText)) status = 'paint';
                 else if ((job?.reports || []).length) status = 'delivered';
                 else if ((job?.measurementQueues || []).length) status = 'processing';
-                reportsV2JobReports[jobId] = { status, pinFlag, address, commercial };
+                const info = {
+                    status, pinFlag, pinReason, address, commercial,
+                    cardUnit, detailsUnit, ctx: null, unitMismatch: false, unitDropped: false
+                };
+                reportsV2JobReports[jobId] = info;
+                if (status === 'needs' || pinFlag) {
+                    info.ctx = await reportsV2FetchLeadContext(job?.customer?.phone, jobId);
+                    const formUnit = info.ctx?.form?.unit || reportsV2ExtractUnit(info.ctx?.form?.address) || null;
+                    info.formUnit = formUnit;
+                    info.unitMismatch = !!(formUnit && cardUnit
+                        && reportsV2NormalizeUnit(formUnit) !== reportsV2NormalizeUnit(cardUnit));
+                    info.unitDropped = !!(formUnit && !cardUnit);
+                    if (info.unitMismatch || info.unitDropped) {
+                        info.pinFlag = true;
+                        info.pinReason = info.unitMismatch ? 'form unit ≠ card unit' : 'form has unit, card has none';
+                    }
+                }
             } catch (error) {
                 reportsV2JobReports[jobId] = { status: 'error', error: error.message };
             }
@@ -12011,9 +12112,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
         const lanes = run.lanes.map((lane, i) => {
             const info = lane.jobId ? reportsV2JobReports[String(lane.jobId)] : null;
-            const pin = info?.pinFlag
-                ? '<div style="margin-top: 3px; font-size: 0.68rem; font-weight: 700; color: var(--danger);">⚠ lot/unit — double-check pin</div>'
-                : '';
+            let pin = '';
+            if (info?.pinFlag) {
+                const ctx = info.ctx;
+                const formUnit = info.formUnit || null;
+                const cardUnit = info.cardUnit || null;
+                const call = ctx?.booking_call || null;
+                const callUrl = reportsV2SafeCtmUrl(call?.url) || reportsV2SafeCtmUrl(ctx?.fallback_call_url);
+                const unitsLine = (formUnit || cardUnit)
+                    ? `<div style="font-size: 0.68rem; font-weight: 650; color: ${info.unitMismatch || info.unitDropped ? 'var(--danger)' : 'var(--text-muted)'};">Form: ${reportsV2Escape(formUnit || 'none')} · Card: ${reportsV2Escape(cardUnit || 'none')}</div>`
+                    : '';
+                const addressLine = info.address
+                    ? `<div style="font-size: 0.68rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"><button type="button" class="reports-v2-copy-address" data-address="${reportsV2Escape(info.address)}" title="Copy address" style="all: unset; cursor: pointer; text-decoration: underline dotted;">📍 ${reportsV2Escape(info.address)}</button></div>`
+                    : '';
+                const callLine = callUrl
+                    ? `<div style="font-size: 0.68rem;"><a href="${reportsV2Escape(callUrl)}" target="_blank" rel="noopener" style="color: var(--primary);">${call
+                        ? `📞 Booking call · ${reportsV2Escape(call.agent || '?')} · ${reportsV2Escape(reportsV2LocalDateTime(call.called_at))} · ${reportsV2Escape(reportsV2Duration(call.duration_seconds))}`
+                        : '📞 CTM calls for this number'}</a></div>`
+                    : '';
+                pin = `<div style="margin-top: 3px; font-size: 0.68rem; font-weight: 700; color: var(--danger);">⚠ lot/unit — double-check pin${info.pinReason ? ` <span style="font-weight: 500; color: var(--text-muted);">(${reportsV2Escape(info.pinReason)})</span>` : ''}</div>${unitsLine}${addressLine}${callLine}`;
+            }
             const canSkip = lane.jobId && !['done', 'closed', 'ordered'].includes(lane.status);
             return `<div style="padding: 6px 0; border-top: 1px solid var(--border);">
                 <div style="display: flex; align-items: center; gap: 6px;">
@@ -12038,6 +12156,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
         document.getElementById('reports-v2-order-stop')?.addEventListener('click', () => {
             if (reportsV2OrderState) reportsV2OrderState.stopped = true;
+        });
+        reportsV2OrderPanel.querySelectorAll('.reports-v2-copy-address').forEach(button => {
+            button.addEventListener('click', async () => {
+                const previous = button.textContent;
+                try {
+                    await navigator.clipboard.writeText(button.dataset.address || '');
+                    button.textContent = '📍 copied';
+                    setTimeout(() => { button.textContent = previous; }, 900);
+                } catch (_) { /* clipboard denied — nothing to do */ }
+            });
         });
     }
 

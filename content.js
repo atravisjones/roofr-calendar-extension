@@ -7216,3 +7216,41 @@ if (location.hostname.includes('roofr.com') && !window.__roofrProposalNewTab) {
 // ==================================================
 // END: Roofr middle-click proposal cards
 // ==================================================
+
+// ==================================================
+// BACKTICK ANSWER (opt-in: ctm_backtick_answer)
+// Pressing ` in any Roofr/CTM/Earth tab answers a RINGING inbound CTM call.
+// The service worker only acts inside the incoming-ring window, so the key
+// is inert the rest of the time. Skips editable targets so typing a real
+// backtick in a note never fires it.
+// ==================================================
+(() => {
+  let _backtickAnswerOn = false;
+  // DOM-visible diagnostics (console capture is unreliable in this context):
+  // data-bt-answer = pref state, data-bt-press = last keydown seen,
+  // data-bt-result = last SW response.
+  const mark = (k, v) => { try { document.documentElement.dataset[k] = String(v); } catch (_) {} };
+  const apply = (v) => { _backtickAnswerOn = v === true; mark("btAnswer", _backtickAnswerOn); };
+  try {
+    chrome.storage.sync.get({ ctm_backtick_answer: true }, (v) => apply(v.ctm_backtick_answer));
+    chrome.storage.onChanged.addListener((ch, area) => {
+      if (area === "sync" && ch.ctm_backtick_answer) apply(ch.ctm_backtick_answer.newValue);
+    });
+  } catch (_) {}
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "`" || e.ctrlKey || e.altKey || e.metaKey) return;
+    mark("btPress", Date.now());
+    if (!_backtickAnswerOn) { mark("btResult", "disabled"); return; }
+    const t = e.target;
+    const tag = (t?.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select" || t?.isContentEditable) {
+      mark("btResult", "editable-target");
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage({ type: "BACKTICK_ANSWER" })
+        .then((r) => { mark("btResult", JSON.stringify(r)); console.log("[BacktickAnswer] →", JSON.stringify(r)); })
+        .catch((err) => mark("btResult", "sendMessage-rejected: " + err));
+    } catch (err) { mark("btResult", "sendMessage-threw: " + err); }
+  }, true);
+})();

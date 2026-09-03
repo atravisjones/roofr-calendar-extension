@@ -1189,6 +1189,17 @@ chrome.runtime.onStartup.addListener(async () => {
 
 const AUTODIALER_WINDOW_KEY = 'autodialer_window_id';
 
+// ── BACKTICK ANSWER ─────────────────────────────────────────
+// Pressing ` in any covered tab answers a RINGING inbound CTM call (opt-in,
+// ctm_backtick_answer). Ring window opens on ctm:incomingCall and closes on
+// any lifecycle event + a hard TTL, so the key is inert outside a live ring.
+const BACKTICK_RING_TTL_MS = 60000;
+let _backtickRing = { active: false, tabId: null, at: 0 };
+// One keypress can arrive twice (top frame: content.js + dialer-bridge relay
+// both listen) — collapse repeats inside this window into one injection.
+const BACKTICK_DEDUPE_MS = 400;
+let _backtickLastAnswerAt = 0;
+
 // ── MEET AUTO-MUTE ──────────────────────────────────────────
 // While a call is LIVE on the CTM softphone (ctm:start — inbound or outbound,
 // dialer open or not), two independent toggles act on every meet.google.com tab:
@@ -1833,6 +1844,47 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         })();
         return true;
     }
+    if (msg?.type === 'BACKTICK_ANSWER') {
+        (async () => {
+            try {
+                const now = Date.now();
+                if (now - _backtickLastAnswerAt < BACKTICK_DEDUPE_MS) {
+                    sendResponse({ ok: true, deduped: true });
+                    return;
+                }
+                _backtickLastAnswerAt = now;
+                // The ring window is only a tab-targeting HINT — the real safety
+                // gate is the click itself: the bridge only presses a live Answer
+                // control (call-specific selectors / exact "answer" text), which
+                // exists solely while an inbound call rings. ctm:incomingCall
+                // proved untrustworthy as a hard gate: it exists only in the
+                // relay list; no consumer ever verified CTM fires it.
+                const fresh = _backtickRing.active && (Date.now() - _backtickRing.at) < BACKTICK_RING_TTL_MS;
+                const tabId = (fresh && _backtickRing.tabId) ? _backtickRing.tabId : await findCtmTabId();
+                if (!tabId) {
+                    console.log('[BacktickAnswer] no CTM tab found');
+                    sendResponse({ ok: false, reason: 'no_ctm_tab' });
+                    return;
+                }
+                // Same MAIN-world postMessage injection the dialer commands use;
+                // allFrames so the frame that actually holds the Answer button
+                // (usually the phone-embed iframe) hears it directly.
+                await chrome.scripting.executeScript({
+                    target: { tabId, allFrames: true },
+                    world: 'MAIN',
+                    func: () => {
+                        window.postMessage({ __autoDialerBridge: true, dir: 'from-relay', type: 'answer-incoming' }, '*');
+                    },
+                });
+                console.log('[BacktickAnswer] answer command sent to CTM tab', tabId, 'ringHint:', fresh);
+                sendResponse({ ok: true, tabId, ringHint: fresh });
+            } catch (e) {
+                console.log('[BacktickAnswer] error:', e.message);
+                sendResponse({ ok: false, error: e.message });
+            }
+        })();
+        return true;
+    }
     if (msg?.type === 'AD_TO_CTM') {
         (async () => {
             const tabId = await findCtmTabId(msg.windowId);
@@ -1880,6 +1932,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // mute — you're not on the call until you answer.
         if (msg.payload?.type === 'ctm-event') {
             const ev = msg.payload.event;
+            // Backtick-answer ring window: only an incoming ring opens it; any
+            // call-lifecycle event closes it. The key can NEVER answer (or do
+            // anything) outside this window — that's the whole safety model.
+            if (ev === 'ctm:incomingCall') {
+                _backtickRing = { active: true, tabId: sender?.tab?.id ?? null, at: Date.now() };
+                console.log('[BacktickAnswer] ring hint opened (ctm:incomingCall) tab', sender?.tab?.id);
+            } else if (ev === 'ctm:start' || ev === 'ctm:answered' || ev === 'ctm:failed' || ev === 'ctm:end-activity') {
+                _backtickRing.active = false;
+            }
             if (ev === 'ctm:connecting' || ev === 'ctm:start') {
                 meetAutoMute();
             } else if (ev === 'ctm:end-activity' || ev === 'ctm:wrapup_start' || ev === 'ctm:failed') {

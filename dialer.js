@@ -14,6 +14,7 @@
 
   const API_BASE = "https://speed-to-leads.vercel.app";
   const DISPOSITIONS_URL = `${API_BASE}/api/sheet-dispositions`;
+  const LEAD_CONTEXT_URL = `${API_BASE}/api/lead-context`;
   // Missed Calls tab: server-side CTM missed/uncalled queue + disposition write-back.
   const MISSED_CALLS_URL = `${API_BASE}/api/missed-calls-queue`;
   const MISSED_DISPOSITIONS_URL = `${API_BASE}/api/lead-dispositions`;
@@ -507,6 +508,10 @@
       ? `<div class="double-tap-banner">★ DOUBLE TAP! ★<span class="sub">2nd ring · held: ${escapeHtml(doubleTapPriorStatus || "Attempted")}</span></div>`
       : "";
     const _cur = splitReferral(currentLead.name);
+    const mainAddress = String(currentLead.address || "").trim();
+    const mainAddressHtml = mainAddress
+      ? `<div class="lead-address" style="font-size:12px;color:var(--muted);margin-top:2px;">${addressCopyHtml(mainAddress)}</div>`
+      : "";
     els.current.innerHTML = `
       ${doubleTapBanner}
       <div style="display:flex;align-items:center;gap:8px;">
@@ -516,6 +521,7 @@
       <div class="lead-name">${_cur.referrer ? `<span style="font-size:13px;font-weight:600;color:var(--muted);">Customer: </span>` : ""}${escapeHtml(_cur.customer || "(no name)")}</div>
       ${_cur.referrer ? `<div class="lead-referrer" style="font-size:14px;font-weight:600;margin-top:2px;">🤝 <span style="color:var(--muted);font-size:13px;">Referrer: </span>${escapeHtml(_cur.referrer)}</div>` : ""}
       <div class="lead-phone">${escapeHtml(currentLead.phone)}</div>
+      ${mainAddressHtml}
       <div class="lead-meta">
         <span>Source: ${escapeHtml(currentLead.source || "—")}</span>
         <span>Attempts: ${currentLead.attemptCount || 0}</span>
@@ -4864,6 +4870,90 @@
     document.querySelectorAll(".rsched-row").forEach(r => r.classList.toggle("active", r.dataset.jobId === String(job.job_id)));
   }
 
+  // ── Lot/unit awareness (2026-09-03) ──
+  // After the Fukuda job (Roofr 11180707): customer said "Unit 14" on the web
+  // form AND the booking call, the card said Unit 1, nobody re-confirmed on the
+  // welcome/production/scheduling calls, materials went to the wrong unit.
+  // Every card now shows the address as click-to-copy, flags a lot/unit, and
+  // (job cards only) lazily pulls the customer's typed form address + the CTM
+  // call that booked the appointment from /api/lead-context. Quiet by default:
+  // nothing extra renders for an unflagged single-family lead.
+  // Identifier must be a number (optionally letter-affixed) or a lone letter so
+  // "Space Needle Way" / "lot of debris" don't flag but "Unit 14", "Apt 3B" do.
+  const DIALER_UNIT_RE = /(#\s*(?:[a-z]?-?\d+[a-z]?|[a-z])\b|\b(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot|trlr|trailer|rm|room)\s*#?\s*(?:[a-z]?-?\d+[a-z]?|[a-z])\b)/i;
+  function extractDialerUnit(value) {
+    const hit = DIALER_UNIT_RE.exec(String(value || ""));
+    return hit ? hit[0].replace(/\s+/g, " ").trim() : "";
+  }
+  function normalizeDialerUnit(value) {
+    return String(value || "").toLowerCase().trim()
+      .replace(/^(?:unit|apt|apartment|ste|suite|spc|space|bldg|building|lot|trlr|trailer|rm|room)?\s*#?\s*/i, "")
+      .replace(/^0+(?=\d)/, "");
+  }
+  function unitFlagHtml() {
+    return ` <span class="tier" style="background:var(--danger-bg);color:var(--danger);border:1px solid var(--danger);white-space:nowrap;" title="Confirm the lot/unit number with the customer">⚠ unit</span>`;
+  }
+  // Address as click-to-copy (handled by the document-level .copyable.addr
+  // listener below — the #queue listener only covers queue rows) + unit chip.
+  function addressCopyHtml(address) {
+    const a = String(address || "").trim();
+    if (!a) return "";
+    return `<span class="copyable addr" data-copy="${escapeHtml(a)}" title="Click to copy address">📍 ${escapeHtml(a)}</span>${extractDialerUnit(a) ? unitFlagHtml() : ""}`;
+  }
+  // Only link into CTM itself — never trust an arbitrary URL from the API.
+  function safeCtmUrl(value) {
+    const text = String(value || "");
+    return /^https:\/\/app\.calltrackingmetrics\.com\//i.test(text) ? text : "";
+  }
+  function contextCallTime(value) {
+    if (!value) return "";
+    try {
+      return new Date(value).toLocaleString("en-US", {
+        timeZone: "America/Phoenix", month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit",
+      });
+    } catch (_) { return String(value); }
+  }
+  function renderLeadContext(slot, context, cardAddress) {
+    if (!slot || !context?.ok) return;
+    const formUnit = context.form?.unit || extractDialerUnit(context.form?.address) || "";
+    const cardUnit = extractDialerUnit(cardAddress);
+    if (!formUnit && !cardUnit) return;                       // single-family: stay quiet
+    const mismatch = !!formUnit && !!cardUnit && normalizeDialerUnit(formUnit) !== normalizeDialerUnit(cardUnit);
+    const dropped = !!formUnit && !cardUnit;
+    const call = context.booking_call;
+    const callUrl = safeCtmUrl(call?.url) || safeCtmUrl(context.fallback_call_url);
+    const unitsHtml = (mismatch || dropped)
+      ? `<div class="rsched-meta" style="margin-top:3px;color:var(--danger);font-weight:600;">Form: ${escapeHtml(formUnit)} · Card: ${escapeHtml(cardUnit || "none")} — confirm the unit</div>`
+      : `<div class="rsched-meta" style="margin-top:3px;">Form: ${escapeHtml(formUnit || "none")} · Card: ${escapeHtml(cardUnit || "none")}</div>`;
+    const callHtml = callUrl
+      ? `<div class="rsched-meta" style="margin-top:2px;"><a href="${escapeHtml(callUrl)}" target="_blank" rel="noopener">${call
+          ? `📞 Booking call · ${escapeHtml(call.agent || "?")} · ${escapeHtml(contextCallTime(call.called_at))}`
+          : "📞 CTM calls for this number"}</a></div>`
+      : "";
+    slot.innerHTML = unitsHtml + callHtml;
+  }
+  function loadLeadContext(slot, jobId, phone, cardAddress) {
+    const phone10 = String(phone || "").replace(/\D/g, "").slice(-10);
+    if (!slot || phone10.length !== 10 || !jobId) return;
+    const requestKey = `${String(jobId)}:${phone10}`;
+    slot.dataset.contextKey = requestKey;
+    slot.innerHTML = "";
+    const url = `${LEAD_CONTEXT_URL}?phone=${encodeURIComponent(phone10)}&job_id=${encodeURIComponent(String(jobId))}`;
+    fetch(url, { headers: { "X-Dialer-Client": "roofr-extension" } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data && slot.dataset.contextKey === requestKey) renderLeadContext(slot, data, cardAddress); })
+      .catch(() => {});   // never block dialing
+  }
+  document.addEventListener("click", (e) => {
+    const el = e.target.closest(".copyable.addr");
+    if (!el || !el.dataset.copy || el.closest("#queue")) return;   // #queue has its own handler
+    navigator.clipboard.writeText(el.dataset.copy).then(() => {
+      const orig = el.textContent;
+      el.textContent = "copied!";
+      setTimeout(() => { el.textContent = orig; }, 800);
+    }).catch(() => {});
+  });
+
   function rschedRenderCard() {
     const j = _rschedJob; if (!j) return;
     const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
@@ -4872,7 +4962,8 @@
     const meta = document.getElementById("rsched-job-meta");
     const age = rschedAge(j.rescheduled_at);
     if (meta) meta.innerHTML =
-      `Created by <strong>${escapeHtml(j.created_by || "—")}</strong> · Rescheduled ${escapeHtml(rschedFmtDate(j.rescheduled_at))}${age ? " (" + escapeHtml(age) + ")" : ""}<br>${escapeHtml(j.address || "")}`;
+      `Created by <strong>${escapeHtml(j.created_by || "—")}</strong> · Rescheduled ${escapeHtml(rschedFmtDate(j.rescheduled_at))}${age ? " (" + escapeHtml(age) + ")" : ""}<br>${addressCopyHtml(j.address)}<span id="rsched-context" style="display:block;"></span>`;
+    loadLeadContext(document.getElementById("rsched-context"), j.job_id, j.phone, j.address);
   }
 
   function rschedShowPhase(ph) {
@@ -5313,7 +5404,8 @@
     const meta = document.getElementById("wc-job-meta");
     const att = parseInt(j.attemptCount) || 0;
     if (meta) meta.innerHTML =
-      `Signed <strong>${escapeHtml(j.proposalSigned || "—")}</strong> · ${att}/${WC_MAX_ATTEMPTS} attempts${j.nextCall ? " · Next " + escapeHtml(j.nextCall) : ""}${j.lastCSR ? " · last: " + escapeHtml(j.lastCSR) : ""}${j.source ? " · 📞 " + escapeHtml(j.source) : ""}<br>${escapeHtml(j.address || "")}`;
+      `Signed <strong>${escapeHtml(j.proposalSigned || "—")}</strong> · ${att}/${WC_MAX_ATTEMPTS} attempts${j.nextCall ? " · Next " + escapeHtml(j.nextCall) : ""}${j.lastCSR ? " · last: " + escapeHtml(j.lastCSR) : ""}${j.source ? " · 📞 " + escapeHtml(j.source) : ""}<br>${addressCopyHtml(j.address)}<span id="wc-context" style="display:block;"></span>`;
+    loadLeadContext(document.getElementById("wc-context"), j.jobId, j.phone, j.address);
   }
 
   function wcStartQueue() {

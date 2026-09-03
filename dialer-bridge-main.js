@@ -293,6 +293,62 @@
   setTimeout(pollForEmbed, 500);
   setTimeout(pollForEmbed, 2000);
 
+  // ── Backtick answer: click this frame's Answer button ──
+  // Ported from the proven jabra-ctm-bridge clickPhoneButton("answer"):
+  // direct CTM selectors first, then exact text, then guarded partial text
+  // (never matches "Ignore" / "Hang up and answer"). Own document only —
+  // we run in all frames, so each frame covers itself.
+  function clickAnswerInDoc(doc) {
+    const SELS = [
+      "a.accept-call-button", "button.accept-call-button", ".accept-call-button",
+      "a.answer-call-button", "button.answer-call-button", ".answer-call-button",
+      "a[data-action='answer']", "button[data-action='answer']",
+      "a[data-action='accept']", "button[data-action='accept']",
+    ];
+    // Visible AND enabled is mandatory — CTM keeps the accept-call-button in
+    // the DOM permanently (hidden, class "disabled", text "Answering...") even
+    // with no call ringing. A fallback click on that dead node reports success
+    // while doing nothing. Note <a> has no .disabled property — check the class.
+    const clickable = (el) => {
+      if (el.disabled || el.classList?.contains("disabled")) return false;
+      const r = el.getBoundingClientRect?.();
+      if (!r || r.width <= 0 || r.height <= 0) return false;
+      const cs = doc.defaultView?.getComputedStyle?.(el);
+      if (cs && (cs.visibility === "hidden" || cs.display === "none" || cs.pointerEvents === "none")) return false;
+      return true;
+    };
+    for (const sel of SELS) {
+      const target = [...doc.querySelectorAll(sel)].find(clickable);
+      if (target) {
+        target.click();
+        return sel;
+      }
+    }
+    // EXACT text allowlist — the click is the safety gate for the backtick key
+    // (no ring-state precondition), so it must be impossible to hit anything
+    // but a live inbound-answer control. Bare "accept" stays OUT (cookie/
+    // consent buttons); call-specific selectors above already cover it.
+    const EXACT_TEXTS = ["answer", "answer call"];
+    for (const el of doc.querySelectorAll("*")) {
+      if (el.children.length > 3) continue;
+      const text = (el.textContent || "").toLowerCase().trim();
+      if (!EXACT_TEXTS.includes(text)) continue;
+      const target = el.closest("[class*='button'], [class*='btn'], [role='button']") || el;
+      if (!clickable(target)) continue;
+      target.click();
+      return "text:" + text;
+    }
+    // aria-labelled controls (icon-only answer buttons have no text).
+    for (const el of doc.querySelectorAll("button[aria-label], a[aria-label], [role='button'][aria-label]")) {
+      const label = (el.getAttribute("aria-label") || "").toLowerCase();
+      if (/\banswer\b/.test(label) && !/\bignore\b/.test(label) && clickable(el)) {
+        el.click();
+        return "aria:" + label.slice(0, 40);
+      }
+    }
+    return null;
+  }
+
   // ── Listen for commands from the isolated-world relay ──
   _messageListener = (event) => {
     const msg = event.data;
@@ -306,6 +362,28 @@
       // can pick up our state instead of waiting forever.
       postToRelay({ type: "bridge-ready", hasEmbed: !!phoneEmbed, ts: Date.now() });
       postToRelay({ type: "pong", hasEmbed: !!phoneEmbed, ts: Date.now() });
+      return;
+    }
+
+    if (msg.type === "answer-incoming") {
+      // Backtick answer: every frame gets this (allFrames injection) and
+      // searches only ITS OWN document — the frame that actually holds the
+      // Answer button (phone-embed iframe, or the outer desk sidebar) finds
+      // it locally. Runs BEFORE the phoneEmbed gate on purpose: the button's
+      // frame doesn't necessarily have an embed reference. Finding no button
+      // is the safe no-op.
+      const clickedSel = clickAnswerInDoc(document);
+      // DOM-visible diagnostic per frame (console capture is unreliable here).
+      try {
+        document.documentElement.dataset.btClick =
+          (clickedSel ? "clicked " + clickedSel : "no-visible-button") + " @" + Date.now();
+      } catch (_) {}
+      log("answer-incoming:", clickedSel ? "CLICKED via " + clickedSel : "no visible answer button in this frame");
+      if (clickedSel) {
+        postToRelay({ type: "ctm-event", event: "ctm:backtick-answered", detail: {
+          frame: window === window.top ? "top" : "child", sel: clickedSel,
+        }, ts: Date.now() });
+      }
       return;
     }
 

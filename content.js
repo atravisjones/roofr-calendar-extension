@@ -11,6 +11,8 @@
     ROOFR_API_GET_DAY_EVENTS: (msg) => window.RoofrApi.getDayEvents(msg.dateStr),
     ROOFR_API_GET_EVENT: (msg) => window.RoofrApi.getEvent(msg.id ?? msg.eventId),
     ROOFR_API_GET_JOB: (msg) => window.RoofrApi.getJob(msg.id ?? msg.jobId),
+    ROOFR_API_GET_JOB_TASKS: (msg) => window.RoofrApi.getJobTasks(msg.jobId),
+    ROOFR_API_SET_TASK_STATUS: (msg) => window.RoofrApi.setTaskStatus(msg.jobId, msg.taskId, msg.status),
     ROOFR_API_LIST_RECENT_JOBS: () => window.RoofrApi.listRecentJobs(),
     ROOFR_API_SET_JOB_OWNER: (msg) => window.RoofrApi.setJobOwner(msg.jobId, msg.userId),
     ROOFR_API_ADD_ATTENDEE: async (msg) => {

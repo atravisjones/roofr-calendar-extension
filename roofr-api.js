@@ -234,6 +234,34 @@
     return unwrapData(await getWithRetry(`/api/job/${encodeURIComponent(id)}`));
   }
 
+  // Job-card tasks. The Retail template creates a "Welcome Call" task assigned
+  // to the welcome-call CSR; the dialer's Welcome tab keys its queue on it.
+  async function getJobTasks(jobId) {
+    const data = unwrapData(await getWithRetry(`/api/job/${encodeURIComponent(jobId)}/tasks`));
+    return Array.isArray(data) ? data : [];
+  }
+
+  // PUT /api/job/{id}/task/{taskId}/status {status} is the ONLY route that flips
+  // completion (verified live 2026-09-03: PUT /task/{id} with a status field is a
+  // silent no-op — it edits title/assignee/due only). The response echoes the
+  // PRE-write task, so completion is verified with a re-read, never trusted.
+  async function setTaskStatus(jobId, taskId, status) {
+    if (status !== "complete" && status !== "incomplete") {
+      throw structuredError("network", `Invalid task status: ${status}`);
+    }
+    const path = `/api/job/${encodeURIComponent(jobId)}/task/${encodeURIComponent(taskId)}/status`;
+    let writeError = null;
+    try {
+      await request(path, { method: "PUT", body: { status } });
+    } catch (error) {
+      writeError = error;
+    }
+    const after = (await getJobTasks(jobId)).find((task) => String(task.id) === String(taskId)) || null;
+    const verified = !!after && String(after.status || "").trim().toLowerCase() === status;
+    if (!verified && writeError) throw writeError;
+    return { ok: verified, verified, task: after };
+  }
+
   // One recent-jobs page is the only reliable full-team user source: /api/team
   // returns team-level objects with no users, and a single job's permitted_users
   // only lists users permitted on THAT job (sales reps are missing until assigned).
@@ -348,6 +376,8 @@
     getDayEvents,
     getEvent,
     getJob,
+    getJobTasks,
+    setTaskStatus,
     listRecentJobs,
     setJobOwner,
     setEventAttendees,

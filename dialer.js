@@ -43,6 +43,12 @@
   const LSA_HEARTBEAT_MS = 60000;
   const WC_MAX_ATTEMPTS = 4;
   const WC_RENEW_MS = 90000;             // lock heartbeat during a long welcome call
+  // Welcome calls are tied to the Roofr job-card task the Retail template
+  // creates on every won deal. Unchecked task = a welcome call is owed.
+  const WC_TASK_TITLE_RE = /^\s*welcome\s*call\s*$/i;
+  const WC_TASK_TTL_MS = 10 * 60 * 1000;  // re-read a job's task state after 10 min
+  const WC_TASK_CONCURRENCY = 2;          // parallel Roofr task reads during a sweep
+  const WC_ROOFR_HOME = "https://app.roofr.com/dashboard/team/239329/jobs/list-view";
   const DEBUG_LOG_URL = `${API_BASE}/api/dialer-debug-log`;
   const RING_TIMEOUT_MS = 35000;          // give up if no ctm:start within 35s
   const WRAPUP_AUTOFIRE_MS = 60000;       // auto Save → Next after 60s of inactivity in wrap-up
@@ -251,6 +257,13 @@
   let _wcRoofrTabId = null;       // the single reused Roofr job-card tab
   let _wcLocked = false;          // we currently hold the begin-call lock on _wcJob
   let _wcClaiming = false;        // reentrancy guard around begin-call (double-click)
+  let _wcTasks = {};              // jobId -> {state:'incomplete'|'complete'|'missing'|'unknown', taskId, title, checkedAt}
+  let _wcTaskSweepRunning = false;
+  let _wcAutoClosed = new Set();  // jobIds auto-Completed this session (Roofr task was already checked)
+  // Double tap: 0 = no dial yet on this card, 1 = first dial done, 2 = second
+  // dial (in progress or done). A first-ring "Attempted" redials instead of
+  // writing; the pair is written ONCE as a single attempt.
+  let _wcTap = 0;
   // Phone(10-digit) → Roofr job { url, jobId, stage, name }. Used to flag missed
   // callers who are already customers (light blue + name links to their job card).
   let _roofrJobMap = {};
@@ -1277,6 +1290,9 @@
           }
           _wcAll = data.rows || [];
           log(`welcome calls loaded: ${_wcAll.length}`, "ok", "queue");
+          // Reconcile against Roofr: rows whose "Welcome Call" task is already
+          // checked get closed on the sheet and drop out of the queue.
+          wcSweepTasks(_wcAll).catch(e => log(`welcome: task sweep failed: ${e.message}`, "warn", "welcome"));
           // Don't tear down an open card mid-call — only re-render when idle.
           if (_wcPhase === "idle") renderWelcomeQueue();
           else updateWelcomeBadge(wcDueCount(_wcAll));
@@ -5252,11 +5268,173 @@
     const st = (row.status || "").trim().toLowerCase();
     if (["complete", "production call", "deposits on hold"].includes(st)) return false;  // terminal/parked — don't call
     if ((parseInt(row.attemptCount) || 0) >= WC_MAX_ATTEMPTS) return false;
+    const ti = wcTaskInfo(row.jobId);
+    if (ti && ti.state === "complete") return false;   // Roofr task already ✓ → no call owed
     const nc = wcParseMDY(row.nextCall);
     if (!nc) return true;                 // never contacted → due now
     return nc <= wcTodayAZ();
   }
   function wcDueCount(rows) { return (rows || []).filter(wcIsDue).length; }
+
+  // ── Roofr job-card task plumbing ──
+  // All Roofr reads/writes go through a Roofr tab in the CSR's OWN session
+  // (content.js RoofrApi gateway), so the activity log reads "completed by
+  // <CSR>" — never through the shared server-side sync session, which rotates
+  // cookies on every response and 401s the protected sync if raced.
+  async function wcRoofrTab() {
+    if (_wcRoofrTabId != null) {
+      try {
+        const t = await chrome.tabs.get(_wcRoofrTabId);
+        // A tab we just created reports url="" (pendingUrl set) until the
+        // navigation commits — keep it; only drop tabs that left Roofr.
+        const u = t?.url || t?.pendingUrl || "";
+        if (t && (!u || /^https:\/\/app\.roofr\.com\//.test(u))) return t;
+      } catch (_) {}
+      _wcRoofrTabId = null;
+    }
+    const tabs = await chrome.tabs.query({ url: "https://app.roofr.com/*" });
+    const ready = tabs.find(t => t.status === "complete") || tabs[0];
+    if (ready) return ready;
+    const t = await chrome.tabs.create({ url: WC_ROOFR_HOME, active: false });
+    _wcRoofrTabId = t.id;
+    await new Promise(r => setTimeout(r, 4000));   // let the SPA boot before messaging it
+    return t;
+  }
+  async function wcRoofrSend(message, timeoutMs = 15000) {
+    const tab = await wcRoofrTab();
+    const deadline = (p, label) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} timed out`)), timeoutMs))]);
+    const send = () => deadline(chrome.tabs.sendMessage(tab.id, message), message.type);
+    const injectAndRetry = async () => {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["roofr-api.js", "reports-batch.js", "content.js"] });
+      await new Promise(r => setTimeout(r, 500));
+      return send();
+    };
+    let resp;
+    try { resp = await send(); }
+    catch (e) {
+      if (!/Receiving end does not exist|Could not establish connection/.test(String(e?.message || e))) throw e;
+      resp = await injectAndRetry();
+    }
+    if (resp && resp.ok === false && /RoofrApi is unavailable/.test(resp?.error?.message || "")) resp = await injectAndRetry();
+    if (!resp || resp.ok === false) throw new Error(resp?.error?.message || "no response from Roofr tab");
+    return resp;
+  }
+  function wcTaskInfo(jobId) { return _wcTasks[String(jobId)] || null; }
+  function wcTaskFresh(info) { return !!info && info.state !== "unknown" && (Date.now() - info.checkedAt) < WC_TASK_TTL_MS; }
+
+  // Read the job's tasks and classify its "Welcome Call" task.
+  async function wcCheckTask(jobId, { force = false } = {}) {
+    const cached = wcTaskInfo(jobId);
+    if (!force && wcTaskFresh(cached)) return cached;
+    let info;
+    try {
+      const resp = await wcRoofrSend({ type: "ROOFR_API_GET_JOB_TASKS", jobId });
+      const tasks = Array.isArray(resp.data) ? resp.data : [];
+      const task = tasks.find(t => WC_TASK_TITLE_RE.test(String(t?.title || "")));
+      info = task
+        ? { state: String(task.status || "").trim().toLowerCase() === "complete" ? "complete" : "incomplete", taskId: task.id, title: task.title, assignee: task.assignee?.name || "", checkedAt: Date.now() }
+        : { state: "missing", taskId: null, checkedAt: Date.now() };
+    } catch (e) {
+      info = { state: "unknown", taskId: cached?.taskId || null, title: cached?.title, error: e.message, checkedAt: Date.now() };
+    }
+    _wcTasks[String(jobId)] = info;
+    return info;
+  }
+
+  // A row whose Roofr task is already checked owes no call: disposition it
+  // Complete on the sheet (once per session) so it leaves every rep's queue.
+  async function wcAutoCloseIfTaskDone(row, info) {
+    if (!row || info?.state !== "complete") return false;
+    const st = (row.status || "").trim().toLowerCase();
+    if (!["", "new", "attempted"].includes(st)) return false;     // already terminal/parked
+    if (_wcAutoClosed.has(String(row.jobId))) return true;
+    // Never close the card this rep is mid-call/outcome on (the sheet API would
+    // let the lock owner overwrite it and the live call's outcome would be lost),
+    // and never close a row anyone holds a lock on — except the card sitting in
+    // Review here (opened, not yet claimed), which is exactly the auto-skip case.
+    const isCurrent = _wcJob && String(_wcJob.jobId) === String(row.jobId);
+    if (isCurrent && _wcPhase !== "reviewing") return false;
+    if (row.lockedBy && !(isCurrent && _wcPhase === "reviewing" && row.lockedBy === repName)) return false;
+    _wcAutoClosed.add(String(row.jobId));
+    const res = await wcWrite({ jobId: row.jobId, rep: repName, status: "Complete", notes: "auto: Roofr Welcome Call task already checked" });
+    if (res.updated) {
+      row.status = "Complete";
+      row.attemptCount = String(res.attemptCount ?? row.attemptCount);
+      log(`welcome: ${row.customer || row.jobId} — Roofr task already ✓, closed on the sheet`, "ok", "welcome");
+      return true;
+    }
+    _wcAutoClosed.delete(String(row.jobId));
+    log(`welcome: could not auto-close ${row.customer || row.jobId}: ${res.reason || res.error || "?"}`, "warn", "welcome");
+    return false;
+  }
+
+  // Check every callable row's task state (cached 10 min), closing rows whose
+  // task is already done. Runs after each queue load while the tab is active.
+  async function wcSweepTasks(rows) {
+    if (_wcTaskSweepRunning || currentTab !== "welcome") return;
+    const targets = (rows || []).filter(r =>
+      ["", "new", "attempted"].includes((r.status || "").trim().toLowerCase()) &&
+      (parseInt(r.attemptCount) || 0) < WC_MAX_ATTEMPTS &&
+      !wcTaskFresh(wcTaskInfo(r.jobId)));
+    if (!targets.length) return;
+    _wcTaskSweepRunning = true;
+    let closed = 0, unknown = 0;
+    try {
+      const queue = targets.slice();
+      const worker = async () => {
+        while (queue.length) {
+          const row = queue.shift();
+          const info = await wcCheckTask(row.jobId);
+          if (info.state === "unknown") unknown++;
+          if (info.state === "complete" && await wcAutoCloseIfTaskDone(row, info)) closed++;
+        }
+      };
+      await Promise.all(Array.from({ length: WC_TASK_CONCURRENCY }, worker));
+    } finally { _wcTaskSweepRunning = false; }
+    log(`welcome: task sweep — ${targets.length} checked, ${closed} already done in Roofr${unknown ? `, ${unknown} unreadable` : ""}`, closed ? "ok" : "info", "welcome");
+    if (_wcPhase === "idle") renderWelcomeQueue(); else { updateWelcomeBadge(wcDueCount(_wcAll)); wcRenderCard(); }
+  }
+
+  function wcTaskChipHtml(jobId) {
+    const ti = wcTaskInfo(jobId);
+    if (!ti) return "";
+    const map = {
+      incomplete: ["☐ task open", "background:var(--warn-bg);color:#92400e;"],
+      complete:   ["☑ task done", "background:var(--success-bg);color:var(--success);"],
+      missing:    ["no Roofr task", "background:var(--surface-hi);color:var(--muted);"],
+      unknown:    ["task ?", "background:var(--surface-hi);color:var(--muted);"],
+    };
+    const [txt, style] = map[ti.state] || map.unknown;
+    const tip = ti.state === "unknown" ? (ti.error || "could not read Roofr tasks")
+      : ti.state === "missing" ? "This job card has no \"Welcome Call\" task"
+      : `Roofr task "${ti.title || "Welcome Call"}" — ${ti.state}${ti.assignee ? " · " + ti.assignee : ""}`;
+    return ` <span class="wc-task-chip" title="${escapeHtml(tip)}" style="display:inline-block;font-size:9px;font-weight:700;padding:0 5px;border-radius:8px;vertical-align:middle;${style}">${txt}</span>`;
+  }
+
+  // Mirror a terminal disposition onto the Roofr card: check the "Welcome Call"
+  // task through the CSR's own session. Never blocks the sheet write — on any
+  // failure the CSR is told to tick it manually.
+  async function wcCompleteRoofrTask(job, status) {
+    let info = wcTaskInfo(job.jobId);
+    if (!info || info.state === "unknown" || (info.state === "incomplete" && !info.taskId)) info = await wcCheckTask(job.jobId, { force: true });
+    if (info.state === "complete") { log(`welcome: Roofr task already ✓ for ${job.customer}`, "info", "welcome"); return true; }
+    if (info.state !== "incomplete" || !info.taskId) {
+      log(`welcome: no open "Welcome Call" task on ${job.customer}'s card (${info.state}) — nothing to check off`, "warn", "welcome");
+      return false;
+    }
+    try {
+      const resp = await wcRoofrSend({ type: "ROOFR_API_SET_TASK_STATUS", jobId: job.jobId, taskId: info.taskId, status: "complete" }, 20000);
+      if (resp.verified) {
+        _wcTasks[String(job.jobId)] = { ...info, state: "complete", checkedAt: Date.now() };
+        log(`welcome: ☑ Roofr "Welcome Call" task checked for ${job.customer} (${status})`, "ok", "welcome");
+        return true;
+      }
+      log(`welcome: Roofr task write for ${job.customer} did not verify — tick it manually on the card`, "warn", "welcome");
+    } catch (e) {
+      log(`welcome: Roofr task write failed for ${job.customer}: ${e.message} — tick it manually on the card`, "err", "welcome");
+    }
+    return false;
+  }
 
   function updateWelcomeBadge(n) {
     const b = document.getElementById("welcome-badge");
@@ -5319,7 +5497,7 @@
         <div style="flex:1;min-width:0;">
           <div class="rsched-name">${escapeHtml(job.customer || "(no name)")}</div>
           <div class="rsched-phone">${escapeHtml(job.phone || "—")}</div>
-          <div class="rsched-meta">Signed ${escapeHtml(job.proposalSigned || "—")} · ${att}/${WC_MAX_ATTEMPTS}${job.nextCall ? " · due " + escapeHtml(job.nextCall) : ""}${stTxt}${lockedOther ? " · 🔒 " + escapeHtml(job.lockedBy) : ""}</div>
+          <div class="rsched-meta">Signed ${escapeHtml(job.proposalSigned || "—")} · ${att}/${WC_MAX_ATTEMPTS}${job.nextCall ? " · due " + escapeHtml(job.nextCall) : ""}${stTxt}${lockedOther ? " · 🔒 " + escapeHtml(job.lockedBy) : ""}${wcTaskChipHtml(job.jobId)}</div>
         </div>`;
       li.addEventListener("click", () => {
         const idx = _wcQueue.findIndex(j => String(j.jobId) === String(job.jobId));
@@ -5393,7 +5571,17 @@
     // → continue, no call required) AND after a call ends.
     show("wc-stage2", ph === "reviewing" || ph === "stage2");
     const badge = document.getElementById("wc-phase-badge");
-    if (badge) badge.textContent = { reviewing: "Review", calling: "Calling", stage2: "Outcome" }[ph] || ph;
+    if (badge) badge.textContent = ({ reviewing: "Review", calling: _wcTap === 2 ? "Calling · 2nd tap" : "Calling", stage2: _wcTap === 2 ? "Outcome · 2 taps" : "Outcome" })[ph] || ph;
+    // Big red DOUBLE TAP banner while the 2nd ring is live (same banner the
+    // Form Leads dialer shows), and an "Attempted" label that says what it does.
+    const banner = document.getElementById("wc-dt-banner");
+    if (banner) {
+      const on = ph === "calling" && _wcTap === 2;
+      banner.style.display = on ? "" : "none";
+      banner.innerHTML = on ? `<div class="double-tap-banner">★ DOUBLE TAP! ★<span class="sub">2nd ring · pair counts as one attempt</span></div>` : "";
+    }
+    const attBtn = document.getElementById("wc-btn-attempted");
+    if (attBtn) attBtn.textContent = _wcTap === 1 ? "☎ Attempted → 2nd tap" : (_wcTap === 2 ? "☎ Attempted (2 taps)" : "☎ Attempted");
   }
 
   function wcRenderCard() {
@@ -5404,7 +5592,7 @@
     const meta = document.getElementById("wc-job-meta");
     const att = parseInt(j.attemptCount) || 0;
     if (meta) meta.innerHTML =
-      `Signed <strong>${escapeHtml(j.proposalSigned || "—")}</strong> · ${att}/${WC_MAX_ATTEMPTS} attempts${j.nextCall ? " · Next " + escapeHtml(j.nextCall) : ""}${j.lastCSR ? " · last: " + escapeHtml(j.lastCSR) : ""}${j.source ? " · 📞 " + escapeHtml(j.source) : ""}<br>${addressCopyHtml(j.address)}<span id="wc-context" style="display:block;"></span>`;
+      `Signed <strong>${escapeHtml(j.proposalSigned || "—")}</strong> · ${att}/${WC_MAX_ATTEMPTS} attempts${j.nextCall ? " · Next " + escapeHtml(j.nextCall) : ""}${j.lastCSR ? " · last: " + escapeHtml(j.lastCSR) : ""}${j.source ? " · 📞 " + escapeHtml(j.source) : ""}${wcTaskChipHtml(j.jobId)}<br>${addressCopyHtml(j.address)}<span id="wc-context" style="display:block;"></span>`;
     loadLeadContext(document.getElementById("wc-context"), j.jobId, j.phone, j.address);
   }
 
@@ -5438,11 +5626,25 @@
     _wcJob = job;
     _wcPhase = "reviewing";
     _wcLocked = false;
+    _wcTap = 0;
     wcOpenJobCard(wcCardUrl(job));
     log(`welcome: ▸ ${job.customer || job.jobId} (${job.phone || "no phone"})`, "act", "welcome");
     wcRenderCard();
     wcShowPhase("reviewing");
     document.querySelectorAll(".wc-row").forEach(r => r.classList.toggle("active", r.dataset.jobId === String(job.jobId)));
+    // Fresh task read for THIS card (the job-card tab we just opened serves it).
+    // If someone already ticked the task in Roofr, close the row and move on.
+    setTimeout(() => {
+      wcCheckTask(job.jobId, { force: true }).then(async (info) => {
+        if (_wcJob?.jobId !== job.jobId) return;
+        wcRenderCard();
+        if (info.state === "complete" && _wcPhase === "reviewing" && !_wcLocked) {
+          if (await wcAutoCloseIfTaskDone(job, info)) {
+            if (_wcJob?.jobId === job.jobId && _wcPhase === "reviewing") wcAdvance();
+          }
+        }
+      }).catch(() => {});
+    }, 2500);
   }
 
   // ── Stage 1: Call (claims the row) or Skip ──
@@ -5470,11 +5672,29 @@
     _wcLocked = true;
     _wcClaiming = false;
     wcStartRenew();
+    await wcDial(j, e164);
+  }
 
+  // Second ring of the double tap: same customer, lock already held, no
+  // re-claim. Anything that stops the dial lands the rep on the outcome.
+  async function wcRedial() {
+    const j = _wcJob; if (!j) return;
+    const backToOutcome = (why) => { if (why) log(`welcome: ${why} — record the outcome instead of redialing`, "warn", "welcome"); _wcTap = 1; _wcPhase = "stage2"; wcShowPhase("stage2"); };
+    if (!_wcLocked) return backToOutcome("lock lost");
+    if (mode === "running" || ["dialing", "ringing", "connected", "wrapup"].includes(phase)) return backToOutcome("the main dialer is active");
+    const e164 = toE164(j.phone || "");
+    if (!e164) return backToOutcome("bad phone");
+    await wcDial(j, e164);
+    if (_wcJob !== j) return;   // card changed underneath us — never touch the new card's state
+  }
+
+  // Shared dial path for the first ring and the double-tap redial.
+  async function wcDial(j, e164) {
     const ready = await ensureCtmTab();
     if (!ready) {
       // Keep the lock and let the rep record an outcome manually.
       log("welcome: CTM tab not ready — go straight to outcome", "err", "welcome");
+      if (_wcTap === 2) _wcTap = 1;
       _wcPhase = "stage2"; wcShowPhase("stage2"); return;
     }
     _wcPhase = "calling";
@@ -5493,7 +5713,7 @@
     } else {
       log(`welcome: no outbound mapping for source "${j.source || '(blank)'}" — using CTM default`, "warn", "welcome");
     }
-    log(`welcome: ▶ DIALING ${j.customer} ${e164}`, "act", "welcome");
+    log(`welcome: ▶ DIALING${_wcTap === 2 ? " (double-tap #2)" : ""} ${j.customer} ${e164}`, "act", "welcome");
     clearTimeout(_wcRingTimeoutId);
     _busyAtDial = softphoneBusy;
     _wcRingTimeoutId = setTimeout(() => {
@@ -5515,9 +5735,12 @@
       clearTimeout(_wcRingTimeoutId);
       wcStopCallTimer();
       _wcDialActive = false;
+      if (_wcTap === 2) _wcTap = 1;   // 2nd ring never went out — don't count it
       _wcPhase = "stage2";
       wcShowPhase("stage2");
+      return;
     }
+    if (_wcTap === 0) _wcTap = 1;     // first ring is out; an "Attempted" now triggers the 2nd tap
   }
 
   async function wcHandleSkip() {
@@ -5533,7 +5756,22 @@
   // ── Stage 2: record the outcome (writes disposition + releases the lock) ──
   async function wcHandleStage2(status) {
     const j = _wcJob; if (!j) return;
-    const note = (document.getElementById("wc-note")?.value || "").trim();
+    if (_wcPhase === "calling") return;   // outcome buttons are hidden mid-ring; belt and braces
+    const noteRaw = (document.getElementById("wc-note")?.value || "").trim();
+    // DOUBLE TAP: a first-ring "Attempted" (no contact) is not written yet —
+    // ring them straight back. The pair is written once, as ONE attempt, on
+    // the 2nd outcome. Mirrors the Form Leads dialer's double tap.
+    if (status === "Attempted" && _wcTap === 1) {
+      log(`welcome: ★★ DOUBLE TAP — no contact on ring 1, redialing ${j.customer} now`, "act", "welcome");
+      _wcTap = 2;
+      // Flip to "calling" BEFORE the awaits inside wcRedial/ensureCtmTab so the
+      // outcome buttons vanish — a second click here could otherwise write a
+      // disposition and advance the card while the redial is still pending.
+      _wcPhase = "calling"; wcShowPhase("calling");
+      await wcRedial();
+      return;
+    }
+    const note = _wcTap === 2 ? (noteRaw ? `${noteRaw} (2tap)` : "2tap") : noteRaw;
     const res = await wcWrite({ jobId: j.jobId, rep: repName, status, notes: note });
     if (!res.updated) {
       // Don't advance or drop the lock — keep the heartbeat alive and let the
@@ -5544,6 +5782,14 @@
     log(`welcome ✓ ${j.customer}: ${status}${note ? " (" + note + ")" : ""} [att ${res.attemptCount ?? "?"}]`, "ok", "welcome");
     wcStopRenew();          // server disposition already cleared the lock (O/P)
     _wcLocked = false;
+    // Terminal outcome → tick the Roofr "Welcome Call" task. Awaited (≤20s)
+    // because wcAdvance replaces the job-card tab that serves the write.
+    if (status === "Complete" || status === "Production Call") {
+      const b = document.getElementById(`wc-btn-${status === "Complete" ? "complete" : "production"}`);
+      if (b) { b.disabled = true; b.textContent = "☑ Roofr task…"; }
+      try { await wcCompleteRoofrTask(j, status); } catch (_) {}
+      if (b) { b.disabled = false; b.textContent = status === "Complete" ? "✓ Complete" : "🏗 Production Call"; }
+    }
     // Reflect the new status locally so the queue/badge update immediately.
     const local = _wcAll.find(r => String(r.jobId) === String(j.jobId));
     if (local) { local.status = status; local.attemptCount = String(res.attemptCount ?? ((parseInt(local.attemptCount) || 0) + 1)); }
@@ -5593,6 +5839,7 @@
   function wcAdvance() {
     const curId = _wcJob?.jobId;
     _wcPhase = "idle";   // current card is finished — lets wcOpenCard proceed
+    _wcTap = 0;
     const next = wcNextCandidate(curId);
     // Rebuild the visible list + badge from the just-updated _wcAll so a
     // Complete / Production Call row drops out of the queue immediately,
@@ -5620,6 +5867,7 @@
     _wcClaiming = false;
     _wcPhase = "idle";
     _wcJob = null;
+    _wcTap = 0;
     wcShowPhase("idle");
     document.querySelectorAll(".wc-row").forEach(r => r.classList.remove("active"));
   }

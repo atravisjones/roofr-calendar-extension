@@ -213,6 +213,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         "sec-scanner": document.getElementById("sec-scanner"),
         "sec-calls": document.getElementById("sec-calls"),
         "sec-reports": document.getElementById("sec-reports"),
+        "sec-metrics": document.getElementById("sec-metrics"),
         "sec-people": document.getElementById("sec-people"),
         "sec-clipboard": document.getElementById("sec-clipboard"),
         "sec-dialer": document.getElementById("sec-dialer"),
@@ -546,6 +547,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const settingShowPeople = document.getElementById("setting-show-people");
     const settingShowClipboard = document.getElementById("setting-show-clipboard");
     const settingShowReports = document.getElementById("setting-show-reports");
+    const settingShowMetrics = document.getElementById("setting-show-metrics");
     const settingShowNotes = document.getElementById("setting-show-notes");
     const settingShowFind = document.getElementById("setting-show-find");
     const settingShowFormatting = document.getElementById("setting-show-formatting");
@@ -1221,6 +1223,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         showPeopleTab: true,
         showClipboardTab: true,
         showReportsTab: false, // Hidden by default
+        showMetricsTab: true,  // CSR bookings + calls ranking (2026-09-03)
         showTodoStrip: true,   // Queue-shortcut chips at the top of the panel
         showQuickNotes: true,
         showFindBar: true,
@@ -2243,7 +2246,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Appearance
                 'theme', 'compact_mode', 'show_color_indicators', 'show_icons', 'animate_transitions',
                 // Interface - Tab visibility
-                'show_dialer', 'show_people', 'show_clipboard', 'show_reports',
+                'show_dialer', 'show_people', 'show_clipboard', 'show_reports', 'show_metrics',
                 // Scan
                 'scan_profile', 'scan_view',
                 // Interface - Navigation & Controls
@@ -5284,6 +5287,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (targetId === 'sec-people' && !userPrefs.showPeopleTab) activateMainTab('sec-scanner');
         if (targetId === 'sec-clipboard' && !userPrefs.showClipboardTab) activateMainTab('sec-scanner');
         if (targetId === 'sec-dialer' && !userPrefs.showDialerTab) activateMainTab('sec-scanner');
+        if (targetId === 'sec-metrics' && userPrefs.showMetricsTab === false) { activateMainTab('sec-scanner'); return; }
+        // Metrics tab polls only while visible. Late-bound: the metrics module
+        // initializes further down, after the startup activateMainTab call.
+        if (typeof window.__metricsOnTab === 'function') window.__metricsOnTab(targetId);
     }
     mainTabs.forEach(btn => btn.addEventListener("click", () => activateMainTab(btn.getAttribute("data-target"))));
 
@@ -10748,6 +10755,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (settingShowPeople) settingShowPeople.checked = userPrefs.showPeopleTab;
         if (settingShowClipboard) settingShowClipboard.checked = userPrefs.showClipboardTab;
         if (settingShowReports) settingShowReports.checked = userPrefs.showReportsTab;
+        if (settingShowMetrics) settingShowMetrics.checked = userPrefs.showMetricsTab !== false;
         if (settingShowTodoStrip) settingShowTodoStrip.checked = userPrefs.showTodoStrip !== false;
         const todoStripEl = document.getElementById('todo-strip');
         if (todoStripEl) todoStripEl.style.display = userPrefs.showTodoStrip === false ? 'none' : '';
@@ -10755,7 +10763,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Sync with options page settings if available
         chrome.storage.sync.get([
             // Tab visibility
-            'show_dialer', 'show_people', 'show_clipboard', 'show_reports', 'show_todo_strip',
+            'show_dialer', 'show_people', 'show_clipboard', 'show_reports', 'show_metrics', 'show_todo_strip',
             // Scan
             'scan_profile', 'scan_view',
             // Appearance
@@ -10826,6 +10834,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result.show_people !== undefined) userPrefs.showPeopleTab = result.show_people;
             if (result.show_clipboard !== undefined) userPrefs.showClipboardTab = result.show_clipboard;
             if (result.show_reports !== undefined) userPrefs.showReportsTab = result.show_reports;
+            if (result.show_metrics !== undefined) userPrefs.showMetricsTab = result.show_metrics;
             if (result.show_todo_strip !== undefined) userPrefs.showTodoStrip = result.show_todo_strip;
 
             // Footer tools - sync from options page
@@ -10840,6 +10849,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (settingShowPeople) settingShowPeople.checked = userPrefs.showPeopleTab;
             if (settingShowClipboard) settingShowClipboard.checked = userPrefs.showClipboardTab;
             if (settingShowReports) settingShowReports.checked = userPrefs.showReportsTab;
+            if (settingShowMetrics) settingShowMetrics.checked = userPrefs.showMetricsTab !== false;
             if (settingShowTodoStrip) settingShowTodoStrip.checked = userPrefs.showTodoStrip !== false;
             const todoStripSynced = document.getElementById('todo-strip');
             if (todoStripSynced) todoStripSynced.style.display = userPrefs.showTodoStrip === false ? 'none' : '';
@@ -10856,6 +10866,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const reportsTabBtn = document.querySelector('.nav-tab[data-target="sec-reports"]');
             if (reportsTabBtn) reportsTabBtn.style.display = userPrefs.showReportsTab === false ? 'none' : '';
+
+            const metricsTabBtn = document.querySelector('.nav-tab[data-target="sec-metrics"]');
+            if (metricsTabBtn) metricsTabBtn.style.display = userPrefs.showMetricsTab === false ? 'none' : '';
+            // Hidden from another surface (options page / other panel) while active → leave it, which also stops its poller.
+            if (userPrefs.showMetricsTab === false && metricsTabBtn?.classList.contains('active')) activateMainTab('sec-scanner');
 
             // Dock Toggles (inside callback for reactive updates)
             const dockFind = document.getElementById('dock-find-container');
@@ -11035,6 +11050,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         saveUserPrefs(); applyUserPrefs();
         if (chrome.storage && chrome.storage.sync) chrome.storage.sync.set({ show_clipboard: e.target.checked });
         if (!e.target.checked && document.querySelector('.nav-tab[data-target="sec-clipboard"].active')) {
+            document.querySelector('.nav-tab[data-target="sec-scanner"]').click();
+        }
+    });
+    if (settingShowMetrics) settingShowMetrics.addEventListener('change', (e) => {
+        userPrefs.showMetricsTab = e.target.checked;
+        saveUserPrefs(); applyUserPrefs();
+        if (chrome.storage && chrome.storage.sync) chrome.storage.sync.set({ show_metrics: e.target.checked });
+        const metricsTabBtn = document.querySelector('.nav-tab[data-target="sec-metrics"]');
+        if (metricsTabBtn) metricsTabBtn.style.display = e.target.checked ? '' : 'none';
+        if (!e.target.checked && document.querySelector('.nav-tab[data-target="sec-metrics"].active')) {
             document.querySelector('.nav-tab[data-target="sec-scanner"]').click();
         }
     });
@@ -12595,6 +12620,152 @@ document.addEventListener('DOMContentLoaded', async () => {
     reportsV2Date?.addEventListener('change', reportsV2InvalidatePreflight);
     reportsV2DryRun?.addEventListener('change', reportsV2InvalidatePreflight);
     reportsV2WriteCap?.addEventListener('change', reportsV2InvalidatePreflight);
+
+    // ========================================
+    // CSR METRICS TAB (2026-09-03)
+    // Per-CSR appointments booked (same formula as the monsoon Lead Center
+    // board) + inbound/outbound CTM calls (same Lilly-exclusion as the Speed to
+    // Lead leaderboard), served by speed-to-lead /api/csr-metrics. Roster-driven
+    // membership — never a hardcoded CSR list. 200+ outbound dials in a day = gold.
+    // Polls every 60s only while the tab is visible.
+    // ========================================
+    const metricsDate = document.getElementById('metrics-date');
+    const metricsToday = document.getElementById('metrics-today');
+    const metricsBody = document.getElementById('metrics-body');
+    const metricsStatus = document.getElementById('metrics-status');
+    const metricsSortButtons = Array.from(document.querySelectorAll('.metrics-sort'));
+    const METRICS_URL = 'https://speed-to-leads.vercel.app/api/csr-metrics';
+    const METRICS_GOLD = '#d4af37';
+    let metricsRows = [];
+    let metricsThreshold = 200;
+    let metricsSort = 'bookings';
+    let metricsTimer = null;
+    let metricsRequest = null;
+    let metricsUserKey = '';
+
+    function metricsSetStatus(message, isError = false) {
+        if (!metricsStatus) return;
+        metricsStatus.textContent = message || '';
+        metricsStatus.style.color = isError ? 'var(--danger)' : 'var(--text-muted)';
+    }
+
+    function metricsIdentityKey(name) {
+        const normalized = normalizeRepIdentityName(name);
+        return normalized ? normalized.rep_id : '';
+    }
+
+    async function metricsCurrentUserKey() {
+        try {
+            const stored = await chrome.storage.sync.get({ ctm_csr: '', ctm_display_name: '' });
+            return metricsIdentityKey(stored.ctm_csr || stored.ctm_display_name);
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function metricsRender() {
+        if (!metricsBody) return;
+        const rows = [...metricsRows].sort((a, b) =>
+            (Number(b[metricsSort] || 0) - Number(a[metricsSort] || 0))
+            || (Number(b.bookings || 0) - Number(a.bookings || 0))
+            || (Number(b.outbound || 0) - Number(a.outbound || 0))
+            || String(a.name || '').localeCompare(String(b.name || '')));
+        let previousValue = null;
+        let rank = 0;
+        const body = rows.map((row, index) => {
+            const value = Number(row[metricsSort] || 0);
+            if (value !== previousValue) rank = index + 1;   // ties share a rank
+            previousValue = value;
+            const outbound = Number(row.outbound || 0);
+            const gold = outbound >= metricsThreshold;
+            const mine = metricsUserKey && metricsIdentityKey(row.name) === metricsUserKey;
+            const rowStyle = `${gold ? 'background: rgba(212,175,55,.18);' : ''}${mine ? 'border-left: 3px solid var(--primary);' : ''}`;
+            const chip = gold
+                ? `<span style="margin-left: 4px; padding: 1px 5px; border-radius: 999px; font-size: .62rem; font-weight: 800; color: ${METRICS_GOLD}; border: 1px solid ${METRICS_GOLD}; white-space: nowrap;">★ ${metricsThreshold}+</span>`
+                : '';
+            return `<tr style="border-bottom: 1px solid var(--border); ${rowStyle}">
+              <td style="padding: 6px 4px; color: var(--text-muted);">${rank}</td>
+              <td style="padding: 6px 4px; font-weight: ${mine ? '800' : '600'}; white-space: nowrap;">${reportsV2Escape(row.name || '—')}${chip}</td>
+              <td style="padding: 6px 4px; text-align: right; font-weight: ${metricsSort === 'bookings' ? '800' : '500'};">${Number(row.bookings || 0)}</td>
+              <td style="padding: 6px 4px; text-align: right;">${Number(row.inbound || 0)}</td>
+              <td style="padding: 6px 4px; text-align: right; font-weight: ${gold || metricsSort === 'outbound' ? '800' : '500'}; color: ${gold ? METRICS_GOLD : 'inherit'};">${outbound}</td>
+            </tr>`;
+        });
+        const totals = metricsRows.reduce((sum, row) => ({
+            bookings: sum.bookings + Number(row.bookings || 0),
+            inbound: sum.inbound + Number(row.inbound || 0),
+            outbound: sum.outbound + Number(row.outbound || 0)
+        }), { bookings: 0, inbound: 0, outbound: 0 });
+        body.push(`<tr style="border-top: 2px solid var(--border); font-weight: 800;">
+          <td style="padding: 6px 4px;"></td><td style="padding: 6px 4px;">Total</td>
+          <td style="padding: 6px 4px; text-align: right;">${totals.bookings}</td>
+          <td style="padding: 6px 4px; text-align: right;">${totals.inbound}</td>
+          <td style="padding: 6px 4px; text-align: right;">${totals.outbound}</td>
+        </tr>`);
+        metricsBody.innerHTML = body.join('');
+    }
+
+    async function metricsFetch() {
+        if (!metricsDate || !metricsBody) return;
+        if (!document.getElementById('sec-metrics')?.classList.contains('active')) return;
+        if (metricsRequest) metricsRequest.abort();
+        const controller = new AbortController();
+        metricsRequest = controller;
+        const timeout = setTimeout(() => controller.abort(), 6000);
+        const date = metricsDate.value || reportsV2PhoenixDate();
+        try {
+            const response = await fetch(`${METRICS_URL}?date=${encodeURIComponent(date)}`, {
+                cache: 'no-store',
+                headers: { 'X-Dialer-Client': 'roofr-extension' },
+                signal: controller.signal
+            });
+            if (!response.ok) throw new Error(`Metrics unavailable (HTTP ${response.status})`);
+            const data = await response.json();
+            if (!data?.ok || !Array.isArray(data.rows)) throw new Error('Metrics response was invalid');
+            metricsRows = data.rows;
+            metricsThreshold = Number(data.gold_outbound_threshold) || 200;
+            metricsUserKey = await metricsCurrentUserKey();
+            metricsRender();
+            const stamp = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Phoenix', hour: 'numeric', minute: '2-digit' }).format(new Date());
+            const warn = Array.isArray(data.warnings) && data.warnings.length ? ` · ${data.warnings.join(', ')}` : '';
+            metricsSetStatus(`updated ${stamp} · refreshes every 60s${warn}`, !!warn);
+        } catch (error) {
+            if (error?.name === 'AbortError' && controller !== metricsRequest) return;   // superseded, not an error
+            metricsSetStatus(error?.name === 'AbortError' ? 'Metrics timed out — showing last good data' : (error?.message || 'Could not load metrics'), true);
+        } finally {
+            clearTimeout(timeout);
+            if (metricsRequest === controller) metricsRequest = null;
+        }
+    }
+
+    function metricsStart() {
+        if (!metricsDate || metricsTimer) return;
+        metricsFetch();
+        metricsTimer = setInterval(metricsFetch, 60000);
+    }
+
+    function metricsStop() {
+        if (metricsTimer) clearInterval(metricsTimer);
+        metricsTimer = null;
+        if (metricsRequest) metricsRequest.abort();
+        metricsRequest = null;
+    }
+
+    window.__metricsOnTab = (targetId) => { if (targetId === 'sec-metrics') metricsStart(); else metricsStop(); };
+    if (metricsDate) metricsDate.value = reportsV2PhoenixDate();
+    metricsDate?.addEventListener('change', metricsFetch);
+    metricsToday?.addEventListener('click', () => { if (metricsDate) metricsDate.value = reportsV2PhoenixDate(); metricsFetch(); });
+    metricsSortButtons.forEach(button => button.addEventListener('click', () => {
+        metricsSort = button.dataset.sort === 'outbound' ? 'outbound' : 'bookings';
+        metricsSortButtons.forEach(item => {
+            const active = item.dataset.sort === metricsSort;
+            item.classList.toggle('secondary', !active);
+            item.setAttribute('aria-pressed', String(active));
+        });
+        metricsRender();
+    }));
+    // If the panel was reopened straight onto Metrics, start polling now.
+    if (document.getElementById('sec-metrics')?.classList.contains('active')) metricsStart();
 
     // Reports Automation DOM refs
     const reportsRepSelect = document.getElementById('reports-rep-select');

@@ -3232,6 +3232,7 @@
           <div class="nav-segment">
             <button class="nav-tab active" data-target="sec-scanner">Scanner</button>
             <button class="nav-tab" data-target="sec-reports">Reports</button>
+            <button class="nav-tab" data-target="sec-metrics">Metrics</button>
             <button class="nav-tab" data-target="sec-people">People</button>
             <button class="nav-tab" data-target="sec-clipboard">Clipboard</button>
             <button class="nav-tab" data-target="sec-dialer" style="background:#3b82f6;color:#fff;">📞 Dialer</button>
@@ -3305,6 +3306,36 @@
           style="font-size: 0.9rem; font-weight: 800; color: var(--text-muted);"></div>
       </section>
 
+
+      <!-- CSR Metrics Section — per-CSR bookings (Lead Center board formula) +
+           inbound/outbound calls (STL leaderboard formula) from /api/csr-metrics -->
+      <section id="sec-metrics" class="section">
+        <div style="padding: 12px 0;">
+          <div style="padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);">
+            <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; margin-bottom: 7px;">
+              <input id="metrics-date" type="date" style="min-width: 0; padding: 7px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text-main);">
+              <button id="metrics-today" class="btn secondary" style="padding: 7px 12px;">Today</button>
+            </div>
+            <div style="display: flex; align-items: center; gap: 5px; margin-bottom: 7px;">
+              <span style="font-size: 0.72rem; color: var(--text-muted);">Rank by:</span>
+              <button id="metrics-sort-bookings" class="btn metrics-sort" data-sort="bookings" aria-pressed="true" style="padding: 4px 9px; font-size: 0.72rem;">Bookings</button>
+              <button id="metrics-sort-outbound" class="btn secondary metrics-sort" data-sort="outbound" aria-pressed="false" style="padding: 4px 9px; font-size: 0.72rem;">Outbound</button>
+            </div>
+            <div id="metrics-status" style="min-height: 1.1em; margin-bottom: 7px; font-size: 0.72rem; color: var(--text-muted);"></div>
+            <div style="overflow-x: auto;">
+              <table style="width: 100%; border-collapse: collapse; font-size: 0.76rem;">
+                <thead>
+                  <tr style="color: var(--text-muted); text-align: left; border-bottom: 1px solid var(--border);">
+                    <th style="padding: 6px 4px;">#</th><th style="padding: 6px 4px;">CSR</th>
+                    <th style="padding: 6px 4px; text-align: right;">Booked</th><th style="padding: 6px 4px; text-align: right;">In</th><th style="padding: 6px 4px; text-align: right;">Out</th>
+                  </tr>
+                </thead>
+                <tbody id="metrics-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
 
       <!-- Reports Automation Section -->
       <section id="sec-reports" class="section">
@@ -4044,6 +4075,14 @@ Available:
           <span class="setting-label">Show Clipboard Tab</span>
           <label class="switch">
             <input type="checkbox" id="setting-show-clipboard">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-row">
+          <span class="setting-label">Show Metrics Tab</span>
+          <label class="switch">
+            <input type="checkbox" id="setting-show-metrics">
             <span class="slider"></span>
           </label>
         </div>

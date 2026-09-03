@@ -6792,8 +6792,16 @@ if (window.__isRoofrJobPage && !window.__roofrJobAutomationLoaded) {
   // Chauffeur prep for the Reports order run: get the freshly-navigated job page
   // to the "Confirm roof location" step, then STOP — pin verification and the
   // actual purchase stay with the human.
+  // OFF by default (2026-09-03) — settings "Show address banner on Roofr" turns it on.
+  async function addressBannerEnabled() {
+    try {
+      const r = await chrome.storage.sync.get(['show_addr_banner']);
+      return r.show_addr_banner === true;
+    } catch (_) { return false; }
+  }
   window.__roofrPrepReportOrder = async function prepReportOrder(address, jobTitle) {
-    showAddressVerifyBanner(address, jobTitle);
+    if (await addressBannerEnabled()) showAddressVerifyBanner(address, jobTitle);
+    else document.getElementById('__roofr_addr_verify_banner')?.remove();
     const steps = [];
     const load = await waitForJobPageLoad();
     steps.push({ step: 'waitForJobPageLoad', ...load });

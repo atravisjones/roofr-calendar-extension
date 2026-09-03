@@ -548,6 +548,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const settingShowClipboard = document.getElementById("setting-show-clipboard");
     const settingShowReports = document.getElementById("setting-show-reports");
     const settingShowMetrics = document.getElementById("setting-show-metrics");
+    const settingShowAddrBanner = document.getElementById("setting-show-addr-banner");
     const settingShowNotes = document.getElementById("setting-show-notes");
     const settingShowFind = document.getElementById("setting-show-find");
     const settingShowFormatting = document.getElementById("setting-show-formatting");
@@ -1224,6 +1225,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         showClipboardTab: true,
         showReportsTab: false, // Hidden by default
         showMetricsTab: true,  // CSR bookings + calls ranking (2026-09-03)
+        showAddrBanner: false, // blue address-verify bar the Reports chauffeur pins to the Roofr page (off by default 2026-09-03)
         showTodoStrip: true,   // Queue-shortcut chips at the top of the panel
         showQuickNotes: true,
         showFindBar: true,
@@ -2246,7 +2248,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Appearance
                 'theme', 'compact_mode', 'show_color_indicators', 'show_icons', 'animate_transitions',
                 // Interface - Tab visibility
-                'show_dialer', 'show_people', 'show_clipboard', 'show_reports', 'show_metrics',
+                'show_dialer', 'show_people', 'show_clipboard', 'show_reports', 'show_metrics', 'show_addr_banner',
                 // Scan
                 'scan_profile', 'scan_view',
                 // Interface - Navigation & Controls
@@ -10756,6 +10758,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (settingShowClipboard) settingShowClipboard.checked = userPrefs.showClipboardTab;
         if (settingShowReports) settingShowReports.checked = userPrefs.showReportsTab;
         if (settingShowMetrics) settingShowMetrics.checked = userPrefs.showMetricsTab !== false;
+        if (settingShowAddrBanner) settingShowAddrBanner.checked = userPrefs.showAddrBanner === true;
         if (settingShowTodoStrip) settingShowTodoStrip.checked = userPrefs.showTodoStrip !== false;
         const todoStripEl = document.getElementById('todo-strip');
         if (todoStripEl) todoStripEl.style.display = userPrefs.showTodoStrip === false ? 'none' : '';
@@ -10763,7 +10766,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Sync with options page settings if available
         chrome.storage.sync.get([
             // Tab visibility
-            'show_dialer', 'show_people', 'show_clipboard', 'show_reports', 'show_metrics', 'show_todo_strip',
+            'show_dialer', 'show_people', 'show_clipboard', 'show_reports', 'show_metrics', 'show_addr_banner', 'show_todo_strip',
             // Scan
             'scan_profile', 'scan_view',
             // Appearance
@@ -10835,6 +10838,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result.show_clipboard !== undefined) userPrefs.showClipboardTab = result.show_clipboard;
             if (result.show_reports !== undefined) userPrefs.showReportsTab = result.show_reports;
             if (result.show_metrics !== undefined) userPrefs.showMetricsTab = result.show_metrics;
+            if (result.show_addr_banner !== undefined) userPrefs.showAddrBanner = result.show_addr_banner;
             if (result.show_todo_strip !== undefined) userPrefs.showTodoStrip = result.show_todo_strip;
 
             // Footer tools - sync from options page
@@ -11052,6 +11056,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!e.target.checked && document.querySelector('.nav-tab[data-target="sec-clipboard"].active')) {
             document.querySelector('.nav-tab[data-target="sec-scanner"]').click();
         }
+    });
+    if (settingShowAddrBanner) settingShowAddrBanner.addEventListener('change', (e) => {
+        userPrefs.showAddrBanner = e.target.checked;
+        saveUserPrefs();
+        if (chrome.storage && chrome.storage.sync) chrome.storage.sync.set({ show_addr_banner: e.target.checked });
     });
     if (settingShowMetrics) settingShowMetrics.addEventListener('change', (e) => {
         userPrefs.showMetricsTab = e.target.checked;

@@ -3312,9 +3312,23 @@
       <section id="sec-metrics" class="section">
         <div style="padding: 12px 0;">
           <div style="padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);">
-            <div style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; margin-bottom: 7px;">
-              <input id="metrics-date" type="date" style="min-width: 0; padding: 7px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text-main);">
-              <button id="metrics-today" class="btn secondary" style="padding: 7px 12px;">Today</button>
+            <select id="metrics-range" style="width: 100%; margin-bottom: 6px; padding: 7px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text-main); font: inherit; font-size: 0.78rem;">
+              <option value="today" selected>Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="this_week">This week (Sun–Sat)</option>
+              <option value="last_week">Last week</option>
+              <option value="this_month">This month</option>
+              <option value="last_month">Last month</option>
+              <option value="this_quarter">This quarter</option>
+              <option value="last_quarter">Last quarter</option>
+              <option value="this_year">This year</option>
+              <option value="last_year">Last year</option>
+              <option value="all_time">All time</option>
+              <option value="custom">Custom range…</option>
+            </select>
+            <div id="metrics-custom" style="display: none; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; margin-bottom: 6px;">
+              <input id="metrics-from" type="date" title="From" style="min-width: 0; padding: 7px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text-main);">
+              <input id="metrics-to" type="date" title="To" style="min-width: 0; padding: 7px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text-main);">
             </div>
             <div style="display: flex; align-items: center; gap: 5px; margin-bottom: 7px;">
               <span style="font-size: 0.72rem; color: var(--text-muted);">Rank by:</span>

@@ -12629,16 +12629,54 @@ document.addEventListener('DOMContentLoaded', async () => {
     // membership — never a hardcoded CSR list. 200+ outbound dials in a day = gold.
     // Polls every 60s only while the tab is visible.
     // ========================================
-    const metricsDate = document.getElementById('metrics-date');
-    const metricsToday = document.getElementById('metrics-today');
+    const metricsRange = document.getElementById('metrics-range');
+    const metricsCustom = document.getElementById('metrics-custom');
+    const metricsFrom = document.getElementById('metrics-from');
+    const metricsTo = document.getElementById('metrics-to');
     const metricsBody = document.getElementById('metrics-body');
     const metricsStatus = document.getElementById('metrics-status');
     const metricsSortButtons = Array.from(document.querySelectorAll('.metrics-sort'));
     const METRICS_URL = 'https://speed-to-leads.vercel.app/api/csr-metrics';
     const METRICS_GOLD = '#d4af37';
+    const METRICS_CALLS_SINCE = '2026-03-25';   // CTM cache start — "all time" calls begin here
     let metricsRows = [];
     let metricsThreshold = 200;
+    let metricsPerDay = 200;
     let metricsSort = 'bookings';
+
+    // Phoenix-local range bounds for each preset (YYYY-MM-DD, inclusive).
+    // Weeks are Sun→Sat to match the monsoon board.
+    function metricsRangeBounds(preset) {
+        const today = reportsV2PhoenixDate();
+        const d = new Date(`${today}T00:00:00Z`);
+        const ymd = (x) => x.toISOString().slice(0, 10);
+        const shift = (x, days) => { const n = new Date(x); n.setUTCDate(n.getUTCDate() + days); return n; };
+        const y = d.getUTCFullYear(), m = d.getUTCMonth(), q = Math.floor(m / 3);
+        switch (preset) {
+            case 'yesterday': { const t = ymd(shift(d, -1)); return { from: t, to: t }; }
+            case 'this_week': { const sun = shift(d, -d.getUTCDay()); return { from: ymd(sun), to: ymd(shift(sun, 6)) }; }
+            case 'last_week': { const sun = shift(d, -d.getUTCDay() - 7); return { from: ymd(sun), to: ymd(shift(sun, 6)) }; }
+            case 'this_month': return { from: ymd(new Date(Date.UTC(y, m, 1))), to: ymd(new Date(Date.UTC(y, m + 1, 0))) };
+            case 'last_month': return { from: ymd(new Date(Date.UTC(y, m - 1, 1))), to: ymd(new Date(Date.UTC(y, m, 0))) };
+            case 'this_quarter': return { from: ymd(new Date(Date.UTC(y, q * 3, 1))), to: ymd(new Date(Date.UTC(y, q * 3 + 3, 0))) };
+            case 'last_quarter': return { from: ymd(new Date(Date.UTC(y, q * 3 - 3, 1))), to: ymd(new Date(Date.UTC(y, q * 3, 0))) };
+            case 'this_year': return { from: `${y}-01-01`, to: `${y}-12-31` };
+            case 'last_year': return { from: `${y - 1}-01-01`, to: `${y - 1}-12-31` };
+            case 'all_time': return { from: '2025-01-01', to: today };
+            case 'custom': {
+                const from = metricsFrom?.value || today;
+                const to = metricsTo?.value || from;
+                return to < from ? { from: to, to: from } : { from, to };
+            }
+            default: return { from: today, to: today };
+        }
+    }
+
+    function metricsCurrentRange() {
+        const preset = metricsRange?.value || 'today';
+        if (metricsCustom) metricsCustom.style.display = preset === 'custom' ? 'grid' : 'none';
+        return metricsRangeBounds(preset);
+    }
     let metricsTimer = null;
     let metricsRequest = null;
     let metricsUserKey = '';
@@ -12665,7 +12703,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function metricsRender() {
         if (!metricsBody) return;
-        const rows = [...metricsRows].sort((a, b) =>
+        // Travis 2026-09-03: hide reps with nothing booked and no outbound dials.
+        const rows = metricsRows.filter(row => Number(row.bookings || 0) > 0 || Number(row.outbound || 0) > 0).sort((a, b) =>
             (Number(b[metricsSort] || 0) - Number(a[metricsSort] || 0))
             || (Number(b.bookings || 0) - Number(a.bookings || 0))
             || (Number(b.outbound || 0) - Number(a.outbound || 0))
@@ -12681,7 +12720,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const mine = metricsUserKey && metricsIdentityKey(row.name) === metricsUserKey;
             const rowStyle = `${gold ? 'background: rgba(212,175,55,.18);' : ''}${mine ? 'border-left: 3px solid var(--primary);' : ''}`;
             const chip = gold
-                ? `<span style="margin-left: 4px; padding: 1px 5px; border-radius: 999px; font-size: .62rem; font-weight: 800; color: ${METRICS_GOLD}; border: 1px solid ${METRICS_GOLD}; white-space: nowrap;">★ ${metricsThreshold}+</span>`
+                ? `<span title="${metricsThreshold === metricsPerDay ? `${metricsPerDay}+ outbound dials today` : `${metricsThreshold}+ outbound dials in this range (${metricsPerDay}/day)`}" style="margin-left: 4px; padding: 1px 5px; border-radius: 999px; font-size: .62rem; font-weight: 800; color: ${METRICS_GOLD}; border: 1px solid ${METRICS_GOLD}; white-space: nowrap;">★ ${metricsThreshold}+</span>`
                 : '';
             return `<tr style="border-bottom: 1px solid var(--border); ${rowStyle}">
               <td style="padding: 6px 4px; color: var(--text-muted);">${rank}</td>
@@ -12691,7 +12730,11 @@ document.addEventListener('DOMContentLoaded', async () => {
               <td style="padding: 6px 4px; text-align: right; font-weight: ${gold || metricsSort === 'outbound' ? '800' : '500'}; color: ${gold ? METRICS_GOLD : 'inherit'};">${outbound}</td>
             </tr>`;
         });
-        const totals = metricsRows.reduce((sum, row) => ({
+        if (!rows.length) {
+            metricsBody.innerHTML = '<tr><td colspan="5" style="padding: 10px 4px; color: var(--text-muted);">No bookings or outbound dials in this range.</td></tr>';
+            return;
+        }
+        const totals = rows.reduce((sum, row) => ({
             bookings: sum.bookings + Number(row.bookings || 0),
             inbound: sum.inbound + Number(row.inbound || 0),
             outbound: sum.outbound + Number(row.outbound || 0)
@@ -12706,15 +12749,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function metricsFetch() {
-        if (!metricsDate || !metricsBody) return;
+        if (!metricsRange || !metricsBody) return;
         if (!document.getElementById('sec-metrics')?.classList.contains('active')) return;
         if (metricsRequest) metricsRequest.abort();
         const controller = new AbortController();
         metricsRequest = controller;
-        const timeout = setTimeout(() => controller.abort(), 6000);
-        const date = metricsDate.value || reportsV2PhoenixDate();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        const { from, to } = metricsCurrentRange();
         try {
-            const response = await fetch(`${METRICS_URL}?date=${encodeURIComponent(date)}`, {
+            const response = await fetch(`${METRICS_URL}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, {
                 cache: 'no-store',
                 headers: { 'X-Dialer-Client': 'roofr-extension' },
                 signal: controller.signal
@@ -12724,11 +12767,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!data?.ok || !Array.isArray(data.rows)) throw new Error('Metrics response was invalid');
             metricsRows = data.rows;
             metricsThreshold = Number(data.gold_outbound_threshold) || 200;
+            metricsPerDay = Number(data.gold_outbound_per_day) || 200;
             metricsUserKey = await metricsCurrentUserKey();
             metricsRender();
             const stamp = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Phoenix', hour: 'numeric', minute: '2-digit' }).format(new Date());
+            const rangeLabel = from === to ? from : `${from} → ${to}`;
+            const sinceNote = from < METRICS_CALLS_SINCE ? ` · calls counted since ${METRICS_CALLS_SINCE}` : '';
             const warn = Array.isArray(data.warnings) && data.warnings.length ? ` · ${data.warnings.join(', ')}` : '';
-            metricsSetStatus(`updated ${stamp} · refreshes every 60s${warn}`, !!warn);
+            metricsSetStatus(`${rangeLabel} · gold = ${metricsThreshold}+ out · updated ${stamp}${sinceNote}${warn}`, !!warn);
         } catch (error) {
             if (error?.name === 'AbortError' && controller !== metricsRequest) return;   // superseded, not an error
             metricsSetStatus(error?.name === 'AbortError' ? 'Metrics timed out — showing last good data' : (error?.message || 'Could not load metrics'), true);
@@ -12739,7 +12785,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function metricsStart() {
-        if (!metricsDate || metricsTimer) return;
+        if (!metricsRange || metricsTimer) return;
         metricsFetch();
         metricsTimer = setInterval(metricsFetch, 60000);
     }
@@ -12752,9 +12798,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     window.__metricsOnTab = (targetId) => { if (targetId === 'sec-metrics') metricsStart(); else metricsStop(); };
-    if (metricsDate) metricsDate.value = reportsV2PhoenixDate();
-    metricsDate?.addEventListener('change', metricsFetch);
-    metricsToday?.addEventListener('click', () => { if (metricsDate) metricsDate.value = reportsV2PhoenixDate(); metricsFetch(); });
+    if (metricsFrom && !metricsFrom.value) metricsFrom.value = reportsV2PhoenixDate();
+    if (metricsTo && !metricsTo.value) metricsTo.value = reportsV2PhoenixDate();
+    metricsRange?.addEventListener('change', () => { metricsCurrentRange(); metricsFetch(); });
+    metricsFrom?.addEventListener('change', metricsFetch);
+    metricsTo?.addEventListener('change', metricsFetch);
     metricsSortButtons.forEach(button => button.addEventListener('click', () => {
         metricsSort = button.dataset.sort === 'outbound' ? 'outbound' : 'bookings';
         metricsSortButtons.forEach(item => {

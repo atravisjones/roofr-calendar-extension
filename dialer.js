@@ -1280,6 +1280,17 @@
       }
       // ── Welcome Calls tab: Madi's post-sign welcome-call queue ──
       if (currentTab === "welcome") {
+        // A manual refresh / tab open first runs the sheet sync so a job that
+        // just hit "Proposal signed/Sales Audit" shows up NOW instead of waiting
+        // for the cron (Roofr → KPI Supabase ≤1 min → this sync → sheet).
+        if (force) {
+          try {
+            const sr = await fetch(`${API_BASE}/api/sync-welcome-calls?days=2`, { headers: { "X-Dialer-Client": "roofr-extension" }, signal: AbortSignal.timeout(25000) });
+            const sd = await sr.json();
+            if (sd.ok) log(`welcome: synced from Roofr — ${sd.added} new${sd.held ? `, ${sd.held} on hold` : ""}${sd.released ? `, ${sd.released} released` : ""}`, sd.added ? "ok" : "info", "queue");
+            else log(`welcome: sync skipped (${sd.error || "?"})`, "warn", "queue");
+          } catch (e) { log(`welcome: sync skipped (${e.message})`, "warn", "queue"); }
+        }
         log("fetching welcome calls…", "info", "queue");
         try {
           const r = await fetch(WELCOME_URL, { headers: { "Content-Type": "application/json", "X-Dialer-Client": "roofr-extension" } });
